@@ -1,0 +1,25 @@
+<!DOCTYPE node PUBLIC "-//freedesktop//DTD D-BUS Object Introspection 1.0//EN"
+ "http://www.freedesktop.org/standards/dbus/1.0/introspect.dtd">
+<node>
+  <interface name="org.suckless.surf">
+    <method name="GetURI">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="uri" type="s" direction="out"/>
+    </method>
+    <method name="Go">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="uri" type="s" direction="in"/>
+    </method>
+    <method name="Find">
+      <arg name="instance_id" type="s" direction="in"/>
+      <arg name="text" type="s" direction="in"/>
+    </method>
+    <method name="ListInstances">
+      <arg name="instances" type="as" direction="out"/>
+    </method>
+    <signal name="URIChanged">
+      <arg name="instance_id" type="s"/>
+      <arg name="uri" type="s"/>
+    </signal>
+  </interface>
+</node>
