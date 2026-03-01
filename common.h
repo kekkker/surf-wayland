@@ -9,6 +9,11 @@
 #include <X11/Xlib.h>
 #endif
 
+typedef enum {
+	ModeNormal,
+	ModeInsert,
+} Mode;
+
 typedef struct Client {
 	GtkWidget *win;
 	WebKitWebView *view;
@@ -25,6 +30,7 @@ typedef struct Client {
 #endif
 	guint64 pageid;
 	int progress, fullscreen, https, insecure, errorpage;
+	Mode mode;
 	const char *title, *overtitle, *targeturi;
 	const char *needle;
 	struct Client *next;

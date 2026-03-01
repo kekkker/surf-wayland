@@ -238,6 +238,7 @@ static void togglecookiepolicy(Client *c, const Arg *a);
 static void toggleinspector(Client *c, const Arg *a);
 static void find(Client *c, const Arg *a);
 static void showxid(Client *c, const Arg *a);
+static void toggleinsert(Client *c, const Arg *a);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
@@ -587,6 +588,7 @@ newclient(Client *rc)
 
 	c->progress = 100;
 	c->view = newview(c, rc ? rc->view : NULL);
+	c->mode = ModeNormal;
 
 	return c;
 }
@@ -718,22 +720,30 @@ updatetitle(Client *c)
 	char *title;
 	const char *name = c->overtitle ? c->overtitle :
 	                   c->title ? c->title : "";
+	const char *modestr;
+
+	switch (c->mode) {
+	case ModeInsert: modestr = "I"; break;
+	default:         modestr = "N"; break;
+	}
 
 	if (curconfig[ShowIndicators].val.i) {
 		gettogglestats(c);
 		getpagestats(c);
 
 		if (c->progress != 100)
-			title = g_strdup_printf("[%i%%] %s:%s | %s",
-			        c->progress, togglestats, pagestats, name);
+			title = g_strdup_printf("[%s][%i%%] %s:%s | %s",
+			        modestr, c->progress, togglestats, pagestats, name);
 		else
-			title = g_strdup_printf("%s:%s | %s",
-			        togglestats, pagestats, name);
+			title = g_strdup_printf("[%s] %s:%s | %s",
+			        modestr, togglestats, pagestats, name);
 
 		gtk_window_set_title(GTK_WINDOW(c->win), title);
 		g_free(title);
 	} else {
-		gtk_window_set_title(GTK_WINDOW(c->win), name);
+		title = g_strdup_printf("[%s] %s", modestr, name);
+		gtk_window_set_title(GTK_WINDOW(c->win), title);
+		g_free(title);
 	}
 }
 
@@ -1385,7 +1395,7 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 	switch (webkit_navigation_action_get_navigation_type(a)) {
 	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
 		/*
-		 * popup windows of type “other” are almost always triggered
+		 * popup windows of type "other" are almost always triggered
 		 * by user gesture, so inverse the logic here
 		 */
 /* instead of this, compare destination uri to mouse-over uri for validating window */
@@ -1412,6 +1422,12 @@ buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
 	int i;
 
 	element = webkit_hit_test_result_get_context(c->mousepos);
+
+	/* Auto-enter insert mode when clicking editable elements */
+	if (element & OnEdit) {
+		c->mode = ModeInsert;
+		updatetitle(c);
+	}
 
 	for (i = 0; i < LENGTH(buttons); ++i) {
 		if (element & buttons[i].target &&
@@ -1464,18 +1480,32 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 		updatetitle(c);
 		break;
 	case GDK_KEY_PRESS:
-		if (!curconfig[KioskMode].val.i) {
-			for (i = 0; i < LENGTH(keys); ++i) {
-				if (gdk_keyval_to_lower(e->key.keyval) ==
-				    keys[i].keyval &&
-				    CLEANMASK(e->key.state) == keys[i].mod &&
-				    keys[i].func) {
-					updatewinid(c);
-					keys[i].func(c, &(keys[i].arg));
-					return TRUE;
-				}
+		if (curconfig[KioskMode].val.i)
+			break;
+
+		/* Insert mode: pass everything except Escape */
+		if (c->mode == ModeInsert) {
+			if (e->key.keyval == GDK_KEY_Escape) {
+				c->mode = ModeNormal;
+				gtk_widget_grab_focus(GTK_WIDGET(c->view));
+				updatetitle(c);
+				return TRUE;
+			}
+			return FALSE; /* pass all keys to webpage */
+		}
+
+		/* Normal mode: process keybinds */
+		for (i = 0; i < LENGTH(keys); ++i) {
+			if (gdk_keyval_to_lower(e->key.keyval) ==
+			    keys[i].keyval &&
+			    CLEANMASK(e->key.state) == keys[i].mod &&
+			    keys[i].func) {
+				updatewinid(c);
+				keys[i].func(c, &(keys[i].arg));
+				return TRUE;
 			}
 		}
+		break;
 	case GDK_LEAVE_NOTIFY:
 		c->overtitle = NULL;
 		updatetitle(c);
@@ -1618,7 +1648,7 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 		    "Some error occurred validating the certificate.<br>");
 
 	g_object_get(cert, "certificate-pem", &pem, NULL);
-	html = g_strdup_printf("<p>Could not validate TLS for “%s”<br>%s</p>"
+        html = g_strdup_printf("<p>Could not validate TLS for &ldquo;%s&rdquo;<br>%s</p>"
 	                       "<p>You can inspect the following certificate "
 	                       "with Ctrl-t (default keybinding).</p>"
 	                       "<p><pre>%s</pre></p>", uri, errmsg->str, pem);
@@ -1840,7 +1870,7 @@ decidenewwindow(WebKitPolicyDecision *d, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
 		/* Filter domains here */
-/* If the value of “mouse-button” is not 0, then the navigation was triggered by a mouse event.
+/* If the value of "mouse-button" is not 0, then the navigation was triggered by a mouse event.
  * test for link clicked but no button ? */
 		arg.v = webkit_uri_request_get_uri(
 		        webkit_navigation_action_get_request(a));
@@ -2132,6 +2162,16 @@ find(Client *c, const Arg *a)
 		if (strcmp(s, "") == 0)
 			webkit_find_controller_search_finish(c->finder);
 	}
+}
+
+void
+toggleinsert(Client *c, const Arg *a)
+{
+	if (c->mode == ModeInsert)
+		c->mode = ModeNormal;
+	else
+		c->mode = ModeInsert;
+	updatetitle(c);
 }
 
 void
