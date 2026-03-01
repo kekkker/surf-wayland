@@ -40,6 +40,7 @@ typedef struct Client {
 #endif
 	guint64 pageid;
 	int progress, fullscreen, https, insecure, errorpage;
+	int tab_id;
 	Mode mode;
 	/* Status bar widgets */
 	GtkWidget *vbox;        /* main vertical container */
@@ -53,4 +54,8 @@ typedef struct Client {
 void hints_start(Client *c, const Arg *a);
 void hints_cleanup(Client *c);
 gboolean hints_keypress(Client *c, GdkEventKey *e);
+void tab_new(Client *c, const Arg *a);
+void tab_close(Client *c, const Arg *a);
+void tab_next(Client *c, const Arg *a);
+void tab_prev(Client *c, const Arg *a);
 

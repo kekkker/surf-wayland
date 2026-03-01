@@ -726,6 +726,161 @@ getatom(Client *c, int a)
 	return "about:blank";  /* Fallback */
 }
 
+
+/* Tab/buffer management */
+typedef struct {
+	WebKitWebView **views;
+	int count;
+	int active;
+} TabState;
+
+static TabState tabs = { NULL, 0, -1 };
+
+static void
+tab_init(Client *c)
+{
+	if (tabs.count > 0)
+		return;
+
+	tabs.count = 1;
+	tabs.views = g_malloc(sizeof(WebKitWebView *));
+	tabs.views[0] = c->view;
+	tabs.active = 0;
+}
+
+static void
+tab_switch_to(Client *c, int index)
+{
+	if (index < 0 || index >= tabs.count || index == tabs.active)
+		return;
+
+	if (tabs.views[index] == NULL)
+		return;
+
+	/* Hide current — only if active is valid */
+	if (tabs.active >= 0 && tabs.active < tabs.count &&
+	    tabs.views[tabs.active] != NULL) {
+		gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
+	}
+
+	/* Show new */
+	tabs.active = index;
+	c->view = tabs.views[index];
+	c->pageid = webkit_web_view_get_page_id(c->view);
+	gtk_widget_show(GTK_WIDGET(c->view));
+	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+
+	/* Exit command mode if we were in it */
+	c->mode = ModeNormal;
+	gtk_widget_set_can_focus(c->statentry, FALSE);
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
+
+	c->title = webkit_web_view_get_title(c->view);
+	c->progress = webkit_web_view_get_estimated_load_progress(c->view) * 100;
+	updatetitle(c);
+}
+
+void
+tab_new(Client *c, const Arg *a)
+{
+	WebKitWebView *v;
+
+	tab_init(c);
+
+	v = newview(c, c->view);
+
+	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(v), TRUE, TRUE, 0);
+	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 0);
+
+	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
+
+	tabs.count++;
+	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
+	tabs.views[tabs.count - 1] = v;
+	tabs.active = tabs.count - 1;
+
+	c->view = v;
+	c->pageid = webkit_web_view_get_page_id(v);
+	c->title = NULL;
+	c->progress = 100;
+	c->mode = ModeNormal;
+
+	gtk_widget_show_all(GTK_WIDGET(v));
+	webkit_web_view_load_uri(v, "about:blank");
+
+	gtk_widget_set_can_focus(c->statentry, FALSE);
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
+	gtk_widget_grab_focus(GTK_WIDGET(v));
+	updatetitle(c);
+
+    Arg bar = { .i = 0 };
+    openbar(c, &bar);
+}
+
+void
+tab_close(Client *c, const Arg *a)
+{
+	int idx;
+
+	fprintf(stderr, "tab_close: count=%d active=%d\n", tabs.count, tabs.active);
+
+	if (tabs.count <= 1) {
+		fprintf(stderr, "tab_close: last tab, destroying window\n");
+		gtk_widget_destroy(c->win);
+		return;
+	}
+
+	idx = tabs.active;
+	fprintf(stderr, "tab_close: closing idx=%d\n", idx);
+
+	WebKitWebView *dead = tabs.views[idx];
+	fprintf(stderr, "tab_close: dead=%p\n", (void*)dead);
+
+	webkit_web_view_stop_loading(dead);
+	fprintf(stderr, "tab_close: stopped loading\n");
+
+	gtk_widget_hide(GTK_WIDGET(dead));
+	fprintf(stderr, "tab_close: hidden\n");
+
+	for (int i = idx; i < tabs.count - 1; i++)
+		tabs.views[i] = tabs.views[i + 1];
+	tabs.count--;
+	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
+	fprintf(stderr, "tab_close: removed from array, count=%d\n", tabs.count);
+
+	int new_idx = idx < tabs.count ? idx : tabs.count - 1;
+	fprintf(stderr, "tab_close: switching to %d\n", new_idx);
+	tabs.active = -1;
+	tab_switch_to(c, new_idx);
+	fprintf(stderr, "tab_close: switched\n");
+
+	g_signal_handlers_disconnect_matched(dead,
+		G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
+	fprintf(stderr, "tab_close: signals disconnected\n");
+
+	webkit_web_view_load_uri(dead, "about:blank");
+	fprintf(stderr, "tab_close: done\n");
+}
+
+void
+tab_next(Client *c, const Arg *a)
+{
+	tab_init(c);
+	if (tabs.count <= 1)
+		return;
+	int next = (tabs.active + 1) % tabs.count;
+	tab_switch_to(c, next);
+}
+
+void
+tab_prev(Client *c, const Arg *a)
+{
+	tab_init(c);
+	if (tabs.count <= 1)
+		return;
+	int prev = (tabs.active - 1 + tabs.count) % tabs.count;
+	tab_switch_to(c, prev);
+}
 /* Hint label characters (home row keys) */
 static const char *hintkeys = "asdfghjkl";
 
@@ -1016,37 +1171,26 @@ void
 updatetitle(Client *c)
 {
 	char *title;
-	const char *name = c->overtitle ? c->overtitle :
-	                   c->title ? c->title : "";
-	const char *modestr;
+	const char *name;
 
-	switch (c->mode) {
-	case ModeInsert:  modestr = "I"; break;
-	case ModeCommand: modestr = "C"; break;
-	default:          modestr = "N"; break;
-	}
+	if (c->overtitle)
+		name = c->overtitle;
+	else if (c->title)
+		name = c->title;
+	else
+		name = "";
 
-	if (curconfig[ShowIndicators].val.i) {
-		gettogglestats(c);
-		getpagestats(c);
-
-		if (c->progress != 100)
-			title = g_strdup_printf("[%s][%i%%] %s:%s | %s",
-			        modestr, c->progress, togglestats, pagestats, name);
-		else
-			title = g_strdup_printf("[%s] %s:%s | %s",
-			        modestr, togglestats, pagestats, name);
-
-		gtk_window_set_title(GTK_WINDOW(c->win), title);
-		g_free(title);
+	if (tabs.count > 1) {
+		title = g_strdup_printf("[%d/%d] %s",
+			tabs.active + 1, tabs.count, name);
 	} else {
-		title = g_strdup_printf("[%s] %s", modestr, name);
-		gtk_window_set_title(GTK_WINDOW(c->win), title);
-		g_free(title);
+		title = g_strdup(name);
 	}
 
-	updatebar(c);
+	gtk_window_set_title(GTK_WINDOW(c->win), title);
+	g_free(title);
 }
+
 
 void
 gettogglestats(Client *c)
@@ -2355,16 +2499,30 @@ webprocessterminated(WebKitWebView *v, WebKitWebProcessTerminationReason r,
 void
 closeview(WebKitWebView *v, Client *c)
 {
+	/* If we have tabs, close the tab instead of the window */
+	if (tabs.count > 1) {
+		/* Find which tab this view belongs to */
+		for (int i = 0; i < tabs.count; i++) {
+			if (tabs.views[i] == v) {
+				/* Switch to this tab first if not active */
+				if (i != tabs.active)
+					tab_switch_to(c, i);
+				tab_close(c, &(Arg){0});
+				return;
+			}
+		}
+	}
 	gtk_widget_destroy(c->win);
 }
 
 void
-destroywin(GtkWidget* w, Client *c)
+destroywin(GtkWidget *w, Client *c)
 {
 	destroyclient(c);
 	if (!clients)
 		gtk_main_quit();
 }
+
 
 void
 pasteuri(GtkClipboard *clipboard, const char *text, gpointer d)
