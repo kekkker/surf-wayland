@@ -719,6 +719,280 @@ getatom(Client *c, int a)
 	return "about:blank";  /* Fallback */
 }
 
+/* Hint label characters (home row keys) */
+static const char *hintkeys = "asdfghjkl";
+
+typedef struct {
+	char *label;
+	char *url;
+	void *element;  /* WebKitDOMElement */
+	int x, y;       /* Position for overlay */
+} Hint;
+
+typedef struct {
+	GArray *hints;
+	char *input;
+	HintMode mode;
+	int active;
+	guint64 pageid;
+} HintState;
+
+static HintState hintstate = {0};
+
+/* Generate hint labels - all same length to avoid ambiguity */
+static int
+hint_label_length(int count)
+{
+	int len = strlen(hintkeys);
+	int digits = 1;
+	int capacity = len;
+
+	while (capacity < count) {
+		digits++;
+		capacity *= len;
+	}
+
+	return digits;
+}
+
+static char *
+gen_hint_label(int index, int total)
+{
+	char *label;
+	int len = strlen(hintkeys);
+	int digits = hint_label_length(total);
+
+	label = g_malloc0(digits + 1);
+
+	for (int i = digits - 1; i >= 0; i--) {
+		label[i] = hintkeys[index % len];
+		index /= len;
+	}
+
+	return label;
+}
+
+/* Request hint data from web extension */
+static void
+request_hints_from_extension(Client *c)
+{
+	WebKitUserMessage *msg;
+	msg = webkit_user_message_new("hints-find-links", NULL);
+	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+}
+
+/* Cleanup hint state */
+void
+hints_cleanup(Client *c)
+{
+	if (!hintstate.active)
+		return;
+	
+	if (hintstate.hints) {
+		for (guint i = 0; i < hintstate.hints->len; i++) {
+			Hint *h = &g_array_index(hintstate.hints, Hint, i);
+			g_free(h->label);
+			g_free(h->url);
+		}
+		g_array_free(hintstate.hints, TRUE);
+		hintstate.hints = NULL;
+	}
+	
+	g_free(hintstate.input);
+	hintstate.input = NULL;
+	hintstate.active = 0;
+	
+	/* Tell extension to remove hint overlays */
+	WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
+	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+	
+	/* Return to normal mode */
+	c->mode = ModeNormal;
+	updatetitle(c);
+}
+
+/* Start hint mode */
+void
+hints_start(Client *c, const Arg *a)
+{
+	if (hintstate.active)
+		hints_cleanup(c);
+
+	hintstate.mode = a->i;
+	hintstate.active = 1;
+	hintstate.pageid = c->pageid;
+	hintstate.hints = g_array_new(FALSE, TRUE, sizeof(Hint));
+	hintstate.input = g_strdup("");
+
+	c->mode = ModeHint;
+
+	request_hints_from_extension(c);
+	updatetitle(c);
+}
+
+/* Filter hints based on input */
+static void
+filter_hints(Client *c)
+{
+	GVariantBuilder builder;
+
+	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(ssii)"));
+
+	for (guint i = 0; i < hintstate.hints->len; i++) {
+		Hint *h = &g_array_index(hintstate.hints, Hint, i);
+		if (g_str_has_prefix(h->label, hintstate.input)) {
+			g_variant_builder_add(&builder, "(ssii)",
+				h->label, h->url, h->x, h->y);
+		}
+	}
+
+	GVariant *hints_data = g_variant_builder_end(&builder);
+	WebKitUserMessage *msg = webkit_user_message_new("hints-update", hints_data);
+	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+}
+
+/* Follow a hint */
+static void
+follow_hint(Client *c, const char *label)
+{
+	Hint *target = NULL;
+	
+	for (guint i = 0; i < hintstate.hints->len; i++) {
+		Hint *h = &g_array_index(hintstate.hints, Hint, i);
+		if (strcmp(h->label, label) == 0) {
+			target = h;
+			break;
+		}
+	}
+	
+	if (!target) {
+		hints_cleanup(c);
+		return;
+	}
+	
+	Arg arg;
+	switch (hintstate.mode) {
+	case HintModeLink:
+		arg.v = target->url;
+		loaduri(c, &arg);
+		break;
+	case HintModeNewWindow:
+		arg.v = target->url;
+		newwindow(c, &arg, 0);
+		break;
+	case HintModeYank:
+		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
+		                       target->url, -1);
+		break;
+	}
+	
+	hints_cleanup(c);
+}
+
+/* Handle keypress in hint mode */
+gboolean
+hints_keypress(Client *c, GdkEventKey *e)
+{
+	char key;
+	char *newinput;
+	int label_len;
+
+	if (!hintstate.active || hintstate.pageid != c->pageid)
+		return FALSE;
+
+	/* Escape cancels */
+	if (e->keyval == GDK_KEY_Escape) {
+		hints_cleanup(c);
+		return TRUE;
+	}
+
+	/* Backspace removes character */
+	if (e->keyval == GDK_KEY_BackSpace) {
+		int len = strlen(hintstate.input);
+		if (len > 0) {
+			hintstate.input[len - 1] = '\0';
+			filter_hints(c);
+		} else {
+			hints_cleanup(c);
+		}
+		return TRUE;
+	}
+
+	/* Check if key is a hint key */
+	key = gdk_keyval_to_lower(e->keyval);
+	if (!strchr(hintkeys, key))
+		return TRUE;
+
+	/* Add to input */
+	newinput = g_strdup_printf("%s%c", hintstate.input, key);
+	g_free(hintstate.input);
+	hintstate.input = newinput;
+
+	/* Get the expected label length (all labels are same length) */
+	if (hintstate.hints->len == 0) {
+		hints_cleanup(c);
+		return TRUE;
+	}
+
+	label_len = strlen(g_array_index(hintstate.hints, Hint, 0).label);
+
+	/* Count matching hints */
+	int matches = 0;
+	char *matched_label = NULL;
+
+	for (guint i = 0; i < hintstate.hints->len; i++) {
+		Hint *h = &g_array_index(hintstate.hints, Hint, i);
+		if (g_str_has_prefix(h->label, hintstate.input)) {
+			matches++;
+			matched_label = h->label;
+		}
+	}
+
+	if (matches == 0) {
+		/* No matches */
+		hints_cleanup(c);
+	} else if ((int)strlen(hintstate.input) == label_len && matches == 1) {
+		/* Full label typed - follow it */
+		follow_hint(c, matched_label);
+	} else {
+		/* Still typing - filter display */
+		filter_hints(c);
+	}
+
+	return TRUE;
+}
+
+/* Receive hints data from extension */
+void
+hints_receive_data(Client *c, GVariant *data)
+{
+	GVariantIter iter;
+	const gchar *url;
+	gint x, y, width, height;
+	int index = 0;
+	int total;
+
+	total = g_variant_n_children(data);
+
+	if (total == 0) {
+		hints_cleanup(c);
+		return;
+	}
+
+	g_variant_iter_init(&iter, data);
+
+	while (g_variant_iter_loop(&iter, "(siiii)", &url, &x, &y, &width, &height)) {
+		Hint hint;
+		hint.label = gen_hint_label(index++, total);
+		hint.url = g_strdup(url);
+		hint.x = x;
+		hint.y = y;
+		g_array_append_val(hintstate.hints, hint);
+	}
+
+	filter_hints(c);
+}
+
 void
 updatetitle(Client *c)
 {
@@ -1506,6 +1780,10 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 			return FALSE; /* pass all keys to webpage */
 		}
 
+        if (c->mode == ModeHint) {
+            return hints_keypress(c, &e->key);
+        }
+
 		/* Normal mode: process keybinds */
 		for (i = 0; i < LENGTH(keys); ++i) {
 			if (gdk_keyval_to_lower(e->key.keyval) ==
@@ -1803,14 +2081,35 @@ titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 #endif
 }
 
-gboolean
+static gboolean
 viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
 {
-	WebKitUserMessage *r;
-	GUnixFDList *gfd;
 	const char *name;
+	GUnixFDList *gfd;
+	WebKitUserMessage *r;
+	Client *c;
 
 	name = webkit_user_message_get_name(m);
+
+	/* Find the client for this view */
+	for (c = clients; c; c = c->next) {
+		if (c->view == v)
+			break;
+	}
+
+	if (!c) {
+		return TRUE;
+	}
+
+	/* Handle hints data from extension */
+	if (strcmp(name, "hints-data") == 0) {
+		GVariant *params = webkit_user_message_get_parameters(m);
+		if (params && g_variant_is_of_type(params, G_VARIANT_TYPE("a(siiii)"))) {
+			hints_receive_data(c, params);
+		}
+		return TRUE;
+	}
+
 	if (strcmp(name, "page-created") != 0) {
 		fprintf(stderr, "surf: Unknown UserMessage: %s\n", name);
 		return TRUE;

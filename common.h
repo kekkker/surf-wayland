@@ -13,8 +13,17 @@ typedef enum {
 	ModeNormal,
 	ModeInsert,
 	ModeCommand,
+	ModeHint,
 } Mode;
 
+/* Hint mode types */
+typedef enum {
+	HintModeLink,      /* Follow links */
+	HintModeNewWindow, /* Open in new window */
+	HintModeYank,      /* Yank URL */
+} HintMode;
+
+/* Hint functions */
 typedef struct Client {
 	GtkWidget *win;
 	WebKitWebView *view;
@@ -40,3 +49,8 @@ typedef struct Client {
 	const char *needle;
 	struct Client *next;
 } Client;
+
+void hints_start(Client *c, const Arg *a);
+void hints_cleanup(Client *c);
+gboolean hints_keypress(Client *c, GdkEventKey *e);
+

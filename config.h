@@ -185,6 +185,9 @@ static Key keys[] = {
 	{ 0,                     GDK_KEY_r,      reload,     { .i = 0 } },
 	{ 0,                     GDK_KEY_g,      scrollv,    { .i = -100 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_g,      scrollv,    { .i = +100 } },
+    { 0,                     GDK_KEY_f,      hints_start, { .i = HintModeLink } },
+    { GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
+    { 0,                     GDK_KEY_y,      hints_start, { .i = HintModeYank } },
 };
 
 /* button definitions */
