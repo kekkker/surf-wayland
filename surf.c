@@ -602,7 +602,7 @@ void
 loaduri(Client *c, const Arg *a)
 {
 	struct stat st;
-	char *url, *path, *apath;
+	char *url, *path, *apath, *encoded;
 	const char *uri = a->v;
 
 	if (g_strcmp0(uri, "") == 0)
@@ -622,8 +622,15 @@ loaduri(Client *c, const Arg *a)
 		if (!stat(apath, &st) && (path = realpath(apath, NULL))) {
 			url = g_strdup_printf("file://%s", path);
 			free(path);
-		} else {
+		} else if ((strchr(uri, '.') && !strchr(uri, ' ')) ||
+		           g_str_has_prefix(uri, "localhost")) {
+			/* Looks like a URL */
 			url = g_strdup_printf("https://%s", uri);
+		} else {
+			/* Search query */
+			encoded = g_uri_escape_string(uri, NULL, TRUE);
+			url = g_strdup_printf(searchengine, encoded);
+			g_free(encoded);
 		}
 		if (apath != uri)
 			free(apath);

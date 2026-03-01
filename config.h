@@ -210,3 +210,5 @@ static const char *stat_fg_command = "#ffffff";
 static const char *stat_fg_url     = "#87afd7"; /* blue for URLs */
 static const char *stat_fg_https   = "#5faf5f"; /* green for HTTPS */
 static const char *stat_font       = "monospace 11";
+
+static const char *searchengine = "https://duckduckgo.com/?q=%s";
