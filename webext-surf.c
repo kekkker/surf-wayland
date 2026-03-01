@@ -78,6 +78,29 @@ evalmsg(char *msg, size_t sz)
 	return sz;
 }
 
+static void
+click_at(WebKitWebPage *page, int x, int y)
+{
+	WebKitDOMDocument *doc;
+	gchar *js;
+
+	doc = webkit_web_page_get_dom_document(page);
+	js = g_strdup_printf(
+		"document.elementFromPoint(%d, %d).click();", x, y);
+
+	/* Execute via a script element */
+	WebKitDOMElement *script = webkit_dom_document_create_element(doc, "script", NULL);
+	webkit_dom_element_set_inner_html(script, js, NULL);
+	webkit_dom_node_append_child(
+		WEBKIT_DOM_NODE(webkit_dom_document_get_body(doc)),
+		WEBKIT_DOM_NODE(script), NULL);
+	webkit_dom_node_remove_child(
+		WEBKIT_DOM_NODE(webkit_dom_document_get_body(doc)),
+		WEBKIT_DOM_NODE(script), NULL);
+
+	g_free(js);
+}
+
 /* Find all clickable elements using DOM */
 static void
 find_hints(WebKitWebPage *page)
@@ -141,8 +164,12 @@ find_hints(WebKitWebPage *page)
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
 			if (width >= 3 && height >= 3) {
+				/* Mark as clickable with position for click simulation */
+				gchar *marker = g_strdup_printf("[click:%d,%d]",
+					(gint)(x + width/2), (gint)(y + height/2));
 				g_variant_builder_add(&builder, "(siiii)",
-					"[button]", (gint)x, (gint)y, (gint)width, (gint)height);
+					marker, (gint)x, (gint)y, (gint)width, (gint)height);
+				g_free(marker);
 			}
 
 			g_object_unref(rect);
@@ -228,6 +255,12 @@ hint_message_received(WebKitWebPage *page, WebKitUserMessage *message)
 				webkit_dom_node_get_parent_node(WEBKIT_DOM_NODE(container)),
 				WEBKIT_DOM_NODE(container), NULL);
 		}
+		return TRUE;
+	} else if (strcmp(name, "hints-click") == 0) {
+		GVariant *data = webkit_user_message_get_parameters(message);
+		gint x, y;
+		g_variant_get(data, "(ii)", &x, &y);
+		click_at(page, x, y);
 		return TRUE;
 	}
 

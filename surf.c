@@ -863,7 +863,7 @@ static void
 follow_hint(Client *c, const char *label)
 {
 	Hint *target = NULL;
-	
+
 	for (guint i = 0; i < hintstate.hints->len; i++) {
 		Hint *h = &g_array_index(hintstate.hints, Hint, i);
 		if (strcmp(h->label, label) == 0) {
@@ -871,12 +871,24 @@ follow_hint(Client *c, const char *label)
 			break;
 		}
 	}
-	
+
 	if (!target) {
 		hints_cleanup(c);
 		return;
 	}
-	
+
+	/* Check if this is a clickable element (not a URL) */
+	if (g_str_has_prefix(target->url, "[click:")) {
+		int cx, cy;
+		if (sscanf(target->url, "[click:%d,%d]", &cx, &cy) == 2) {
+			GVariant *data = g_variant_new("(ii)", cx, cy);
+			WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
+			webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+		}
+		hints_cleanup(c);
+		return;
+	}
+
 	Arg arg;
 	switch (hintstate.mode) {
 	case HintModeLink:
@@ -892,7 +904,7 @@ follow_hint(Client *c, const char *label)
 		                       target->url, -1);
 		break;
 	}
-	
+
 	hints_cleanup(c);
 }
 
