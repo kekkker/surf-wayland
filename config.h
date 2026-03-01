@@ -174,6 +174,8 @@ static Key keys[] = {
 	{ 0,                     GDK_KEY_Escape, stop,       { 0 } },
 	{ 0,                     GDK_KEY_F11,    togglefullscreen, { 0 } },
 	{ 0,                     GDK_KEY_i,      toggleinsert, { 0 } },
+	{ 0,                     GDK_KEY_o,      openbar,    { .i = 0 } }, /* open bar with current URL */
+	{ GDK_SHIFT_MASK,        GDK_KEY_o,      openbar,    { .i = 1 } }, /* open bar empty */
 	{ 0,                     GDK_KEY_j,      scrollv,    { .i = +10 } },
 	{ 0,                     GDK_KEY_k,      scrollv,    { .i = -10 } },
 	{ 0,                     GDK_KEY_d,      scrollv,    { .i = +50 } },
@@ -182,7 +184,7 @@ static Key keys[] = {
 	{ 0,                     GDK_KEY_l,      navigate,   { .i = +1 } },
 	{ 0,                     GDK_KEY_r,      reload,     { .i = 0 } },
 	{ 0,                     GDK_KEY_g,      scrollv,    { .i = -100 } },
-	{ 0|GDK_SHIFT_MASK,     GDK_KEY_G,      scrollv,    { .i = +100 } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_g,      scrollv,    { .i = +100 } },
 };
 
 /* button definitions */
@@ -196,3 +198,12 @@ static Button buttons[] = {
 	{ OnAny,        0,              9,      clicknavigate,  { .i = +1 },    1 },
 	{ OnMedia,      MODKEY,         1,      clickexternplayer, { 0 },       1 },
 };
+
+/* Status bar colors - qutebrowser style */
+static const char *stat_bg_normal  = "#000000";
+static const char *stat_fg_normal  = "#ffffff";
+static const char *stat_bg_command = "#000000";
+static const char *stat_fg_command = "#ffffff";
+static const char *stat_fg_url     = "#87afd7"; /* blue for URLs */
+static const char *stat_fg_https   = "#5faf5f"; /* green for HTTPS */
+static const char *stat_font       = "monospace 11";

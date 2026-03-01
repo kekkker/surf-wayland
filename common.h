@@ -12,6 +12,7 @@
 typedef enum {
 	ModeNormal,
 	ModeInsert,
+	ModeCommand,
 } Mode;
 
 typedef struct Client {
@@ -31,6 +32,10 @@ typedef struct Client {
 	guint64 pageid;
 	int progress, fullscreen, https, insecure, errorpage;
 	Mode mode;
+	/* Status bar widgets */
+	GtkWidget *vbox;        /* main vertical container */
+	GtkWidget *statusbar;   /* bottom bar container */
+	GtkWidget *statentry;   /* combined display/edit widget */
 	const char *title, *overtitle, *targeturi;
 	const char *needle;
 	struct Client *next;

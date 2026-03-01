@@ -239,6 +239,11 @@ static void toggleinspector(Client *c, const Arg *a);
 static void find(Client *c, const Arg *a);
 static void showxid(Client *c, const Arg *a);
 static void toggleinsert(Client *c, const Arg *a);
+static void openbar(Client *c, const Arg *a);
+static void closebar(Client *c);
+static void updatebar(Client *c);
+static void baractivate(GtkEntry *entry, Client *c);
+static gboolean barkeypress(GtkWidget *w, GdkEvent *e, Client *c);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
@@ -723,8 +728,9 @@ updatetitle(Client *c)
 	const char *modestr;
 
 	switch (c->mode) {
-	case ModeInsert: modestr = "I"; break;
-	default:         modestr = "N"; break;
+	case ModeInsert:  modestr = "I"; break;
+	case ModeCommand: modestr = "C"; break;
+	default:          modestr = "N"; break;
 	}
 
 	if (curconfig[ShowIndicators].val.i) {
@@ -745,6 +751,8 @@ updatetitle(Client *c)
 		gtk_window_set_title(GTK_WINDOW(c->win), title);
 		g_free(title);
 	}
+
+	updatebar(c);
 }
 
 void
@@ -1483,6 +1491,10 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 		if (curconfig[KioskMode].val.i)
 			break;
 
+		/* Command mode: keys go to the bar entry */
+		if (c->mode == ModeCommand)
+			return FALSE; /* GTK handles entry input */
+
 		/* Insert mode: pass everything except Escape */
 		if (c->mode == ModeInsert) {
 			if (e->key.keyval == GDK_KEY_Escape) {
@@ -1531,6 +1543,8 @@ showview(WebKitWebView *v, Client *c)
 {
 	GdkRGBA bgcolor = { 0 };
 	GdkWindow *gwin;
+	GtkCssProvider *css;
+	char *cssstr;
 
 	c->finder = webkit_web_view_get_find_controller(c->view);
 	c->inspector = webkit_web_view_get_inspector(c->view);
@@ -1538,7 +1552,62 @@ showview(WebKitWebView *v, Client *c)
 	c->pageid = webkit_web_view_get_page_id(c->view);
 	c->win = createwindow(c);
 
-	gtk_container_add(GTK_CONTAINER(c->win), GTK_WIDGET(c->view));
+	/* Build layout: vbox with webview on top, status bar on bottom */
+	c->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(c->view),
+	                   TRUE, TRUE, 0);
+
+	/* Status bar container */
+	c->statusbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+	/* Single entry widget - always visible, toggles between display/edit modes */
+	c->statentry = gtk_entry_new();
+	gtk_widget_set_hexpand(c->statentry, TRUE);
+	gtk_widget_set_can_focus(c->statentry, FALSE); /* non-editable by default */
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
+	gtk_entry_set_has_frame(GTK_ENTRY(c->statentry), FALSE);
+	g_signal_connect(G_OBJECT(c->statentry), "activate",
+	                 G_CALLBACK(baractivate), c);
+	g_signal_connect(G_OBJECT(c->statentry), "key-press-event",
+	                 G_CALLBACK(barkeypress), c);
+	gtk_box_pack_start(GTK_BOX(c->statusbar), c->statentry, TRUE, TRUE, 0);
+
+	gtk_box_pack_end(GTK_BOX(c->vbox), c->statusbar, FALSE, FALSE, 0);
+
+	/* Style the status bar - thinner, pure black, single entry */
+	css = gtk_css_provider_new();
+	cssstr = g_strdup_printf(
+	    "#surf-statusbar {"
+	    "  background-color: %s;"
+	    "  padding: 1px 6px;"
+	    "  min-height: 18px;"
+	    "}"
+	    "#surf-statentry {"
+	    "  background-color: %s;"
+	    "  color: %s;"
+	    "  font: %s;"
+	    "  border: none;"
+	    "  border-radius: 0;"
+	    "  padding: 1px 6px;"
+	    "  min-height: 18px;"
+	    "}",
+	    stat_bg_normal,
+	    stat_bg_normal, stat_fg_normal, stat_font);
+	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
+	g_free(cssstr);
+
+	gtk_widget_set_name(c->statusbar, "surf-statusbar");
+	gtk_widget_set_name(c->statentry, "surf-statentry");
+
+	gtk_style_context_add_provider(
+	    gtk_widget_get_style_context(c->statusbar),
+	    GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	gtk_style_context_add_provider(
+	    gtk_widget_get_style_context(c->statentry),
+	    GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref(css);
+
+	gtk_container_add(GTK_CONTAINER(c->win), c->vbox);
 	gtk_widget_show_all(c->win);
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
@@ -1577,6 +1646,7 @@ showview(WebKitWebView *v, Client *c)
 
 	setatom(c, AtomFind, "");
 	setatom(c, AtomUri, "about:blank");
+	updatebar(c);
 }
 
 GtkWidget *
@@ -1648,7 +1718,7 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 		    "Some error occurred validating the certificate.<br>");
 
 	g_object_get(cert, "certificate-pem", &pem, NULL);
-        html = g_strdup_printf("<p>Could not validate TLS for &ldquo;%s&rdquo;<br>%s</p>"
+	html = g_strdup_printf("<p>Could not validate TLS for &ldquo;%s&rdquo;<br>%s</p>"
 	                       "<p>You can inspect the following certificate "
 	                       "with Ctrl-t (default keybinding).</p>"
 	                       "<p><pre>%s</pre></p>", uri, errmsg->str, pem);
@@ -2162,6 +2232,110 @@ find(Client *c, const Arg *a)
 		if (strcmp(s, "") == 0)
 			webkit_find_controller_search_finish(c->finder);
 	}
+}
+
+void
+updatebar(Client *c)
+{
+	char *text;
+	const char *uri, *modestr;
+
+	if (!c->statentry)
+		return;
+
+	/* Don't update if in command mode (user is editing) */
+	if (c->mode == ModeCommand)
+		return;
+
+	uri = geturi(c);
+
+	switch (c->mode) {
+	case ModeInsert:  modestr = "INSERT"; break;
+	case ModeCommand: modestr = "COMMAND"; break;
+	default:          modestr = "NORMAL"; break;
+	}
+
+	if (c->progress != 100)
+		text = g_strdup_printf(" [%s] [%i%%] %s", modestr,
+		                       c->progress, uri);
+	else
+		text = g_strdup_printf(" [%s] %s", modestr, uri);
+
+	gtk_entry_set_text(GTK_ENTRY(c->statentry), text);
+	g_free(text);
+}
+
+void
+openbar(Client *c, const Arg *a)
+{
+	const char *uri;
+
+	c->mode = ModeCommand;
+
+	/* Make entry editable and focusable */
+	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
+
+	if (a->i) {
+		/* 'o' - prefill with current URL */
+		uri = geturi(c);
+		gtk_entry_set_text(GTK_ENTRY(c->statentry),
+		                   g_strdup_printf(" [COMMAND] %s", uri));
+	} else {
+		/* 'O' - empty for new URL */
+		gtk_entry_set_text(GTK_ENTRY(c->statentry), " [COMMAND] ");
+	}
+
+	gtk_widget_grab_focus(c->statentry);
+	/* Place cursor at end */
+	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+
+	updatetitle(c);
+}
+
+void
+closebar(Client *c)
+{
+	c->mode = ModeNormal;
+
+	/* Make entry non-editable and non-focusable */
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
+	gtk_widget_set_can_focus(c->statentry, FALSE);
+
+	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	updatetitle(c);
+	updatebar(c); /* restore normal display */
+}
+
+void
+baractivate(GtkEntry *entry, Client *c)
+{
+	const char *text, *url;
+	Arg a;
+
+	text = gtk_entry_get_text(entry);
+
+	/* Skip past "[COMMAND] " prefix */
+	url = text;
+	if (g_str_has_prefix(text, " [COMMAND] "))
+		url = text + 11; /* strlen(" [COMMAND] ") */
+
+	if (url && *url) {
+		a.v = url;
+		loaduri(c, &a);
+	}
+
+	closebar(c);
+}
+
+gboolean
+barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
+{
+	if (e->key.keyval == GDK_KEY_Escape) {
+		closebar(c);
+		return TRUE;
+	}
+	return FALSE;
 }
 
 void
