@@ -265,6 +265,24 @@ static void setup_fifo(Client *c);
 static void spawnuserscript(Client *c, const Arg *a);
 static void inject_userscripts_early(WebKitUserContentManager *cm, const char *uri);
 
+static GArray *history_entries = NULL;
+static char *historyfile;
+static void history_add(const char *uri, const char *title);
+static void history_load(void);
+static void history_filter(Client *c, const char *text);
+static void history_select(Client *c, int direction);
+static void history_hide(Client *c);
+static gboolean bar_update_filter(gpointer data);
+static GtkWidget *history_list = NULL;
+static GtkWidget *history_scroll = NULL;
+static int history_selected = -1;
+
+typedef struct {
+	char *uri;
+	char *title;
+	long timestamp;
+} HistoryEntry;
+
 #ifdef X11_SUPPORT
 static Atom atoms[AtomLast];
 static Window embed;
@@ -401,6 +419,7 @@ setup(void)
 
 	/* dirs and files */
 	cookiefile = buildfile(cookiefile);
+	historyfile = buildfile("~/.surf/history");
 	scriptfile = buildfile(scriptfile);
 	certdir    = buildpath(certdir);
 	if (curconfig[Ephemeral].val.i)
@@ -789,8 +808,7 @@ tab_switch_to(Client *c, int index)
 }
 
 void
-tab_new(Client *c, const Arg *a)
-{
+tab_new(Client *c, const Arg *a) {
 	WebKitWebView *v;
 
 	tab_init(c);
@@ -821,8 +839,11 @@ tab_new(Client *c, const Arg *a)
 	gtk_widget_grab_focus(GTK_WIDGET(v));
 	updatetitle(c);
 
-    Arg bar = { .i = 0 };
-    openbar(c, &bar);
+	/* Only open bar if called directly (not from hints etc) */
+	if (a && a->i == 0) {
+		Arg bar = { .i = 0 };
+		openbar(c, &bar);
+	}
 }
 
 void
@@ -1059,17 +1080,14 @@ static void follow_hint(Client *c, const char *label) {
 		loaduri(c, &arg);
 		break;
 	case HintModeNewWindow:
-		/* Clean up hints on the CURRENT tab before switching */
 		{
 			WebKitWebView *old_view = c->view;
-			
-			/* Remove hint overlays from current tab */
+
 			WebKitUserMessage *clear_msg = webkit_user_message_new("hints-clear", NULL);
 			webkit_web_view_send_message_to_page(old_view, clear_msg, NULL, NULL, NULL);
-			
-			/* Now open new tab and load URL */
+
 			tab_init(c);
-			tab_new(c, &(Arg){0});
+			tab_new(c, &(Arg){ .i = 1 }); /* .i = 1 means skip openbar */
 			arg.v = target->url;
 			loaduri(c, &arg);
 		}
@@ -1660,6 +1678,7 @@ cleanup(void)
         unlink(surf_fifo);
         g_free(surf_fifo);
     }
+	g_free(historyfile);
 }
 
 /* Function to handle display backend failures */
@@ -2198,9 +2217,7 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 	return TRUE;
 }
 
-void
-loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
-{
+void loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c) {
     const char *uri = geturi(c);
 
     switch (e) {
@@ -2228,10 +2245,12 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
         break;
     case WEBKIT_LOAD_FINISHED:
         seturiparameters(c, uri, loadfinished);
+        /* Save to history with title */
+        history_add(uri, c->title);
         runscript(c);
         break;
-	}
-	updatetitle(c);
+    }
+    updatetitle(c);
 }
 
 void
@@ -2256,11 +2275,13 @@ titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 	c->title = webkit_web_view_get_title(c->view);
 	updatetitle(c);
 
+	/* Update history entry with the actual title */
+	const char *uri = geturi(c);
+	if (c->title && *c->title && uri && !g_str_has_prefix(uri, "about:"))
+		history_add(uri, c->title);
+
 #ifdef WAYLAND_SUPPORT
-	/* Emit D-Bus signal for external tools */
 	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		/* Emit title change signal if needed */
-		/* For now, we focus on URI changes which are more important */
 	}
 #endif
 }
@@ -2770,23 +2791,27 @@ openbar(Client *c, const Arg *a)
 
 	c->mode = ModeCommand;
 
+	/* Load history for completions */
+	history_load();
+
 	/* Make entry editable and focusable */
 	gtk_widget_set_can_focus(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
 	if (a->i) {
-		/* 'o' - prefill with current URL */
+		/* 'e' - prefill with current URL */
 		uri = geturi(c);
 		gtk_entry_set_text(GTK_ENTRY(c->statentry),
 		                   g_strdup_printf(" [COMMAND] %s", uri));
 	} else {
-		/* 'O' - empty for new URL */
+		/* 'o' - empty for new URL */
 		gtk_entry_set_text(GTK_ENTRY(c->statentry), " [COMMAND] ");
 	}
 
 	gtk_widget_grab_focus(c->statentry);
-	/* Place cursor at end */
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+
+	history_filter(c, "");
 
 	updatetitle(c);
 }
@@ -2796,13 +2821,15 @@ closebar(Client *c)
 {
 	c->mode = ModeNormal;
 
+	history_hide(c);
+
 	/* Make entry non-editable and non-focusable */
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_set_can_focus(c->statentry, FALSE);
 
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 	updatetitle(c);
-	updatebar(c); /* restore normal display */
+	updatebar(c);
 }
 
 void
@@ -2816,7 +2843,9 @@ baractivate(GtkEntry *entry, Client *c)
 	/* Skip past "[COMMAND] " prefix */
 	url = text;
 	if (g_str_has_prefix(text, " [COMMAND] "))
-		url = text + 11; /* strlen(" [COMMAND] ") */
+		url = text + 11;
+
+	history_hide(c);
 
 	if (url && *url) {
 		a.v = url;
@@ -2833,7 +2862,50 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 		closebar(c);
 		return TRUE;
 	}
+
+	/* Tab / Shift+Tab to navigate completions */
+	if (e->key.keyval == GDK_KEY_Tab) {
+		if (e->key.state & GDK_SHIFT_MASK)
+			history_select(c, -1);
+		else
+			history_select(c, +1);
+		return TRUE;
+	}
+
+	/* Ctrl+n / Ctrl+p for completion navigation */
+	if ((e->key.state & GDK_CONTROL_MASK) && e->key.keyval == GDK_KEY_n) {
+		history_select(c, +1);
+		return TRUE;
+	}
+	if ((e->key.state & GDK_CONTROL_MASK) && e->key.keyval == GDK_KEY_p) {
+		history_select(c, -1);
+		return TRUE;
+	}
+
+	/* After any other key, update filter on idle so the entry text is updated first */
+	g_idle_add((GSourceFunc)bar_update_filter, c);
+
 	return FALSE;
+}
+
+static gboolean
+bar_update_filter(gpointer data)
+{
+	Client *c = (Client *)data;
+	const char *text;
+
+	if (c->mode != ModeCommand)
+		return FALSE;
+
+	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
+
+	/* Skip past "[COMMAND] " prefix */
+	if (g_str_has_prefix(text, " [COMMAND] "))
+		text = text + 11;
+
+	history_filter(c, text);
+
+	return FALSE; /* don't repeat */
 }
 
 void
@@ -3248,6 +3320,445 @@ inject_userscripts_early(WebKitUserContentManager *cm, const char *uri)
 
     g_dir_close(dir);
     g_free(scriptdir);
+}
+
+static void
+history_load(void)
+{
+	gchar *contents = NULL;
+	gchar **lines;
+	int i;
+
+	if (history_entries) {
+		for (i = 0; i < (int)history_entries->len; i++) {
+			HistoryEntry *e = &g_array_index(history_entries, HistoryEntry, i);
+			g_free(e->uri);
+			g_free(e->title);
+		}
+		g_array_free(history_entries, TRUE);
+	}
+
+	history_entries = g_array_new(FALSE, TRUE, sizeof(HistoryEntry));
+
+	if (!historyfile)
+		return;
+
+	if (!g_file_get_contents(historyfile, &contents, NULL, NULL) || !contents)
+		return;
+
+	lines = g_strsplit(contents, "\n", -1);
+	for (i = 0; lines[i]; i++) {
+		if (!lines[i][0])
+			continue;
+
+		/* Format: timestamp<space>url[<space>title] */
+		char *space1 = strchr(lines[i], ' ');
+		if (!space1)
+			continue;
+
+		long ts = atol(lines[i]);
+		char *url = space1 + 1;
+		char *space2 = strchr(url, ' ');
+		
+		HistoryEntry entry;
+		entry.timestamp = ts;
+		if (space2) {
+			entry.uri = g_strndup(url, space2 - url);
+			entry.title = g_strdup(space2 + 1);
+		} else {
+			entry.uri = g_strdup(url);
+			entry.title = NULL;
+		}
+		g_array_append_val(history_entries, entry);
+	}
+
+	g_strfreev(lines);
+	g_free(contents);
+}
+
+static void
+history_add(const char *uri, const char *title)
+{
+	FILE *f;
+	gchar *contents = NULL;
+
+	if (!uri || !*uri || !historyfile)
+		return;
+	if (g_str_has_prefix(uri, "about:"))
+		return;
+	if (g_str_has_prefix(uri, "file://"))
+		return;
+
+	/* Read existing history */
+	gboolean have_contents = g_file_get_contents(historyfile, &contents, NULL, NULL) && contents;
+
+	if (have_contents) {
+		gchar **lines = g_strsplit(contents, "\n", -1);
+		GString *newcontents = g_string_new(NULL);
+		gboolean dominated = FALSE;
+
+		/* Check if the most recent entry already has this URL WITH a title */
+		for (int i = g_strv_length(lines) - 1; i >= 0; i--) {
+			if (!lines[i] || !*lines[i])
+				continue;
+
+			char *space = strchr(lines[i], ' ');
+			if (!space)
+				break;
+
+			char *saved_url = space + 1;
+			char *next_space = strchr(saved_url, ' ');
+			gchar *url_only;
+			if (next_space)
+				url_only = g_strndup(saved_url, next_space - saved_url);
+			else
+				url_only = g_strdup(saved_url);
+
+			if (strcmp(url_only, uri) == 0) {
+				/* Same URL exists - only skip if it already has a title
+				 * and we don't have a better one */
+				if (next_space && *(next_space + 1) && (!title || !*title)) {
+					g_free(url_only);
+					g_strfreev(lines);
+					g_free(contents);
+					return; /* Already have a titled entry, nothing new to add */
+				}
+			}
+			g_free(url_only);
+			break; /* Only check most recent */
+		}
+
+		/* Remove ALL old entries with same URI */
+		for (int i = 0; lines[i]; i++) {
+			if (!lines[i][0])
+				continue;
+			char *space = strchr(lines[i], ' ');
+			if (!space)
+				continue;
+			char *saved_url = space + 1;
+			char *next_space = strchr(saved_url, ' ');
+			gchar *url_only;
+			if (next_space)
+				url_only = g_strndup(saved_url, next_space - saved_url);
+			else
+				url_only = g_strdup(saved_url);
+
+			if (strcmp(url_only, uri) != 0) {
+				g_string_append(newcontents, lines[i]);
+				g_string_append_c(newcontents, '\n');
+			}
+			g_free(url_only);
+		}
+
+		g_strfreev(lines);
+		g_free(contents);
+
+		if (!(f = fopen(historyfile, "w"))) {
+			g_string_free(newcontents, TRUE);
+			return;
+		}
+		fwrite(newcontents->str, 1, newcontents->len, f);
+		g_string_free(newcontents, TRUE);
+	} else {
+		if (!(f = fopen(historyfile, "a")))
+			return;
+	}
+
+	if (title && *title)
+		fprintf(f, "%ld %s %s\n", (long)time(NULL), uri, title);
+	else
+		fprintf(f, "%ld %s\n", (long)time(NULL), uri);
+	fclose(f);
+}
+
+static void
+history_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data)
+{
+	Client *c = (Client *)data;
+	GtkWidget *label;
+	const char *text;
+
+	label = gtk_bin_get_child(GTK_BIN(row));
+	if (!label)
+		return;
+
+	text = gtk_widget_get_name(label);
+	if (text && *text) {
+		Arg a = { .v = text };
+		history_hide(c);
+		closebar(c);
+		loaduri(c, &a);
+	}
+}
+
+static void
+history_hide(Client *c)
+{
+	if (history_scroll) {
+		gtk_widget_destroy(history_scroll);
+		history_scroll = NULL;
+		history_list = NULL;
+	}
+	history_selected = -1;
+}
+
+
+static void
+history_filter(Client *c, const char *text)
+{
+	int count = 0;
+	const int max_results = 15;
+	GHashTable *seen;
+	GList *children, *iter;
+	GtkCssProvider *css;
+
+	if (!history_entries || !text)
+		return;
+
+	if (g_str_has_prefix(text, " [COMMAND] "))
+		text = text + 11;
+
+	if (!history_scroll) {
+		history_scroll = gtk_scrolled_window_new(NULL, NULL);
+		gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(history_scroll),
+			GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+
+		history_list = gtk_list_box_new();
+		gtk_list_box_set_selection_mode(GTK_LIST_BOX(history_list),
+			GTK_SELECTION_NONE);
+		gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(history_list), TRUE);
+		g_signal_connect(history_list, "row-activated",
+			G_CALLBACK(history_row_activated), c);
+		gtk_container_add(GTK_CONTAINER(history_scroll), history_list);
+
+		/* Find where statusbar is */
+		GList *kids = gtk_container_get_children(GTK_CONTAINER(c->vbox));
+		int statusbar_pos = 0;
+		int idx = 0;
+		for (GList *l = kids; l; l = l->next, idx++) {
+			if (l->data == c->statusbar) {
+				statusbar_pos = idx;
+				break;
+			}
+		}
+		g_list_free(kids);
+
+		/* Insert history right before statusbar */
+		gtk_box_pack_start(GTK_BOX(c->vbox), history_scroll, FALSE, FALSE, 0);
+		gtk_box_reorder_child(GTK_BOX(c->vbox), history_scroll, statusbar_pos);
+
+		css = gtk_css_provider_new();
+		gtk_css_provider_load_from_data(css,
+			"#history-scroll {"
+			"  background-color: #1a1a1a;"
+			"}"
+			"#history-list {"
+			"  background-color: #1a1a1a;"
+			"}"
+			"#history-list row {"
+			"  background-color: #1a1a1a;"
+			"  color: #cccccc;"
+			"  padding: 0;"
+			"  outline: none;"
+			"  border: none;"
+			"  box-shadow: none;"
+			"}"
+			"#history-list row:focus {"
+			"  background-color: #1a1a1a;"
+			"  outline: none;"
+			"  box-shadow: none;"
+			"}"
+			"#history-list row:hover {"
+			"  background-color: #1a1a1a;"
+			"}"
+			"#history-list row.hl {"
+			"  background-color: #333333;"
+			"}"
+			"#history-list row label {"
+			"  font-family: monospace;"
+			"  font-size: 11px;"
+			"  padding: 2px 6px;"
+			"  color: #cccccc;"
+			"}", -1, NULL);
+
+		gtk_widget_set_name(history_scroll, "history-scroll");
+		gtk_widget_set_name(history_list, "history-list");
+
+		GtkStyleContext *sc;
+		sc = gtk_widget_get_style_context(history_scroll);
+		gtk_style_context_add_provider(sc, GTK_STYLE_PROVIDER(css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+		sc = gtk_widget_get_style_context(history_list);
+		gtk_style_context_add_provider(sc, GTK_STYLE_PROVIDER(css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+
+		g_object_set_data_full(G_OBJECT(history_list), "css",
+			css, g_object_unref);
+	}
+
+	/* Clear existing rows */
+	children = gtk_container_get_children(GTK_CONTAINER(history_list));
+	for (iter = children; iter; iter = iter->next)
+		gtk_widget_destroy(GTK_WIDGET(iter->data));
+	g_list_free(children);
+
+	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+	for (int i = history_entries->len - 1; i >= 0 && count < max_results; i--) {
+		HistoryEntry *e = &g_array_index(history_entries, HistoryEntry, i);
+
+		if (g_hash_table_contains(seen, e->uri))
+			continue;
+
+		if (text[0]) {
+			gchar *uri_lower = g_utf8_strdown(e->uri, -1);
+			gchar *text_lower = g_utf8_strdown(text, -1);
+			gchar *title_lower = e->title ? g_utf8_strdown(e->title, -1) : NULL;
+
+			gboolean match = (strstr(uri_lower, text_lower) != NULL);
+			if (!match && title_lower)
+				match = (strstr(title_lower, text_lower) != NULL);
+
+			if (!match) {
+				gchar **words = g_strsplit(text_lower, " ", -1);
+				match = TRUE;
+				for (int w = 0; words[w]; w++) {
+					if (!words[w][0])
+						continue;
+					gboolean word_match = (strstr(uri_lower, words[w]) != NULL);
+					if (!word_match && title_lower)
+						word_match = (strstr(title_lower, words[w]) != NULL);
+					if (!word_match) {
+						match = FALSE;
+						break;
+					}
+				}
+				g_strfreev(words);
+			}
+
+			g_free(uri_lower);
+			g_free(text_lower);
+			g_free(title_lower);
+
+			if (!match)
+				continue;
+		}
+
+		g_hash_table_add(seen, g_strdup(e->uri));
+
+		gchar *uri_escaped = g_markup_escape_text(e->uri, -1);
+		gchar *display_text;
+		if (e->title && *e->title) {
+			gchar *title_escaped = g_markup_escape_text(e->title, -1);
+			display_text = g_strdup_printf(
+				"<span foreground='#87afd7'>%s</span>  <span foreground='#666666'>%s</span>",
+				uri_escaped, title_escaped);
+			g_free(title_escaped);
+		} else {
+			display_text = g_strdup_printf(
+				"<span foreground='#87afd7'>%s</span>", uri_escaped);
+		}
+		g_free(uri_escaped);
+
+		GtkWidget *label = gtk_label_new(NULL);
+		gtk_label_set_markup(GTK_LABEL(label), display_text);
+		gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+		gtk_widget_set_name(label, e->uri);
+		g_free(display_text);
+
+		gtk_list_box_insert(GTK_LIST_BOX(history_list), label, -1);
+
+		/* Apply CSS to each new row */
+		GtkListBoxRow *row = gtk_list_box_get_row_at_index(
+			GTK_LIST_BOX(history_list), count);
+		if (row) {
+			GtkCssProvider *row_css = g_object_get_data(
+				G_OBJECT(history_list), "css");
+			if (row_css) {
+				gtk_style_context_add_provider(
+					gtk_widget_get_style_context(GTK_WIDGET(row)),
+					GTK_STYLE_PROVIDER(row_css),
+					GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+			}
+		}
+
+		count++;
+	}
+
+	g_hash_table_destroy(seen);
+	history_selected = -1;
+
+	if (count > 0) {
+		int row_height = 24;
+		int popup_height = count * row_height;
+		if (popup_height > 360)
+			popup_height = 360;
+		gtk_widget_set_size_request(history_scroll, -1, popup_height);
+		gtk_widget_show_all(history_scroll);
+	} else if (history_scroll) {
+		gtk_widget_hide(history_scroll);
+	}
+}
+
+static void
+history_select(Client *c, int direction)
+{
+	GtkListBoxRow *row;
+	GtkCssProvider *row_css;
+	int n;
+
+	if (!history_list)
+		return;
+
+	row_css = g_object_get_data(G_OBJECT(history_list), "css");
+
+	n = 0;
+	while (gtk_list_box_get_row_at_index(GTK_LIST_BOX(history_list), n))
+		n++;
+
+	if (n == 0)
+		return;
+
+	/* Remove old highlight */
+	if (history_selected >= 0) {
+		row = gtk_list_box_get_row_at_index(
+			GTK_LIST_BOX(history_list), history_selected);
+		if (row)
+			gtk_style_context_remove_class(
+				gtk_widget_get_style_context(GTK_WIDGET(row)), "hl");
+	}
+
+	if (history_selected < 0) {
+		if (direction > 0)
+			history_selected = 0;
+		else
+			history_selected = n - 1;
+	} else {
+		history_selected += direction;
+		if (history_selected < 0)
+			history_selected = n - 1;
+		if (history_selected >= n)
+			history_selected = 0;
+	}
+
+	row = gtk_list_box_get_row_at_index(
+		GTK_LIST_BOX(history_list), history_selected);
+	if (row) {
+		gtk_style_context_add_class(
+			gtk_widget_get_style_context(GTK_WIDGET(row)), "hl");
+
+		GtkWidget *label = gtk_bin_get_child(GTK_BIN(row));
+		if (label) {
+			const char *uri = gtk_widget_get_name(label);
+			if (uri && *uri) {
+				gchar *entry_text = g_strdup_printf(" [COMMAND] %s", uri);
+				gtk_entry_set_text(GTK_ENTRY(c->statentry), entry_text);
+				gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+				g_free(entry_text);
+			}
+		}
+	}
 }
 
 int

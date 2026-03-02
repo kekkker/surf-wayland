@@ -174,7 +174,8 @@ static Key keys[] = {
 	{ 0,                     GDK_KEY_Escape, stop,       { 0 } },
 	{ 0,                     GDK_KEY_F11,    togglefullscreen, { 0 } },
 	{ 0,                     GDK_KEY_i,      toggleinsert, { 0 } },
-	{ 0,                     GDK_KEY_o,      openbar,    { .i = 0 } }, /* open bar with current URL */
+	{ 0,                     GDK_KEY_o,      openbar,    { .i = 0 } }, /* open bar with completions */
+	{ 0,                     GDK_KEY_e,      openbar,    { .i = 1 } }, /* edit current URL */
 	{ 0,                     GDK_KEY_j,      scrollv,    { .i = +10 } },
 	{ 0,                     GDK_KEY_k,      scrollv,    { .i = -10 } },
 	{ 0,                     GDK_KEY_u,      scrollv,    { .i = -50 } },
@@ -187,7 +188,8 @@ static Key keys[] = {
     { GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
     { 0,                     GDK_KEY_y,      hints_start, { .i = HintModeYank } },
 
-	{ 0,                     GDK_KEY_t,      tab_new,    { .i = 1 } },
+	{ 0,                     GDK_KEY_t,      tab_new,    { .i = 0 } }, /* new tab + open bar */
+	{ GDK_SHIFT_MASK,        GDK_KEY_o,      tab_new,    { .i = 0 } }, /* new tab + open bar */
 	{ 0,                     GDK_KEY_d,      tab_close,  { 0 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_j,      tab_next,   { 0 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_k,      tab_prev,   { 0 } },
