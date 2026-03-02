@@ -39,6 +39,7 @@ typedef struct Client {
 	GtkWidget *statentry;
 	const char *title, *overtitle, *targeturi;
 	const char *needle;
+	int newtab_pending;
 	struct Client *next;
 } Client;
 
@@ -49,3 +50,4 @@ void tab_new(Client *c, const Arg *a);
 void tab_close(Client *c, const Arg *a);
 void tab_next(Client *c, const Arg *a);
 void tab_prev(Client *c, const Arg *a);
+void openbar_newtab(Client *c, const Arg *a);

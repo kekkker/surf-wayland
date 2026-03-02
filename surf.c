@@ -2514,6 +2514,7 @@ void
 closebar(Client *c)
 {
 	c->mode = ModeNormal;
+	c->newtab_pending = 0;    /* ADD THIS LINE */
 
 	history_hide(c);
 
@@ -2523,6 +2524,25 @@ closebar(Client *c)
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 	updatetitle(c);
 	updatebar(c);
+}
+
+void
+openbar_newtab(Client *c, const Arg *a)
+{
+	c->mode = ModeCommand;  // MOVE THIS TO TOP
+	c->newtab_pending = 1;
+
+	history_load();
+
+	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
+
+	gtk_entry_set_text(GTK_ENTRY(c->statentry), " [NEW TAB] ");
+
+	gtk_widget_grab_focus(c->statentry);
+	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+
+	history_filter(c, "");
 }
 
 void
@@ -2549,12 +2569,32 @@ baractivate(GtkEntry *entry, Client *c)
 	input = text;
 	if (g_str_has_prefix(text, " [COMMAND] "))
 		input = text + 11;
+	else if (g_str_has_prefix(text, " [NEW TAB] "))
+		input = text + 11;
 
 	history_hide(c);
 
 	if (input && *input) {
-		Arg a = { .v = input };
-		loaduri(c, &a);
+		if (c->newtab_pending) {
+			/* Save the input BEFORE closing bar */
+			gchar *saved_input = g_strdup(input);
+			c->newtab_pending = 0;
+
+			closebar(c);  /* CLOSE BAR FIRST */
+
+			/* NOW create tab and load */
+			tab_init(c);
+			tab_new(c, &(Arg){ .i = 1 });
+			Arg a = { .v = saved_input };
+			loaduri(c, &a);
+			g_free(saved_input);
+			return;  /* Early return since we already closed bar */
+		} else {
+			Arg a = { .v = input };
+			loaduri(c, &a);
+		}
+	} else {
+		c->newtab_pending = 0;
 	}
 
 	closebar(c);
@@ -3153,6 +3193,8 @@ bar_update_filter(gpointer data)
 	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
 
 	if (g_str_has_prefix(text, " [COMMAND] "))
+		text = text + 11;
+	else if (g_str_has_prefix(text, " [NEW TAB] "))
 		text = text + 11;
 
 	history_filter(c, text);

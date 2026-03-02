@@ -145,7 +145,7 @@ static Key keys[] = {
 	{ GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
 	{ 0,                     GDK_KEY_y,      hints_start, { .i = HintModeYank } },
 	{ 0,                     GDK_KEY_t,      tab_new,    { .i = 0 } },
-	{ GDK_SHIFT_MASK,        GDK_KEY_o,      tab_new,    { .i = 0 } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_o,      openbar_newtab, { 0 } },
 	{ 0,                     GDK_KEY_d,      tab_close,  { 0 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_j,      tab_next,   { 0 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_k,      tab_prev,   { 0 } },
