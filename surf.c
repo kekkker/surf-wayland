@@ -657,14 +657,21 @@ tab_switch_to(Client *c, int index)
 	if (tabs.views[index] == NULL)
 		return;
 
+	/* Hide current */
 	if (tabs.active >= 0 && tabs.active < tabs.count &&
 	    tabs.views[tabs.active] != NULL) {
 		gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 	}
 
+	/* Show new */
 	tabs.active = index;
 	c->view = tabs.views[index];
 	c->pageid = webkit_web_view_get_page_id(c->view);
+	c->finder = webkit_web_view_get_find_controller(c->view);
+	c->inspector = webkit_web_view_get_inspector(c->view);
+	c->settings = webkit_web_view_get_settings(c->view);
+	c->context = webkit_web_view_get_context(c->view);
+
 	gtk_widget_show(GTK_WIDGET(c->view));
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
@@ -674,6 +681,7 @@ tab_switch_to(Client *c, int index)
 
 	c->title = webkit_web_view_get_title(c->view);
 	c->progress = webkit_web_view_get_estimated_load_progress(c->view) * 100;
+	c->https = webkit_web_view_get_tls_info(c->view, &c->cert, &c->tlserr);
 	updatetitle(c);
 }
 
