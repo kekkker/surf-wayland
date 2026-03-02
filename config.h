@@ -151,7 +151,7 @@ static Key keys[] = {
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_k,      zoom,       { .i = +1 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_q,      zoom,       { .i = 0  } },
 	{ 0,                GDK_KEY_minus,  zoom,       { .i = -1 } },
-	{ 0,                GDK_KEY_plus,   zoom,       { .i = +1 } },
+	{ 0|GDK_SHIFT_MASK,                GDK_KEY_plus,   zoom,       { .i = +1 } },
 	{ MODKEY,                GDK_KEY_p,      clipboard,  { .i = 1 } },
 	{ MODKEY,                GDK_KEY_y,      clipboard,  { .i = 0 } },
 	{ MODKEY,                GDK_KEY_n,      find,       { .i = +1 } },
@@ -200,6 +200,7 @@ static Key keys[] = {
 	{ MODKEY,                GDK_KEY_u,      scrollv,    { .i = -50 } },
     { 0,                     GDK_KEY_p,     spawnuserscript, { .v = "$HOME/.surf/userscripts/surf-pass" } },
     { GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_p,      tab_pin,    { 0 } },
 };
 
 /* button definitions */

@@ -276,6 +276,10 @@ static gboolean bar_update_filter(gpointer data);
 static GtkWidget *history_list = NULL;
 static GtkWidget *history_scroll = NULL;
 static int history_selected = -1;
+static void tab_pin(Client *c, const Arg *a);
+static gboolean *tab_pins = NULL;
+static guint pin_timer = 0;
+static gboolean pin_keepalive(gpointer data);
 
 typedef struct {
 	char *uri;
@@ -486,6 +490,7 @@ setup(void)
 		}
 	}
     setup_fifo(NULL);
+	pin_timer = g_timeout_add_seconds(5, pin_keepalive, NULL);
 }
 
 void
@@ -763,9 +768,8 @@ typedef struct {
 
 static TabState tabs = { NULL, 0, -1 };
 
-static void
-tab_init(Client *c)
-{
+static
+void tab_init(Client *c) {
 	if (tabs.count > 0)
 		return;
 
@@ -773,18 +777,18 @@ tab_init(Client *c)
 	tabs.views = g_malloc(sizeof(WebKitWebView *));
 	tabs.views[0] = c->view;
 	tabs.active = 0;
+
+	tab_pins = g_malloc0(sizeof(gboolean));
 }
 
-static void
-tab_switch_to(Client *c, int index)
-{
+static void tab_switch_to(Client *c, int index) {
 	if (index < 0 || index >= tabs.count || index == tabs.active)
 		return;
 
 	if (tabs.views[index] == NULL)
 		return;
 
-	/* Hide current — only if active is valid */
+	/* Hide current */
 	if (tabs.active >= 0 && tabs.active < tabs.count &&
 	    tabs.views[tabs.active] != NULL) {
 		gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
@@ -797,7 +801,6 @@ tab_switch_to(Client *c, int index)
 	gtk_widget_show(GTK_WIDGET(c->view));
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
-	/* Exit command mode if we were in it */
 	c->mode = ModeNormal;
 	gtk_widget_set_can_focus(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
@@ -823,6 +826,11 @@ tab_new(Client *c, const Arg *a) {
 	tabs.count++;
 	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
 	tabs.views[tabs.count - 1] = v;
+
+	/* Grow pins array */
+	tab_pins = g_realloc(tab_pins, tabs.count * sizeof(gboolean));
+	tab_pins[tabs.count - 1] = FALSE;
+
 	tabs.active = tabs.count - 1;
 
 	c->view = v;
@@ -839,7 +847,6 @@ tab_new(Client *c, const Arg *a) {
 	gtk_widget_grab_focus(GTK_WIDGET(v));
 	updatetitle(c);
 
-	/* Only open bar if called directly (not from hints etc) */
 	if (a && a->i == 0) {
 		Arg bar = { .i = 0 };
 		openbar(c, &bar);
@@ -847,48 +854,38 @@ tab_new(Client *c, const Arg *a) {
 }
 
 void
-tab_close(Client *c, const Arg *a)
-{
+tab_close(Client *c, const Arg *a) {
 	int idx;
 
-	fprintf(stderr, "tab_close: count=%d active=%d\n", tabs.count, tabs.active);
-
 	if (tabs.count <= 1) {
-		fprintf(stderr, "tab_close: last tab, destroying window\n");
 		gtk_widget_destroy(c->win);
 		return;
 	}
 
 	idx = tabs.active;
-	fprintf(stderr, "tab_close: closing idx=%d\n", idx);
 
 	WebKitWebView *dead = tabs.views[idx];
-	fprintf(stderr, "tab_close: dead=%p\n", (void*)dead);
 
 	webkit_web_view_stop_loading(dead);
-	fprintf(stderr, "tab_close: stopped loading\n");
-
 	gtk_widget_hide(GTK_WIDGET(dead));
-	fprintf(stderr, "tab_close: hidden\n");
 
-	for (int i = idx; i < tabs.count - 1; i++)
+	for (int i = idx; i < tabs.count - 1; i++) {
 		tabs.views[i] = tabs.views[i + 1];
+		if (tab_pins)
+			tab_pins[i] = tab_pins[i + 1];
+	}
 	tabs.count--;
 	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
-	fprintf(stderr, "tab_close: removed from array, count=%d\n", tabs.count);
+	tab_pins = g_realloc(tab_pins, tabs.count * sizeof(gboolean));
 
 	int new_idx = idx < tabs.count ? idx : tabs.count - 1;
-	fprintf(stderr, "tab_close: switching to %d\n", new_idx);
 	tabs.active = -1;
 	tab_switch_to(c, new_idx);
-	fprintf(stderr, "tab_close: switched\n");
 
 	g_signal_handlers_disconnect_matched(dead,
 		G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
-	fprintf(stderr, "tab_close: signals disconnected\n");
 
 	webkit_web_view_load_uri(dead, "about:blank");
-	fprintf(stderr, "tab_close: done\n");
 }
 
 void
@@ -1206,10 +1203,10 @@ hints_receive_data(Client *c, GVariant *data)
 }
 
 void
-updatetitle(Client *c)
-{
+updatetitle(Client *c) {
 	char *title;
 	const char *name;
+	const char *pin;
 
 	if (c->overtitle)
 		name = c->overtitle;
@@ -1218,11 +1215,14 @@ updatetitle(Client *c)
 	else
 		name = "";
 
+	pin = (tab_pins && tabs.active >= 0 && tabs.active < tabs.count &&
+	       tab_pins[tabs.active]) ? "[P]" : "";
+
 	if (tabs.count > 1) {
-		title = g_strdup_printf("[%d/%d] %s",
-			tabs.active + 1, tabs.count, name);
+		title = g_strdup_printf("[%d/%d]%s %s",
+			tabs.active + 1, tabs.count, pin, name);
 	} else {
-		title = g_strdup(name);
+		title = g_strdup_printf("%s%s", name, pin);
 	}
 
 	gtk_window_set_title(GTK_WINDOW(c->win), title);
@@ -1679,6 +1679,8 @@ cleanup(void)
         g_free(surf_fifo);
     }
 	g_free(historyfile);
+	if (pin_timer)
+		g_source_remove(pin_timer);
 }
 
 /* Function to handle display backend failures */
@@ -3759,6 +3761,45 @@ history_select(Client *c, int direction)
 			}
 		}
 	}
+}
+
+void
+tab_pin(Client *c, const Arg *a) {
+	if (tabs.count <= 0)
+		return;
+
+	if (!tab_pins) {
+		tab_pins = g_malloc0(tabs.count * sizeof(gboolean));
+	}
+
+	tab_pins[tabs.active] = !tab_pins[tabs.active];
+
+	fprintf(stderr, "tab %d %s\n", tabs.active,
+		tab_pins[tabs.active] ? "pinned" : "unpinned");
+
+	updatetitle(c);
+}
+
+static gboolean
+pin_keepalive(gpointer data)
+{
+	if (!tab_pins)
+		return TRUE;
+
+	for (int i = 0; i < tabs.count; i++) {
+		if (i == tabs.active)
+			continue;
+		if (!tab_pins[i])
+			continue;
+		if (!tabs.views[i])
+			continue;
+
+		/* Poke the webview to prevent suspension */
+		webkit_web_view_evaluate_javascript(tabs.views[i],
+			"void(0);", -1, NULL, NULL, NULL, NULL, NULL);
+	}
+
+	return TRUE;
 }
 
 int

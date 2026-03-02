@@ -41,6 +41,7 @@ typedef struct Client {
 	guint64 pageid;
 	int progress, fullscreen, https, insecure, errorpage;
 	int tab_id;
+	int tab_pinned;
 	Mode mode;
 	/* Status bar widgets */
 	GtkWidget *vbox;        /* main vertical container */
