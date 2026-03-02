@@ -1189,8 +1189,9 @@ updatetitle(Client *c)
 
 	gtk_window_set_title(GTK_WINDOW(c->win), title);
 	g_free(title);
-}
 
+	updatebar(c);
+}
 
 void
 gettogglestats(Client *c)
@@ -2727,11 +2728,12 @@ updatebar(Client *c)
 
 	switch (c->mode) {
 	case ModeInsert:  modestr = "INSERT"; break;
+	case ModeHint:    modestr = "HINT"; break;
 	case ModeCommand: modestr = "COMMAND"; break;
 	default:          modestr = "NORMAL"; break;
 	}
 
-	if (c->progress != 100)
+	if (c->progress > 0 && c->progress < 100)
 		text = g_strdup_printf(" [%s] [%i%%] %s", modestr,
 		                       c->progress, uri);
 	else
