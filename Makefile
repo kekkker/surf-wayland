@@ -4,7 +4,7 @@
 
 include config.mk
 
-SRC = surf.c display.c dbus.c
+SRC = surf.c display.c
 WSRC = webext-surf.c
 OBJ = $(SRC:.c=.o)
 WOBJ = $(WSRC:.c=.o)
@@ -15,8 +15,8 @@ all: options surf $(WLIB)
 options:
 	@echo surf build options:
 	@echo "CC            = $(CC)"
-	@echo "CFLAGS        = $(SURFCFLAGS) $(CFLAGS)"
-	@echo "WEBEXTCFLAGS  = $(WEBEXTCFLAGS) $(CFLAGS)"
+	@echo "CFLAGS        = $(SURFCFLAGS)"
+	@echo "WEBEXTCFLAGS  = $(WEBEXTCFLAGS)"
 	@echo "LDFLAGS       = $(LDFLAGS)"
 
 surf: $(OBJ)
@@ -28,13 +28,13 @@ config.h:
 	cp config.def.h $@
 
 $(OBJ): $(SRC)
-	$(CC) $(SURFCFLAGS) $(CFLAGS) -c $(SRC)
+	$(CC) $(SURFCFLAGS) -c $(SRC)
 
 $(WLIB): $(WOBJ)
 	$(CC) -shared -Wl,-soname,$@ $(LDFLAGS) -o $@ $? $(WEBEXTLIBS)
 
 $(WOBJ): $(WSRC)
-	$(CC) $(WEBEXTCFLAGS) $(CFLAGS) -c $(WSRC)
+	$(CC) $(WEBEXTCFLAGS) -c $(WSRC)
 
 clean:
 	rm -f surf $(OBJ)
@@ -47,7 +47,7 @@ dist: distclean
 	mkdir -p surf-$(VERSION)
 	cp -R LICENSE Makefile config.mk config.def.h README \
 	    surf-open.sh arg.h TODO.md surf.png \
-	    surf.1 common.h display.h dbus.h dbus-interface.xml $(SRC) $(WSRC) surf-$(VERSION)
+	    surf.1 common.h display.h types.h $(SRC) $(WSRC) surf-$(VERSION)
 	tar -cf surf-$(VERSION).tar surf-$(VERSION)
 	gzip surf-$(VERSION).tar
 	rm -rf surf-$(VERSION)

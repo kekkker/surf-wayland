@@ -4,26 +4,20 @@
 #include <webkit2/webkit2.h>
 #include "types.h"
 
-#ifdef X11_SUPPORT
-#include <X11/X.h>
-#include <X11/Xlib.h>
-#endif
-
 typedef enum {
 	ModeNormal,
 	ModeInsert,
 	ModeCommand,
+	ModeSearch,
 	ModeHint,
 } Mode;
 
-/* Hint mode types */
 typedef enum {
-	HintModeLink,      /* Follow links */
-	HintModeNewWindow, /* Open in new window */
-	HintModeYank,      /* Yank URL */
+	HintModeLink,
+	HintModeNewWindow,
+	HintModeYank,
 } HintMode;
 
-/* Hint functions */
 typedef struct Client {
 	GtkWidget *win;
 	WebKitWebView *view;
@@ -35,18 +29,14 @@ typedef struct Client {
 	GTlsCertificate *cert, *failedcert;
 	GTlsCertificateFlags tlserr;
 	char instance_id[64];
-#ifdef X11_SUPPORT
-	Window xid;
-#endif
 	guint64 pageid;
 	int progress, fullscreen, https, insecure, errorpage;
 	int tab_id;
 	int tab_pinned;
 	Mode mode;
-	/* Status bar widgets */
-	GtkWidget *vbox;        /* main vertical container */
-	GtkWidget *statusbar;   /* bottom bar container */
-	GtkWidget *statentry;   /* combined display/edit widget */
+	GtkWidget *vbox;
+	GtkWidget *statusbar;
+	GtkWidget *statentry;
 	const char *title, *overtitle, *targeturi;
 	const char *needle;
 	struct Client *next;
@@ -59,4 +49,3 @@ void tab_new(Client *c, const Arg *a);
 void tab_close(Client *c, const Arg *a);
 void tab_next(Client *c, const Arg *a);
 void tab_prev(Client *c, const Arg *a);
-

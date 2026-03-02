@@ -21,47 +21,21 @@
 
 #include <gdk/gdk.h>
 #include <gdk/gdkkeysyms.h>
+#include <gdk/gdkwayland.h>
 #include <gio/gunixfdlist.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
 #include <gcr/gcr.h>
 #include <JavaScriptCore/JavaScript.h>
 #include <webkit2/webkit2.h>
-#include <glib.h>
-
-#ifdef X11_SUPPORT
-#include <X11/X.h>
-#include <X11/Xatom.h>
-#include <gdk/gdkx.h>
-#include <gtk/gtkx.h>
-#endif
-
-#ifdef WAYLAND_SUPPORT
-#include <wayland-client.h>
-#include <wayland-cursor.h>
-#include <gdk/gdkwayland.h>
-#include <dbus/dbus.h>
-#endif
 
 #include "arg.h"
 #include "common.h"
 #include "types.h"
 #include "display.h"
-#ifdef WAYLAND_SUPPORT
-/* D-Bus function declarations */
-int dbus_init(void);
-void dbus_cleanup(void);
-int dbus_setup_filters(void);
-void dbus_emit_uri_changed(const char *instance_id, const char *uri);
-void dbus_process_events(void);
-void dbus_set_callbacks(void *clients, void (*navigate)(Client *, const Arg *), void (*find)(Client *, const Arg *));
-void *dbus_find_client_by_instance_id(const char *instance_id);
-#endif
 
 #define LENGTH(x)               (sizeof(x) / sizeof(x[0]))
 #define CLEANMASK(mask)         (mask & (MODKEY|GDK_SHIFT_MASK))
-
-enum { AtomFind, AtomGo, AtomUri, AtomUTF8, AtomLast };
 
 enum {
 	OnDoc   = WEBKIT_HIT_TEST_RESULT_CONTEXT_DOCUMENT,
@@ -115,7 +89,6 @@ typedef struct {
 	int prio;
 } Parameter;
 
-
 typedef struct {
 	guint mod;
 	guint keyval;
@@ -158,8 +131,6 @@ static const char *getcurrentuserhomedir(void);
 static Client *newclient(Client *c);
 static void loaduri(Client *c, const Arg *a);
 static const char *geturi(Client *c);
-static void setatom(Client *c, int a, const char *v);
-static const char *getatom(Client *c, int a);
 static void updatetitle(Client *c);
 static void gettogglestats(Client *c);
 static void getpagestats(Client *c);
@@ -177,7 +148,6 @@ static void updatewinid(Client *c);
 static void handleplumb(Client *c, const char *uri);
 static void newwindow(Client *c, const Arg *a, int noembed);
 static void spawn(Client *c, const Arg *a);
-static void msgext(Client *c, char type, const Arg *a);
 static void destroyclient(Client *c);
 static void cleanup(void);
 
@@ -187,8 +157,6 @@ static void initwebextensions(WebKitWebContext *wc, Client *c);
 static GtkWidget *createview(WebKitWebView *v, WebKitNavigationAction *a,
                              Client *c);
 static gboolean buttonreleased(GtkWidget *w, GdkEvent *e, Client *c);
-static GdkFilterReturn processx(GdkXEvent *xevent, GdkEvent *event,
-                                gpointer d);
 static gboolean winevent(GtkWidget *w, GdkEvent *e, Client *c);
 static void showview(WebKitWebView *v, Client *c);
 static GtkWidget *createwindow(Client *c);
@@ -237,6 +205,7 @@ static void togglefullscreen(Client *c, const Arg *a);
 static void togglecookiepolicy(Client *c, const Arg *a);
 static void toggleinspector(Client *c, const Arg *a);
 static void find(Client *c, const Arg *a);
+static void opensearch(Client *c, const Arg *a);
 static void showxid(Client *c, const Arg *a);
 static void toggleinsert(Client *c, const Arg *a);
 static void openbar(Client *c, const Arg *a);
@@ -244,6 +213,7 @@ static void closebar(Client *c);
 static void updatebar(Client *c);
 static void baractivate(GtkEntry *entry, Client *c);
 static gboolean barkeypress(GtkWidget *w, GdkEvent *e, Client *c);
+static gboolean bar_update_search(gpointer data);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
@@ -257,8 +227,6 @@ static display_context_t display_ctx;
 static int showxidflag = 0;
 static int cookiepolicy;
 Client *clients;
-/* Track all web process sockets */
-static GArray *webext_sockets = NULL;
 
 /* Userscript support */
 static char *surf_fifo;
@@ -289,14 +257,6 @@ typedef struct {
 	long timestamp;
 } HistoryEntry;
 
-#ifdef X11_SUPPORT
-static Atom atoms[AtomLast];
-static Window embed;
-#endif
-
-#ifdef WAYLAND_SUPPORT
-static char *instance_id;  // Unique instance identifier
-#endif
 static GdkDevice *gdkkb;
 static char *stylefile;
 static const char *useragent;
@@ -320,8 +280,6 @@ static ParamName loadtransient[] = {
 };
 
 static ParamName loadcommitted[] = {
-//	AccessMicrophone,
-//	AccessWebcam,
 	CaretBrowsing,
 	DarkMode,
 	DefaultCharset,
@@ -329,7 +287,6 @@ static ParamName loadcommitted[] = {
 	Geolocation,
 	HideBackground,
 	Inspector,
-//	KioskMode,
 	MediaManualPlay,
 	PDFJSviewer,
 	RunInFullscreen,
@@ -353,12 +310,11 @@ static ParamName loadfinished[] = {
 void
 die(const char *errstr, ...)
 {
-       va_list ap;
-
-       va_start(ap, errstr);
-       vfprintf(stderr, errstr, ap);
-       va_end(ap);
-       exit(1);
+	va_list ap;
+	va_start(ap, errstr);
+	vfprintf(stderr, errstr, ap);
+	va_end(ap);
+	exit(1);
 }
 
 void
@@ -372,23 +328,17 @@ usage(void)
 void
 setup(void)
 {
-	GIOChannel *gchanin;
 	GdkDisplay *gdpy;
 	int i, j;
 
-	/* Initialize random seed */
 	srand(time(NULL));
 
-	/* Initialize socket tracking */
-	webext_sockets = g_array_new(FALSE, FALSE, sizeof(int));
-
-	/* clean up any zombies immediately */
 	sigchld(0);
 	if (signal(SIGHUP, sighup) == SIG_ERR)
 		die("Can't install SIGHUP handler");
 
 	gtk_init(NULL, NULL);
-	
+
 	/* Force single web process for all pages */
 	#pragma GCC diagnostic push
 	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
@@ -401,36 +351,8 @@ setup(void)
 	if (!gdpy)
 		die("Failed to get GDK display");
 
-	/* Initialize display backend with the GDK display */
 	if (display_init_with_gdk_display(&display_ctx, gdpy) != 0)
 		die("Failed to initialize display backend");
-
-#ifdef WAYLAND_SUPPORT
-	/* Initialize D-Bus for IPC */
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		fprintf(stderr, "Wayland backend detected, skipping D-Bus initialization for now\n");
-		// TODO: Re-enable D-Bus when it's stable
-		/*
-		if (dbus_init() != 0)
-			die("Failed to initialize D-Bus");
-		if (dbus_setup_filters() != 0)
-			die("Failed to setup D-Bus filters");
-
-		// Set up D-Bus callbacks for surf operations
-		dbus_set_callbacks(&clients, (void (*)(Client *, const Arg *))navigate, (void (*)(Client *, const Arg *))find);
-		*/
-	}
-#endif
-
-#ifdef X11_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_X11) {
-		/* atoms */
-		atoms[AtomFind] = XInternAtom(display_ctx.data.x11.dpy, "_SURF_FIND", False);
-		atoms[AtomGo] = XInternAtom(display_ctx.data.x11.dpy, "_SURF_GO", False);
-		atoms[AtomUri] = XInternAtom(display_ctx.data.x11.dpy, "_SURF_URI", False);
-		atoms[AtomUTF8] = XInternAtom(display_ctx.data.x11.dpy, "UTF8_STRING", False);
-	}
-#endif
 
 	curconfig = defconfig;
 
@@ -442,7 +364,7 @@ setup(void)
 	if (curconfig[Ephemeral].val.i)
 		cachedir = NULL;
 	else
-		cachedir   = buildpath(cachedir);
+		cachedir = buildpath(cachedir);
 
 	gdkkb = gdk_seat_get_keyboard(gdk_display_get_default_seat(gdpy));
 
@@ -450,13 +372,12 @@ setup(void)
 		fputs("Unable to create sockets\n", stderr);
 		spair[0] = spair[1] = -1;
 	} else {
-		gchanin = g_io_channel_unix_new(spair[0]);
+		GIOChannel *gchanin = g_io_channel_unix_new(spair[0]);
 		g_io_channel_set_encoding(gchanin, NULL, NULL);
 		g_io_channel_set_flags(gchanin, g_io_channel_get_flags(gchanin)
 		                       | G_IO_FLAG_NONBLOCK, NULL);
 		g_io_channel_set_close_on_unref(gchanin, TRUE);
 	}
-
 
 	for (i = 0; i < LENGTH(certs); ++i) {
 		if (!regcomp(&(certs[i].re), certs[i].regex, REG_EXTENDED)) {
@@ -496,13 +417,12 @@ setup(void)
 			continue;
 		}
 
-		/* copy default parameters with higher priority */
 		for (j = 0; j < ParameterLast; ++j) {
 			if (defconfig[j].prio >= uriparams[i].config[j].prio)
 				uriparams[i].config[j] = defconfig[j];
 		}
 	}
-    setup_fifo(NULL);
+	setup_fifo(NULL);
 	pin_timer = g_timeout_add_seconds(5, pin_keepalive, NULL);
 }
 
@@ -544,13 +464,13 @@ buildfile(const char *path)
 	if (!(f = fopen(fpath, "a")))
 		die("Could not open file: %s\n", fpath);
 
-	g_chmod(fpath, 0600); /* always */
+	g_chmod(fpath, 0600);
 	fclose(f);
 
 	return fpath;
 }
 
-static const char*
+static const char *
 getuserhomedir(const char *user)
 {
 	struct passwd *pw = getpwnam(user);
@@ -561,7 +481,7 @@ getuserhomedir(const char *user)
 	return pw->pw_dir;
 }
 
-static const char*
+static const char *
 getcurrentuserhomedir(void)
 {
 	const char *homedir;
@@ -593,7 +513,6 @@ buildpath(const char *path)
 	else
 		apath = g_strdup(path);
 
-	/* creating directory */
 	if (g_mkdir_with_parents(apath, 0700) < 0)
 		die("Could not access directory: %s\n", apath);
 
@@ -606,23 +525,30 @@ buildpath(const char *path)
 char *
 untildepath(const char *path)
 {
-       char *apath, *name, *p;
-       const char *homedir;
+	char *apath, *name, *p;
+	const char *homedir;
 
-       if (path[1] == '/' || path[1] == '\0') {
-               p = (char *)&path[1];
-               homedir = getcurrentuserhomedir();
-       } else {
-               if ((p = strchr(path, '/')))
-                       name = g_strndup(&path[1], p - (path + 1));
-               else
-                       name = g_strdup(&path[1]);
+	if (path[1] == '/' || path[1] == '\0') {
+		p = (char *)&path[1];
+		homedir = getcurrentuserhomedir();
+	} else {
+		if ((p = strchr(path, '/')))
+			name = g_strndup(&path[1], p - (path + 1));
+		else
+			name = g_strdup(&path[1]);
 
-               homedir = getuserhomedir(name);
-               g_free(name);
-       }
-       apath = g_build_filename(homedir, p, NULL);
-       return apath;
+		homedir = getuserhomedir(name);
+		g_free(name);
+	}
+	apath = g_build_filename(homedir, p, NULL);
+	return apath;
+}
+
+static void
+generate_instance_id(Client *c)
+{
+	snprintf(c->instance_id, sizeof(c->instance_id),
+	         "surf-%ld-%d", (long)getpid(), rand());
 }
 
 Client *
@@ -669,10 +595,8 @@ loaduri(Client *c, const Arg *a)
 			free(path);
 		} else if ((strchr(uri, '.') && !strchr(uri, ' ')) ||
 		           g_str_has_prefix(uri, "localhost")) {
-			/* Looks like a URL */
 			url = g_strdup_printf("https://%s", uri);
 		} else {
-			/* Search query */
 			encoded = g_uri_escape_string(uri, NULL, TRUE);
 			url = g_strdup_printf(searchengine, encoded);
 			g_free(encoded);
@@ -681,20 +605,11 @@ loaduri(Client *c, const Arg *a)
 			free(apath);
 	}
 
-	setatom(c, AtomUri, url);
-
 	if (strcmp(url, geturi(c)) == 0) {
 		reload(c, a);
 	} else {
 		webkit_web_view_load_uri(c->view, url);
 		updatetitle(c);
-
-		/* Emit D-Bus signal for URI change */
-#ifdef WAYLAND_SUPPORT
-		if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-			dbus_emit_uri_changed(c->instance_id, url);
-		}
-#endif
 	}
 
 	g_free(url);
@@ -710,68 +625,6 @@ geturi(Client *c)
 	return uri;
 }
 
-void
-setatom(Client *c, int a, const char *v)
-{
-#ifdef X11_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_X11 && display_ctx.data.x11.dpy) {
-		XChangeProperty(display_ctx.data.x11.dpy, c->xid,
-		                atoms[a], atoms[AtomUTF8], 8, PropModeReplace,
-		                (unsigned char *)v, strlen(v) + 1);
-		XSync(display_ctx.data.x11.dpy, False);
-	}
-#endif
-#ifdef WAYLAND_SUPPORT
-	/* TODO: Implement Wayland equivalent of X11 atoms via D-Bus */
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		/* For now, just ignore atom setting on Wayland */
-		/* This means some external tool integration won't work */
-	}
-#endif
-}
-
-const char *
-getatom(Client *c, int a)
-{
-#ifdef X11_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_X11 && display_ctx.data.x11.dpy) {
-		static char buf[BUFSIZ];
-		Atom adummy;
-		int idummy;
-		unsigned long ldummy;
-		unsigned char *p = NULL;
-
-		XSync(display_ctx.data.x11.dpy, False);
-		XGetWindowProperty(display_ctx.data.x11.dpy, c->xid,
-		                   atoms[a], 0L, BUFSIZ, False, atoms[AtomUTF8],
-		                   &adummy, &idummy, &ldummy, &ldummy, &p);
-		if (p)
-			strncpy(buf, (char *)p, LENGTH(buf) - 1);
-		else
-			buf[0] = '\0';
-		XFree(p);
-		return buf;
-	}
-#endif
-#ifdef WAYLAND_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		/* TODO: Implement Wayland equivalent via D-Bus */
-		switch (a) {
-			case AtomFind:
-				return "";  /* No search term */
-			case AtomGo:
-				return "about:blank";  /* Default URL */
-			case AtomUri:
-				return geturi(c);  /* Get current URI */
-			default:
-				return "about:blank";
-		}
-	}
-#endif
-	return "about:blank";  /* Fallback */
-}
-
-
 /* Tab/buffer management */
 typedef struct {
 	WebKitWebView **views;
@@ -781,8 +634,9 @@ typedef struct {
 
 static TabState tabs = { NULL, 0, -1 };
 
-static
-void tab_init(Client *c) {
+static void
+tab_init(Client *c)
+{
 	if (tabs.count > 0)
 		return;
 
@@ -794,20 +648,20 @@ void tab_init(Client *c) {
 	tab_pins = g_malloc0(sizeof(gboolean));
 }
 
-static void tab_switch_to(Client *c, int index) {
+static void
+tab_switch_to(Client *c, int index)
+{
 	if (index < 0 || index >= tabs.count || index == tabs.active)
 		return;
 
 	if (tabs.views[index] == NULL)
 		return;
 
-	/* Hide current */
 	if (tabs.active >= 0 && tabs.active < tabs.count &&
 	    tabs.views[tabs.active] != NULL) {
 		gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 	}
 
-	/* Show new */
 	tabs.active = index;
 	c->view = tabs.views[index];
 	c->pageid = webkit_web_view_get_page_id(c->view);
@@ -824,7 +678,8 @@ static void tab_switch_to(Client *c, int index) {
 }
 
 void
-tab_new(Client *c, const Arg *a) {
+tab_new(Client *c, const Arg *a)
+{
 	WebKitWebView *v;
 
 	tab_init(c);
@@ -840,7 +695,6 @@ tab_new(Client *c, const Arg *a) {
 	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
 	tabs.views[tabs.count - 1] = v;
 
-	/* Grow pins array */
 	tab_pins = g_realloc(tab_pins, tabs.count * sizeof(gboolean));
 	tab_pins[tabs.count - 1] = FALSE;
 
@@ -867,7 +721,8 @@ tab_new(Client *c, const Arg *a) {
 }
 
 void
-tab_close(Client *c, const Arg *a) {
+tab_close(Client *c, const Arg *a)
+{
 	int idx;
 
 	if (tabs.count <= 1) {
@@ -920,14 +775,15 @@ tab_prev(Client *c, const Arg *a)
 	int prev = (tabs.active - 1 + tabs.count) % tabs.count;
 	tab_switch_to(c, prev);
 }
+
 /* Hint label characters (home row keys) */
 static const char *hintkeys = "asdfghjkl";
 
 typedef struct {
 	char *label;
 	char *url;
-	void *element;  /* WebKitDOMElement */
-	int x, y;       /* Position for overlay */
+	void *element;
+	int x, y;
 } Hint;
 
 typedef struct {
@@ -940,7 +796,6 @@ typedef struct {
 
 static HintState hintstate = {0};
 
-/* Generate hint labels - all same length to avoid ambiguity */
 static int
 hint_label_length(int count)
 {
@@ -973,7 +828,6 @@ gen_hint_label(int index, int total)
 	return label;
 }
 
-/* Request hint data from web extension */
 static void
 request_hints_from_extension(Client *c)
 {
@@ -982,12 +836,12 @@ request_hints_from_extension(Client *c)
 	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
 }
 
-/* Cleanup hint state */
 void
-hints_cleanup(Client *c) {
+hints_cleanup(Client *c)
+{
 	if (!hintstate.active)
 		return;
-	
+
 	if (hintstate.hints) {
 		for (guint i = 0; i < hintstate.hints->len; i++) {
 			Hint *h = &g_array_index(hintstate.hints, Hint, i);
@@ -997,24 +851,21 @@ hints_cleanup(Client *c) {
 		g_array_free(hintstate.hints, TRUE);
 		hintstate.hints = NULL;
 	}
-	
+
 	g_free(hintstate.input);
 	hintstate.input = NULL;
-	
-	/* Only send clear if we're still on the same page that had hints */
+
 	if (hintstate.active && hintstate.pageid == webkit_web_view_get_page_id(c->view)) {
 		WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
 		webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
 	}
-	
+
 	hintstate.active = 0;
-	
-	/* Return to normal mode */
+
 	c->mode = ModeNormal;
 	updatetitle(c);
 }
 
-/* Start hint mode */
 void
 hints_start(Client *c, const Arg *a)
 {
@@ -1033,7 +884,6 @@ hints_start(Client *c, const Arg *a)
 	updatetitle(c);
 }
 
-/* Filter hints based on input */
 static void
 filter_hints(Client *c)
 {
@@ -1054,8 +904,9 @@ filter_hints(Client *c)
 	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
 }
 
-/* Follow a hint */
-static void follow_hint(Client *c, const char *label) {
+static void
+follow_hint(Client *c, const char *label)
+{
 	Hint *target = NULL;
 
 	for (guint i = 0; i < hintstate.hints->len; i++) {
@@ -1071,7 +922,6 @@ static void follow_hint(Client *c, const char *label) {
 		return;
 	}
 
-	/* Check if this is a clickable element (not a URL) */
 	if (g_str_has_prefix(target->url, "[click:")) {
 		int cx, cy;
 		if (sscanf(target->url, "[click:%d,%d]", &cx, &cy) == 2) {
@@ -1097,7 +947,7 @@ static void follow_hint(Client *c, const char *label) {
 			webkit_web_view_send_message_to_page(old_view, clear_msg, NULL, NULL, NULL);
 
 			tab_init(c);
-			tab_new(c, &(Arg){ .i = 1 }); /* .i = 1 means skip openbar */
+			tab_new(c, &(Arg){ .i = 1 });
 			arg.v = target->url;
 			loaduri(c, &arg);
 		}
@@ -1111,7 +961,6 @@ static void follow_hint(Client *c, const char *label) {
 	hints_cleanup(c);
 }
 
-/* Handle keypress in hint mode */
 gboolean
 hints_keypress(Client *c, GdkEventKey *e)
 {
@@ -1122,13 +971,11 @@ hints_keypress(Client *c, GdkEventKey *e)
 	if (!hintstate.active || hintstate.pageid != c->pageid)
 		return FALSE;
 
-	/* Escape cancels */
 	if (e->keyval == GDK_KEY_Escape) {
 		hints_cleanup(c);
 		return TRUE;
 	}
 
-	/* Backspace removes character */
 	if (e->keyval == GDK_KEY_BackSpace) {
 		int len = strlen(hintstate.input);
 		if (len > 0) {
@@ -1140,17 +987,14 @@ hints_keypress(Client *c, GdkEventKey *e)
 		return TRUE;
 	}
 
-	/* Check if key is a hint key */
 	key = gdk_keyval_to_lower(e->keyval);
 	if (!strchr(hintkeys, key))
 		return TRUE;
 
-	/* Add to input */
 	newinput = g_strdup_printf("%s%c", hintstate.input, key);
 	g_free(hintstate.input);
 	hintstate.input = newinput;
 
-	/* Get the expected label length (all labels are same length) */
 	if (hintstate.hints->len == 0) {
 		hints_cleanup(c);
 		return TRUE;
@@ -1158,7 +1002,6 @@ hints_keypress(Client *c, GdkEventKey *e)
 
 	label_len = strlen(g_array_index(hintstate.hints, Hint, 0).label);
 
-	/* Count matching hints */
 	int matches = 0;
 	char *matched_label = NULL;
 
@@ -1171,20 +1014,16 @@ hints_keypress(Client *c, GdkEventKey *e)
 	}
 
 	if (matches == 0) {
-		/* No matches */
 		hints_cleanup(c);
 	} else if ((int)strlen(hintstate.input) == label_len && matches == 1) {
-		/* Full label typed - follow it */
 		follow_hint(c, matched_label);
 	} else {
-		/* Still typing - filter display */
 		filter_hints(c);
 	}
 
 	return TRUE;
 }
 
-/* Receive hints data from extension */
 void
 hints_receive_data(Client *c, GVariant *data)
 {
@@ -1216,7 +1055,8 @@ hints_receive_data(Client *c, GVariant *data)
 }
 
 void
-updatetitle(Client *c) {
+updatetitle(Client *c)
+{
 	char *title;
 	const char *name;
 	const char *pin;
@@ -1276,7 +1116,7 @@ cookiepolicy_get(void)
 		return WEBKIT_COOKIE_POLICY_ACCEPT_NEVER;
 	case '@':
 		return WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
-	default: /* fallthrough */
+	default:
 	case 'A':
 		return WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS;
 	}
@@ -1290,7 +1130,7 @@ cookiepolicy_set(const WebKitCookieAcceptPolicy p)
 		return 'a';
 	case WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY:
 		return '@';
-	default: /* fallthrough */
+	default:
 	case WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS:
 		return 'A';
 	}
@@ -1314,7 +1154,7 @@ seturiparameters(Client *c, const char *uri, ParamName *params)
 
 	for (i = 0; (p = params[i]) != ParameterLast; ++i) {
 		switch(p) {
-		default: /* FALLTHROUGH */
+		default:
 			if (!(defconfig[p].prio < curconfig[p].prio ||
 			    defconfig[p].prio < modparams[p]))
 				continue;
@@ -1335,9 +1175,9 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 
 	switch (p) {
 	case AccessMicrophone:
-		return; /* do nothing */
+		return;
 	case AccessWebcam:
-		return; /* do nothing */
+		return;
 	case CaretBrowsing:
 		webkit_settings_set_enable_caret_browsing(c->settings, a->i);
 		refresh = 0;
@@ -1345,7 +1185,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case Certificate:
 		if (a->i)
 			setcert(c, geturi(c));
-		return; /* do not update */
+		return;
 	case CookiePolicies:
 		webkit_cookie_manager_set_accept_policy(
 		    webkit_web_context_get_cookie_manager(c->context),
@@ -1360,37 +1200,37 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		webkit_web_context_set_cache_model(c->context, a->i ?
 		    WEBKIT_CACHE_MODEL_WEB_BROWSER :
 		    WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
-		return; /* do not update */
+		return;
 	case DefaultCharset:
 		webkit_settings_set_default_charset(c->settings, a->v);
-		return; /* do not update */
+		return;
 	case DNSPrefetch:
 		webkit_settings_set_enable_dns_prefetching(c->settings, a->i);
-		return; /* do not update */
+		return;
 	case FileURLsCrossAccess:
 		webkit_settings_set_allow_file_access_from_file_urls(
 		    c->settings, a->i);
 		webkit_settings_set_allow_universal_access_from_file_urls(
 		    c->settings, a->i);
-		return; /* do not update */
+		return;
 	case FontSize:
 		webkit_settings_set_default_font_size(c->settings, a->i);
-		return; /* do not update */
+		return;
 	case Geolocation:
 		refresh = 0;
 		break;
 	case HideBackground:
 		if (a->i)
 			webkit_web_view_set_background_color(c->view, &bgcolor);
-		return; /* do not update */
+		return;
 	case Inspector:
 		webkit_settings_set_enable_developer_extras(c->settings, a->i);
-		return; /* do not update */
+		return;
 	case JavaScript:
 		webkit_settings_set_enable_javascript(c->settings, a->i);
 		break;
 	case KioskMode:
-		return; /* do nothing */
+		return;
 	case LoadImages:
 		webkit_settings_set_auto_load_images(c->settings, a->i);
 		break;
@@ -1399,24 +1239,18 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		    c->settings, a->i);
 		break;
 	case PDFJSviewer:
-		return; /* do nothing */
+		return;
 	case PreferredLanguages:
-		return; /* do nothing */
+		return;
 	case RunInFullscreen:
-		return; /* do nothing */
+		return;
 	case ScrollBars:
-		/* Disabled until we write some WebKitWebExtension for
-		 * manipulating the DOM directly.
-		enablescrollbars = !enablescrollbars;
-		evalscript(c, "document.documentElement.style.overflow = '%s'",
-		    enablescrollbars ? "auto" : "hidden");
-		*/
-		return; /* do not update */
+		return;
 	case ShowIndicators:
 		break;
 	case SmoothScrolling:
 		webkit_settings_set_enable_smooth_scrolling(c->settings, a->i);
-		return; /* do not update */
+		return;
 	case SiteQuirks:
 		webkit_settings_set_enable_site_specific_quirks(
 		    c->settings, a->i);
@@ -1424,9 +1258,9 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case SpellChecking:
 		webkit_web_context_set_spell_checking_enabled(
 		    c->context, a->i);
-		return; /* do not update */
+		return;
 	case SpellLanguages:
-		return; /* do nothing */
+		return;
 	case StrictTLS:
 		webkit_website_data_manager_set_tls_errors_policy(
 		    webkit_web_view_get_website_data_manager(c->view), a->i ?
@@ -1445,9 +1279,9 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		break;
 	case ZoomLevel:
 		webkit_web_view_set_zoom_level(c->view, a->f);
-		return; /* do not update */
+		return;
 	default:
-		return; /* do nothing */
+		return;
 	}
 
 	updatetitle(c);
@@ -1493,7 +1327,6 @@ setcert(Client *c, const char *uri)
 	}
 
 	g_object_unref(cert);
-
 }
 
 const char *
@@ -1562,19 +1395,7 @@ evalscript(Client *c, const char *jsstr, ...)
 void
 updatewinid(Client *c)
 {
-#ifdef X11_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_X11) {
-		snprintf(winid, LENGTH(winid), "%lu", c->xid);
-	} else
-#endif
-#ifdef WAYLAND_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		snprintf(winid, LENGTH(winid), "%s", c->instance_id);
-	} else
-#endif
-	{
-		snprintf(winid, LENGTH(winid), "%s", c->instance_id);
-	}
+	snprintf(winid, LENGTH(winid), "%s", c->instance_id);
 }
 
 void
@@ -1605,13 +1426,12 @@ newwindow(Client *c, const Arg *a, int noembed)
 		cmd[i++] = stylefile;
 	}
 	cmd[i++] = curconfig[DiskCache].val.i ? "-D" : "-d";
-	/* Embedding support removed - always create toplevel windows */
-	cmd[i++] = curconfig[RunInFullscreen].val.i ? "-F" : "-f" ;
-	cmd[i++] = curconfig[Geolocation].val.i ?     "-G" : "-g" ;
-	cmd[i++] = curconfig[LoadImages].val.i ?      "-I" : "-i" ;
-	cmd[i++] = curconfig[KioskMode].val.i ?       "-K" : "-k" ;
-	cmd[i++] = curconfig[Style].val.i ?           "-M" : "-m" ;
-	cmd[i++] = curconfig[Inspector].val.i ?       "-N" : "-n" ;
+	cmd[i++] = curconfig[RunInFullscreen].val.i ? "-F" : "-f";
+	cmd[i++] = curconfig[Geolocation].val.i ?     "-G" : "-g";
+	cmd[i++] = curconfig[LoadImages].val.i ?      "-I" : "-i";
+	cmd[i++] = curconfig[KioskMode].val.i ?       "-K" : "-k";
+	cmd[i++] = curconfig[Style].val.i ?           "-M" : "-m";
+	cmd[i++] = curconfig[Inspector].val.i ?       "-N" : "-n";
 	if (scriptfile && g_strcmp0(scriptfile, "")) {
 		cmd[i++] = "-r";
 		cmd[i++] = scriptfile;
@@ -1622,10 +1442,9 @@ newwindow(Client *c, const Arg *a, int noembed)
 		cmd[i++] = "-u";
 		cmd[i++] = fulluseragent;
 	}
-	if (showxid)
+	if (showxidflag)
 		cmd[i++] = "-w";
-	cmd[i++] = curconfig[Certificate].val.i ? "-X" : "-x" ;
-	/* do not keep zoom level */
+	cmd[i++] = curconfig[Certificate].val.i ? "-X" : "-x";
 	cmd[i++] = "--";
 	if ((uri = a->v))
 		cmd[i++] = uri;
@@ -1638,10 +1457,6 @@ void
 spawn(Client *c, const Arg *a)
 {
 	if (fork() == 0) {
-#ifdef X11_SUPPORT
-		if (display_ctx.backend == DISPLAY_BACKEND_X11 && display_ctx.data.x11.dpy)
-			close(ConnectionNumber(display_ctx.data.x11.dpy));
-#endif
 		close(spair[0]);
 		close(spair[1]);
 		setsid();
@@ -1658,9 +1473,6 @@ destroyclient(Client *c)
 	Client *p;
 
 	webkit_web_view_stop_loading(c->view);
-	/* Not needed, has already been called
-	gtk_widget_destroy(c->win);
-	 */
 
 	for (p = clients; p && p->next != c; p = p->next)
 		;
@@ -1683,75 +1495,20 @@ cleanup(void)
 	g_free(scriptfile);
 	g_free(stylefile);
 	g_free(cachedir);
-#ifdef WAYLAND_SUPPORT
-	dbus_cleanup();
-#endif
 	display_cleanup(&display_ctx);
-    if (surf_fifo) {
-        unlink(surf_fifo);
-        g_free(surf_fifo);
-    }
+	if (surf_fifo) {
+		unlink(surf_fifo);
+		g_free(surf_fifo);
+	}
 	g_free(historyfile);
 	if (pin_timer)
 		g_source_remove(pin_timer);
 }
 
-/* Function to handle display backend failures */
-static void
-handle_display_error(const char *operation)
-{
-	fprintf(stderr, "Display error during %s\n", operation);
-
-	/* Try to fallback to alternative backend if available */
-#ifdef X11_SUPPORT
-#ifdef WAYLAND_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		fprintf(stderr, "Attempting fallback to X11...\n");
-		if (display_init(&display_ctx) == 0) {
-			fprintf(stderr, "Successfully fallbacked to X11\n");
-			return;
-		}
-	}
-#endif
-#endif
-
-	die("No available display backends");
-}
-
-/* Global instance ID for the browser process */
-static char *browser_instance_id = NULL;
-
-/* Generate unique instance ID for a client */
-static void
-generate_instance_id(Client *c)
-{
-	snprintf(c->instance_id, sizeof(c->instance_id),
-	         "surf-%ld-%d", (long)getpid(), rand());
-}
-
-/* Get browser instance ID */
-static const char *
-get_instance_id(void)
-{
-	if (!browser_instance_id) {
-		browser_instance_id = g_strdup_printf("surf-browser-%ld-%d",
-		                                     (long)getpid(), rand());
-	}
-	return browser_instance_id;
-}
-
-/* Function to get window/instance ID via stdout */
 static void
 showxid(Client *c, const Arg *arg)
 {
-#ifdef X11_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_X11) {
-		printf("%lu\n", c->xid);
-	} else
-#endif
-	{
-		puts(c->instance_id);
-	}
+	puts(c->instance_id);
 }
 
 WebKitWebView *
@@ -1763,7 +1520,6 @@ newview(Client *c, WebKitWebView *rv)
 	WebKitCookieManager *cookiemanager;
 	WebKitUserContentManager *contentmanager;
 
-	/* Webview */
 	if (rv) {
 		v = WEBKIT_WEB_VIEW(webkit_web_view_new_with_related_view(rv));
 		context = webkit_web_view_get_context(v);
@@ -1786,8 +1542,6 @@ newview(Client *c, WebKitWebView *rv)
 		   "enable-webgl", curconfig[WebGL].val.i,
 		   "media-playback-requires-user-gesture", curconfig[MediaManualPlay].val.i,
 		   NULL);
-/* For more interesting settings, have a look at
- * http://webkitgtk.org/reference/webkit2gtk/stable/WebKitSettings.html */
 
 		if (strcmp(fulluseragent, "")) {
 			webkit_settings_set_user_agent(settings, fulluseragent);
@@ -1798,7 +1552,7 @@ newview(Client *c, WebKitWebView *rv)
 		useragent = webkit_settings_get_user_agent(settings);
 
 		contentmanager = webkit_user_content_manager_new();
-        inject_userscripts_early(contentmanager, "");  /* must be here */
+		inject_userscripts_early(contentmanager, "");
 
 		if (curconfig[Ephemeral].val.i) {
 			context = webkit_web_context_new_ephemeral();
@@ -1812,24 +1566,19 @@ newview(Client *c, WebKitWebView *rv)
 
 		cookiemanager = webkit_web_context_get_cookie_manager(context);
 
-		/* TLS */
 		webkit_website_data_manager_set_tls_errors_policy(
 		    webkit_web_context_get_website_data_manager(context),
 		    curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL :
 		    WEBKIT_TLS_ERRORS_POLICY_IGNORE);
-		/* disk cache */
 		webkit_web_context_set_cache_model(context,
 		    curconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER :
 		    WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
 
-		/* Currently only works with text file to be compatible with curl */
 		if (!curconfig[Ephemeral].val.i)
 			webkit_cookie_manager_set_persistent_storage(cookiemanager,
 			    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_TEXT);
-		/* cookie policy */
 		webkit_cookie_manager_set_accept_policy(cookiemanager,
 		    cookiepolicy_get());
-		/* languages */
 		webkit_web_context_set_preferred_languages(context,
 		    curconfig[PreferredLanguages].val.v);
 		webkit_web_context_set_spell_checking_languages(context,
@@ -1851,7 +1600,7 @@ newview(Client *c, WebKitWebView *rv)
 
 	g_signal_connect(G_OBJECT(v), "notify::estimated-load-progress",
 			 G_CALLBACK(progresschanged), c);
-	g_signal_connect(G_OBJECT(v), "notify::title",
+	g_signal_connect( G_OBJECT(v), "notify::title",
 			 G_CALLBACK(titlechanged), c);
 	g_signal_connect(G_OBJECT(v), "button-release-event",
 			 G_CALLBACK(buttonreleased), c);
@@ -1898,18 +1647,13 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 	Client *n;
 
 	switch (webkit_navigation_action_get_navigation_type(a)) {
-	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
-		/*
-		 * popup windows of type "other" are almost always triggered
-		 * by user gesture, so inverse the logic here
-		 */
-/* instead of this, compare destination uri to mouse-over uri for validating window */
+	case WEBKIT_NAVIGATION_TYPE_OTHER:
 		if (webkit_navigation_action_is_user_gesture(a))
 			return NULL;
-	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
+	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED:
+	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED:
+	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD:
+	case WEBKIT_NAVIGATION_TYPE_RELOAD:
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
 		n = newclient(c);
 		break;
@@ -1928,7 +1672,6 @@ buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
 
 	element = webkit_hit_test_result_get_context(c->mousepos);
 
-	/* Auto-enter insert mode when clicking editable elements */
 	if (element & OnEdit) {
 		c->mode = ModeInsert;
 		updatetitle(c);
@@ -1947,33 +1690,6 @@ buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
 	return FALSE;
 }
 
-GdkFilterReturn
-processx(GdkXEvent *e, GdkEvent *event, gpointer d)
-{
-#ifdef X11_SUPPORT
-	Client *c = (Client *)d;
-	XPropertyEvent *ev;
-	Arg a;
-
-	if (((XEvent *)e)->type == PropertyNotify) {
-		ev = &((XEvent *)e)->xproperty;
-		if (ev->state == PropertyNewValue) {
-			if (ev->atom == atoms[AtomFind]) {
-				find(c, NULL);
-
-				return GDK_FILTER_REMOVE;
-			} else if (ev->atom == atoms[AtomGo]) {
-				a.v = getatom(c, AtomGo);
-				loaduri(c, &a);
-
-				return GDK_FILTER_REMOVE;
-			}
-		}
-	}
-#endif
-	return GDK_FILTER_CONTINUE;
-}
-
 gboolean
 winevent(GtkWidget *w, GdkEvent *e, Client *c)
 {
@@ -1988,9 +1704,9 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 		if (curconfig[KioskMode].val.i)
 			break;
 
-		/* Command mode: keys go to the bar entry */
-		if (c->mode == ModeCommand)
-			return FALSE; /* GTK handles entry input */
+		/* Command/Search mode: keys go to the bar entry */
+		if (c->mode == ModeCommand || c->mode == ModeSearch)
+			return FALSE;
 
 		/* Insert mode: pass everything except Escape */
 		if (c->mode == ModeInsert) {
@@ -2000,12 +1716,12 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 				updatetitle(c);
 				return TRUE;
 			}
-			return FALSE; /* pass all keys to webpage */
+			return FALSE;
 		}
 
-        if (c->mode == ModeHint) {
-            return hints_keypress(c, &e->key);
-        }
+		if (c->mode == ModeHint) {
+			return hints_keypress(c, &e->key);
+		}
 
 		/* Normal mode: process keybinds */
 		for (i = 0; i < LENGTH(keys); ++i) {
@@ -2036,9 +1752,6 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 	return FALSE;
 }
 
-#ifdef WAYLAND_SUPPORT
-#endif
-
 void
 showview(WebKitWebView *v, Client *c)
 {
@@ -2053,18 +1766,15 @@ showview(WebKitWebView *v, Client *c)
 	c->pageid = webkit_web_view_get_page_id(c->view);
 	c->win = createwindow(c);
 
-	/* Build layout: vbox with webview on top, status bar on bottom */
 	c->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
 	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(c->view),
 	                   TRUE, TRUE, 0);
 
-	/* Status bar container */
 	c->statusbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
-	/* Single entry widget - always visible, toggles between display/edit modes */
 	c->statentry = gtk_entry_new();
 	gtk_widget_set_hexpand(c->statentry, TRUE);
-	gtk_widget_set_can_focus(c->statentry, FALSE); /* non-editable by default */
+	gtk_widget_set_can_focus(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_entry_set_has_frame(GTK_ENTRY(c->statentry), FALSE);
 	g_signal_connect(G_OBJECT(c->statentry), "activate",
@@ -2075,7 +1785,6 @@ showview(WebKitWebView *v, Client *c)
 
 	gtk_box_pack_end(GTK_BOX(c->vbox), c->statusbar, FALSE, FALSE, 0);
 
-	/* Style the status bar - thinner, pure black, single entry */
 	css = gtk_css_provider_new();
 	cssstr = g_strdup_printf(
 	    "#surf-statusbar {"
@@ -2112,12 +1821,6 @@ showview(WebKitWebView *v, Client *c)
 	gtk_widget_show_all(c->win);
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
-	gwin = gtk_widget_get_window(GTK_WIDGET(c->win));
-#ifdef X11_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_X11) {
-		c->xid = gdk_x11_window_get_xid(gwin);
-	}
-#endif
 	generate_instance_id(c);
 	updatewinid(c);
 	if (showxidflag) {
@@ -2130,12 +1833,8 @@ showview(WebKitWebView *v, Client *c)
 		webkit_web_view_set_background_color(c->view, &bgcolor);
 
 	if (!curconfig[KioskMode].val.i) {
+		gwin = gtk_widget_get_window(GTK_WIDGET(c->win));
 		gdk_window_set_events(gwin, GDK_ALL_EVENTS_MASK);
-#ifdef X11_SUPPORT
-		if (display_ctx.backend == DISPLAY_BACKEND_X11) {
-			gdk_window_add_filter(gwin, processx, c);
-		}
-#endif
 	}
 
 	if (curconfig[RunInFullscreen].val.i)
@@ -2145,8 +1844,6 @@ showview(WebKitWebView *v, Client *c)
 		webkit_web_view_set_zoom_level(c->view,
 		                               curconfig[ZoomLevel].val.f);
 
-	setatom(c, AtomFind, "");
-	setatom(c, AtomUri, "about:blank");
 	updatebar(c);
 }
 
@@ -2156,7 +1853,6 @@ createwindow(Client *c)
 	char *wmstr;
 	GtkWidget *w;
 
-	/* Always create toplevel window (no embedding) */
 	w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
 
 	wmstr = g_path_get_basename(argv0);
@@ -2232,40 +1928,38 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 	return TRUE;
 }
 
-void loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c) {
-    const char *uri = geturi(c);
+void
+loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
+{
+	const char *uri = geturi(c);
 
-    switch (e) {
-    case WEBKIT_LOAD_STARTED:
-        setatom(c, AtomUri, uri);
-        c->title = uri;
-        c->https = c->insecure = 0;
-        seturiparameters(c, uri, loadtransient);
-        if (c->errorpage)
-            c->errorpage = 0;
-        else
-            g_clear_object(&c->failedcert);
-        break;
-    case WEBKIT_LOAD_REDIRECTED:
-        setatom(c, AtomUri, uri);
-        c->title = uri;
-        seturiparameters(c, uri, loadtransient);
-        break;
-    case WEBKIT_LOAD_COMMITTED:
-        setatom(c, AtomUri, uri);
-        c->title = uri;
-        seturiparameters(c, uri, loadcommitted);
-        c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
-                                                &c->tlserr);
-        break;
-    case WEBKIT_LOAD_FINISHED:
-        seturiparameters(c, uri, loadfinished);
-        /* Save to history with title */
-        history_add(uri, c->title);
-        runscript(c);
-        break;
-    }
-    updatetitle(c);
+	switch (e) {
+	case WEBKIT_LOAD_STARTED:
+		c->title = uri;
+		c->https = c->insecure = 0;
+		seturiparameters(c, uri, loadtransient);
+		if (c->errorpage)
+			c->errorpage = 0;
+		else
+			g_clear_object(&c->failedcert);
+		break;
+	case WEBKIT_LOAD_REDIRECTED:
+		c->title = uri;
+		seturiparameters(c, uri, loadtransient);
+		break;
+	case WEBKIT_LOAD_COMMITTED:
+		c->title = uri;
+		seturiparameters(c, uri, loadcommitted);
+		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
+		                                        &c->tlserr);
+		break;
+	case WEBKIT_LOAD_FINISHED:
+		seturiparameters(c, uri, loadfinished);
+		history_add(uri, c->title);
+		runscript(c);
+		break;
+	}
+	updatetitle(c);
 }
 
 void
@@ -2274,14 +1968,6 @@ progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 	c->progress = webkit_web_view_get_estimated_load_progress(c->view) *
 	              100;
 	updatetitle(c);
-
-#ifdef WAYLAND_SUPPORT
-	/* Emit D-Bus signal for progress changes */
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		/* Emit progress change signal if needed */
-		/* For now, we focus on URI changes which are more important */
-	}
-#endif
 }
 
 void
@@ -2290,22 +1976,15 @@ titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 	c->title = webkit_web_view_get_title(c->view);
 	updatetitle(c);
 
-	/* Update history entry with the actual title */
 	const char *uri = geturi(c);
 	if (c->title && *c->title && uri && !g_str_has_prefix(uri, "about:"))
 		history_add(uri, c->title);
-
-#ifdef WAYLAND_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-	}
-#endif
 }
 
 static gboolean
 viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
 {
 	const char *name;
-	GUnixFDList *gfd;
 	WebKitUserMessage *r;
 	Client *c;
 
@@ -2316,8 +1995,11 @@ viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
 		if (c->view == v)
 			break;
 	}
+
+	/* If no direct match, use first client (sub-process messages) */
 	if (!c)
 		c = clients;
+
 	if (!c)
 		return TRUE;
 
@@ -2335,7 +2017,7 @@ viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
 		return TRUE;
 	}
 
-	/* Just acknowledge - no socket needed anymore */
+	/* Just acknowledge - scrolling uses evaluate_javascript now */
 	r = webkit_user_message_new("surf-ack", NULL);
 	webkit_user_message_send_reply(m, r);
 
@@ -2348,7 +2030,6 @@ mousetargetchanged(WebKitWebView *v, WebKitHitTestResult *h, guint modifiers,
 {
 	WebKitHitTestResultContext hc = webkit_hit_test_result_get_context(h);
 
-	/* Keep the hit test to know where is the pointer on the next click */
 	c->mousepos = h;
 
 	if (hc & OnLink)
@@ -2419,20 +2100,16 @@ decidenavigation(WebKitPolicyDecision *d, Client *c)
 	    WEBKIT_NAVIGATION_POLICY_DECISION(d));
 
 	switch (webkit_navigation_action_get_navigation_type(a)) {
-	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
+	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED:
+	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED:
+	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD:
+	case WEBKIT_NAVIGATION_TYPE_RELOAD:
+	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
+	case WEBKIT_NAVIGATION_TYPE_OTHER:
 	default:
-		/* Do not navigate to links with a "_blank" target (popup) */
 		if (webkit_navigation_action_get_frame_name(a)) {
 			webkit_policy_decision_ignore(d);
 		} else {
-			/* Filter out navigation to different domain ? */
-			/* get action→urirequest, copy and load in new window+view
-			 * on Ctrl+Click ? */
 			webkit_policy_decision_use(d);
 		}
 		break;
@@ -2447,21 +2124,17 @@ decidenewwindow(WebKitPolicyDecision *d, Client *c)
 	    webkit_navigation_policy_decision_get_navigation_action(
 	    WEBKIT_NAVIGATION_POLICY_DECISION(d));
 
-
 	switch (webkit_navigation_action_get_navigation_type(a)) {
-	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: /* fallthrough */
-	case WEBKIT_NAVIGATION_TYPE_RELOAD: /* fallthrough */
+	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED:
+	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED:
+	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD:
+	case WEBKIT_NAVIGATION_TYPE_RELOAD:
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
-		/* Filter domains here */
-/* If the value of "mouse-button" is not 0, then the navigation was triggered by a mouse event.
- * test for link clicked but no button ? */
 		arg.v = webkit_uri_request_get_uri(
 		        webkit_navigation_action_get_request(a));
 		newwindow(c, &arg, 0);
 		break;
-	case WEBKIT_NAVIGATION_TYPE_OTHER: /* fallthrough */
+	case WEBKIT_NAVIGATION_TYPE_OTHER:
 	default:
 		break;
 	}
@@ -2552,12 +2225,9 @@ webprocessterminated(WebKitWebView *v, WebKitWebProcessTerminationReason r,
 void
 closeview(WebKitWebView *v, Client *c)
 {
-	/* If we have tabs, close the tab instead of the window */
 	if (tabs.count > 1) {
-		/* Find which tab this view belongs to */
 		for (int i = 0; i < tabs.count; i++) {
 			if (tabs.views[i] == v) {
-				/* Switch to this tab first if not active */
 				if (i != tabs.active)
 					tab_switch_to(c, i);
 				tab_close(c, &(Arg){0});
@@ -2575,7 +2245,6 @@ destroywin(GtkWidget *w, Client *c)
 	if (!clients)
 		gtk_main_quit();
 }
-
 
 void
 pasteuri(GtkClipboard *clipboard, const char *text, gpointer d)
@@ -2628,11 +2297,11 @@ showcert(Client *c, const Arg *a)
 void
 clipboard(Client *c, const Arg *a)
 {
-	if (a->i) { /* load clipboard uri */
+	if (a->i) {
 		gtk_clipboard_request_text(gtk_clipboard_get(
 		                           GDK_SELECTION_PRIMARY),
 		                           pasteuri, c);
-	} else { /* copy uri */
+	} else {
 		gtk_clipboard_set_text(gtk_clipboard_get(
 		                       GDK_SELECTION_PRIMARY), c->targeturi
 		                       ? c->targeturi : geturi(c), -1);
@@ -2654,41 +2323,24 @@ zoom(Client *c, const Arg *a)
 	curconfig[ZoomLevel].val.f = webkit_web_view_get_zoom_level(c->view);
 }
 
-static void
-msgext(Client *c, char type, const Arg *a)
+void
+scrollv(Client *c, const Arg *a)
 {
 	char js[128];
-
-	switch (type) {
-	case 'v':
-		snprintf(js, sizeof(js),
-		         "window.scrollBy(0,window.innerHeight/100*%d);",
-		         a->i);
-		break;
-	case 'h':
-		snprintf(js, sizeof(js),
-		         "window.scrollBy(window.innerWidth/100*%d,0);",
-		         a->i);
-		break;
-	default:
-		fprintf(stderr, "surf: msgext unknown type: %c\n", type);
-		return;
-	}
-
+	snprintf(js, sizeof(js),
+	         "window.scrollBy(0,window.innerHeight/100*%d);", a->i);
 	webkit_web_view_evaluate_javascript(c->view, js, -1,
 	    NULL, NULL, NULL, NULL, NULL);
 }
 
 void
-scrollv(Client *c, const Arg *a)
-{
-	msgext(c, 'v', a);
-}
-
-void
 scrollh(Client *c, const Arg *a)
 {
-	msgext(c, 'h', a);
+	char js[128];
+	snprintf(js, sizeof(js),
+	         "window.scrollBy(window.innerWidth/100*%d,0);", a->i);
+	webkit_web_view_evaluate_javascript(c->view, js, -1,
+	    NULL, NULL, NULL, NULL, NULL);
 }
 
 void
@@ -2716,7 +2368,6 @@ toggle(Client *c, const Arg *a)
 void
 togglefullscreen(Client *c, const Arg *a)
 {
-	/* toggling value is handled in winevent() */
 	if (c->fullscreen)
 		gtk_window_unfullscreen(GTK_WINDOW(c->win));
 	else
@@ -2744,27 +2395,51 @@ toggleinspector(Client *c, const Arg *a)
 void
 find(Client *c, const Arg *a)
 {
-	const char *s, *f;
-
 	if (a && a->i) {
 		if (a->i > 0)
 			webkit_find_controller_search_next(c->finder);
 		else
 			webkit_find_controller_search_previous(c->finder);
 	} else {
-		s = getatom(c, AtomFind);
-		f = webkit_find_controller_get_search_text(c->finder);
-
-		if (g_strcmp0(f, s) == 0) /* reset search */
-			webkit_find_controller_search(c->finder, "", findopts,
-			                              G_MAXUINT);
-
-		webkit_find_controller_search(c->finder, s, findopts,
-		                              G_MAXUINT);
-
-		if (strcmp(s, "") == 0)
-			webkit_find_controller_search_finish(c->finder);
+		opensearch(c, NULL);
 	}
+}
+
+void
+opensearch(Client *c, const Arg *a)
+{
+	c->mode = ModeSearch;
+
+	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
+	gtk_entry_set_text(GTK_ENTRY(c->statentry), " [SEARCH] ");
+	gtk_widget_grab_focus(c->statentry);
+	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+
+	updatetitle(c);
+}
+
+static gboolean
+bar_update_search(gpointer data)
+{
+	Client *c = (Client *)data;
+	const char *text;
+
+	if (c->mode != ModeSearch)
+		return FALSE;
+
+	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
+	if (g_str_has_prefix(text, " [SEARCH] "))
+		text = text + 10;
+
+	if (text && *text) {
+		webkit_find_controller_search(c->finder, text,
+		    findopts, G_MAXUINT);
+	} else {
+		webkit_find_controller_search_finish(c->finder);
+	}
+
+	return FALSE;
 }
 
 void
@@ -2776,8 +2451,7 @@ updatebar(Client *c)
 	if (!c->statentry)
 		return;
 
-	/* Don't update if in command mode (user is editing) */
-	if (c->mode == ModeCommand)
+	if (c->mode == ModeCommand || c->mode == ModeSearch)
 		return;
 
 	uri = geturi(c);
@@ -2786,6 +2460,7 @@ updatebar(Client *c)
 	case ModeInsert:  modestr = "INSERT"; break;
 	case ModeHint:    modestr = "HINT"; break;
 	case ModeCommand: modestr = "COMMAND"; break;
+	case ModeSearch:  modestr = "SEARCH"; break;
 	default:          modestr = "NORMAL"; break;
 	}
 
@@ -2806,20 +2481,16 @@ openbar(Client *c, const Arg *a)
 
 	c->mode = ModeCommand;
 
-	/* Load history for completions */
 	history_load();
 
-	/* Make entry editable and focusable */
 	gtk_widget_set_can_focus(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
 	if (a->i) {
-		/* 'e' - prefill with current URL */
 		uri = geturi(c);
 		gtk_entry_set_text(GTK_ENTRY(c->statentry),
 		                   g_strdup_printf(" [COMMAND] %s", uri));
 	} else {
-		/* 'o' - empty for new URL */
 		gtk_entry_set_text(GTK_ENTRY(c->statentry), " [COMMAND] ");
 	}
 
@@ -2838,7 +2509,6 @@ closebar(Client *c)
 
 	history_hide(c);
 
-	/* Make entry non-editable and non-focusable */
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_set_can_focus(c->statentry, FALSE);
 
@@ -2850,20 +2520,32 @@ closebar(Client *c)
 void
 baractivate(GtkEntry *entry, Client *c)
 {
-	const char *text, *url;
-	Arg a;
+	const char *text, *input;
 
 	text = gtk_entry_get_text(entry);
 
-	/* Skip past "[COMMAND] " prefix */
-	url = text;
+	if (c->mode == ModeSearch) {
+		input = text;
+		if (g_str_has_prefix(text, " [SEARCH] "))
+			input = text + 10;
+
+		if (input && *input) {
+			webkit_find_controller_search(c->finder, input,
+			    findopts, G_MAXUINT);
+		}
+		closebar(c);
+		return;
+	}
+
+	/* Command mode */
+	input = text;
 	if (g_str_has_prefix(text, " [COMMAND] "))
-		url = text + 11;
+		input = text + 11;
 
 	history_hide(c);
 
-	if (url && *url) {
-		a.v = url;
+	if (input && *input) {
+		Arg a = { .v = input };
 		loaduri(c, &a);
 	}
 
@@ -2874,11 +2556,18 @@ gboolean
 barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 {
 	if (e->key.keyval == GDK_KEY_Escape) {
+		if (c->mode == ModeSearch)
+			webkit_find_controller_search_finish(c->finder);
 		closebar(c);
 		return TRUE;
 	}
 
-	/* Tab / Shift+Tab to navigate completions */
+	if (c->mode == ModeSearch) {
+		g_idle_add((GSourceFunc)bar_update_search, c);
+		return FALSE;
+	}
+
+	/* Tab / Shift+Tab for completions (command mode only) */
 	if (e->key.keyval == GDK_KEY_Tab) {
 		if (e->key.state & GDK_SHIFT_MASK)
 			history_select(c, -1);
@@ -2887,7 +2576,6 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 		return TRUE;
 	}
 
-	/* Ctrl+n / Ctrl+p for completion navigation */
 	if ((e->key.state & GDK_CONTROL_MASK) && e->key.keyval == GDK_KEY_n) {
 		history_select(c, +1);
 		return TRUE;
@@ -2897,30 +2585,9 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 		return TRUE;
 	}
 
-	/* After any other key, update filter on idle so the entry text is updated first */
 	g_idle_add((GSourceFunc)bar_update_filter, c);
 
 	return FALSE;
-}
-
-static gboolean
-bar_update_filter(gpointer data)
-{
-	Client *c = (Client *)data;
-	const char *text;
-
-	if (c->mode != ModeCommand)
-		return FALSE;
-
-	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
-
-	/* Skip past "[COMMAND] " prefix */
-	if (g_str_has_prefix(text, " [COMMAND] "))
-		text = text + 11;
-
-	history_filter(c, text);
-
-	return FALSE; /* don't repeat */
 }
 
 void
@@ -2960,381 +2627,332 @@ clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h)
 static gboolean
 fifo_read(GIOChannel *chan, GIOCondition cond, gpointer data)
 {
-    Client *c;
-    gchar *line = NULL;
-    gsize len;
-    GError *err = NULL;
+	Client *c;
+	gchar *line = NULL;
+	gsize len;
+	GError *err = NULL;
 
-    /* Use the first client (active window) */
-    c = clients;
-    if (!c)
-        return TRUE;
+	c = clients;
+	if (!c)
+		return TRUE;
 
-    if (g_io_channel_read_line(chan, &line, &len, NULL, &err) == G_IO_STATUS_NORMAL) {
-        if (line) {
-            g_strstrip(line);
-            fprintf(stderr, "fifo cmd: %s\n", line);
+	if (g_io_channel_read_line(chan, &line, &len, NULL, &err) == G_IO_STATUS_NORMAL) {
+		if (line) {
+			g_strstrip(line);
 
-            if (g_str_has_prefix(line, "message-error ")) {
-                fprintf(stderr, "userscript error: %s\n", line + 14);
-            } else if (g_str_has_prefix(line, "message-info ")) {
-                fprintf(stderr, "userscript info: %s\n", line + 13);
-            } else if (g_str_has_prefix(line, "jseval ")) {
-                const char *js = line + 7;
-                while (*js == '-') {
-                    while (*js && *js != ' ')
-                        js++;
-                    while (*js == ' ')
-                        js++;
-                }
-                if (*js)
-                    evalscript(c, "%s", js);
-            } else if (g_str_has_prefix(line, "open ")) {
-                const char *url = line + 5;
-                gboolean new_tab = FALSE;
-                while (*url == '-') {
-                    if (g_str_has_prefix(url, "-t")) {
-                        new_tab = TRUE;
-                    }
-                    while (*url && *url != ' ')
-                        url++;
-                    while (*url == ' ')
-                        url++;
-                }
-                if (*url) {
-                    Arg a = { .v = url };
-                    if (new_tab)
-                        newwindow(c, &a, 0);
-                    else
-                        loaduri(c, &a);
-                }
-            }
-            g_free(line);
-        }
-    }
+			if (g_str_has_prefix(line, "message-error ")) {
+				fprintf(stderr, "userscript error: %s\n", line + 14);
+			} else if (g_str_has_prefix(line, "message-info ")) {
+				fprintf(stderr, "userscript info: %s\n", line + 13);
+			} else if (g_str_has_prefix(line, "jseval ")) {
+				const char *js = line + 7;
+				while (*js == '-') {
+					while (*js && *js != ' ')
+						js++;
+					while (*js == ' ')
+						js++;
+				}
+				if (*js)
+					evalscript(c, "%s", js);
+			} else if (g_str_has_prefix(line, "open ")) {
+				const char *url = line + 5;
+				gboolean new_tab = FALSE;
+				while (*url == '-') {
+					if (g_str_has_prefix(url, "-t")) {
+						new_tab = TRUE;
+					}
+					while (*url && *url != ' ')
+						url++;
+					while (*url == ' ')
+						url++;
+				}
+				if (*url) {
+					Arg a = { .v = url };
+					if (new_tab)
+						newwindow(c, &a, 0);
+					else
+						loaduri(c, &a);
+				}
+			}
+			g_free(line);
+		}
+	}
 
-    if (err) g_error_free(err);
-    return TRUE;
+	if (err) g_error_free(err);
+	return TRUE;
 }
 
 void
 spawnuserscript(Client *c, const Arg *a)
 {
-    const char *script = a->v;
-    const char *uri = geturi(c);
-    const char *title = c->title ? c->title : "";
+	const char *script = a->v;
+	const char *uri = geturi(c);
+	const char *title = c->title ? c->title : "";
 
-    if (!surf_fifo) {
-        fprintf(stderr, "spawnuserscript: no fifo\n");
-        return;
-    }
+	if (!surf_fifo) {
+		fprintf(stderr, "spawnuserscript: no fifo\n");
+		return;
+	}
 
-    /* Fork and exec the userscript with environment set up */
-    if (fork() == 0) {
-        /* Set environment variables compatible with qutebrowser userscripts */
-        setenv("SURF_FIFO", surf_fifo, 1);
-        setenv("SURF_URL", uri, 1);
-        setenv("SURF_TITLE", title, 1);
-        setenv("SURF_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
+	if (fork() == 0) {
+		setenv("SURF_FIFO", surf_fifo, 1);
+		setenv("SURF_URL", uri, 1);
+		setenv("SURF_TITLE", title, 1);
+		setenv("SURF_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
 
-        /* qutebrowser compatibility aliases */
-        setenv("QUTE_FIFO", surf_fifo, 1);
-        setenv("QUTE_URL", uri, 1);
-        setenv("QUTE_TITLE", title, 1);
-        setenv("QUTE_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
+		setenv("QUTE_FIFO", surf_fifo, 1);
+		setenv("QUTE_URL", uri, 1);
+		setenv("QUTE_TITLE", title, 1);
+		setenv("QUTE_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
 
-#ifdef X11_SUPPORT
-        if (display_ctx.backend == DISPLAY_BACKEND_X11 && display_ctx.data.x11.dpy)
-            close(ConnectionNumber(display_ctx.data.x11.dpy));
-#endif
-        close(spair[0]);
-        close(spair[1]);
-        setsid();
-        execl("/bin/sh", "sh", "-c", script, NULL);
-        fprintf(stderr, "spawnuserscript: exec failed: %s\n", script);
-        exit(1);
-    }
+		close(spair[0]);
+		close(spair[1]);
+		setsid();
+		execl("/bin/sh", "sh", "-c", script, NULL);
+		fprintf(stderr, "spawnuserscript: exec failed: %s\n", script);
+		exit(1);
+	}
 }
 
 static gchar *
 preprocess_userscript(const gchar *script)
 {
-    /* Check if this script needs main-world access */
-    gboolean needs_main_world = (strstr(script, "unsafeWindow") != NULL ||
-                                  strstr(script, "@grant unsafeWindow") != NULL ||
-                                  strstr(script, "@grant none") != NULL ||
-                                  strstr(script, "window.fetch") != NULL ||
-                                  strstr(script, "w.fetch") != NULL);
+	gboolean needs_main_world = (strstr(script, "unsafeWindow") != NULL ||
+	                              strstr(script, "@grant unsafeWindow") != NULL ||
+	                              strstr(script, "@grant none") != NULL ||
+	                              strstr(script, "window.fetch") != NULL ||
+	                              strstr(script, "w.fetch") != NULL);
 
-    gboolean is_doc_start = (strstr(script, "@run-at") != NULL &&
-                              strstr(script, "document-start") != NULL);
+	if (needs_main_world) {
+		GString *out = g_string_new(NULL);
 
-    if (needs_main_world) {
-        GString *out = g_string_new(NULL);
+		g_string_append(out,
+		    "(function(){\n"
+		    "var unsafeWindow = window;\n"
+		    "var GM_info = {script:{name:'userscript',version:'1.0'},scriptHandler:'Surf'};\n"
+		    "function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}\n"
+		    "function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
+		    "function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
+		    "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);}\n"
+		    "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);x.onload=function(){if(d.onload)d.onload({responseText:x.responseText,status:x.status});};x.send(d.data||null);}\n"
+		    "var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();}};\n"
+		);
 
-        /* NO script element - just shims + script directly */
-        /* evalscript bypasses CSP since it's native injection */
-        g_string_append(out,
-            "(function(){\n"
-            "var unsafeWindow = window;\n"
-            "var GM_info = {script:{name:'userscript',version:'1.0'},scriptHandler:'Surf'};\n"
-            "function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}\n"
-            "function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
-            "function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
-            "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);}\n"
-            "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);x.onload=function(){if(d.onload)d.onload({responseText:x.responseText,status:x.status});};x.send(d.data||null);}\n"
-            "var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();}};\n"
-        );
+		g_string_append(out, script);
+		g_string_append(out, "\n})();\n");
 
-        g_string_append(out, script);
-        g_string_append(out, "\n})();\n");
+		return g_string_free(out, FALSE);
+	}
 
-        return g_string_free(out, FALSE);
-    }
+	GString *out = g_string_new(NULL);
 
-    /* Non-main-world scripts: wrap in IIFE with GM shims directly */
-    GString *out = g_string_new(NULL);
+	g_string_append(out,
+	    "(function() {\n"
+	    "'use strict';\n"
+	    "\n"
+	    "var unsafeWindow = window;\n"
+	    "var GM_info = {\n"
+	    "  script: { name: 'userscript', version: '1.0', description: '' },\n"
+	    "  scriptHandler: 'Surf'\n"
+	    "};\n"
+	    "function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);if(v===null)return d;try{return JSON.parse(v);}catch(e){return v;}}catch(e){return d;}}\n"
+	    "function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
+	    "function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
+	    "function GM_listValues(){var r=[];try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k.indexOf('_gm_')===0)r.push(k.substring(4));}}catch(e){}return r;}\n"
+	    "function GM_log(){console.log.apply(console,['[GM]'].concat(Array.prototype.slice.call(arguments)));}\n"
+	    "function GM_openInTab(u){return window.open(u,'_blank');}\n"
+	    "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);return s;}\n"
+	    "function GM_setClipboard(t){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t);}\n"
+	    "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);if(d.headers)Object.keys(d.headers).forEach(function(k){try{x.setRequestHeader(k,d.headers[k]);}catch(e){}});if(d.responseType)x.responseType=d.responseType;x.onload=function(){var r={responseText:x.responseText,response:x.response,status:x.status,statusText:x.statusText,readyState:x.readyState,finalUrl:x.responseURL,responseHeaders:x.getAllResponseHeaders()};if(d.onload)d.onload(r);};x.onerror=function(){if(d.onerror)d.onerror({status:x.status});};x.send(d.data||null);return{abort:function(){x.abort();}};};\n"
+	    "var GM={getValue:function(k,d){return Promise.resolve(GM _getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();},deleteValue:function(k){GM_deleteValue(k);return Promise.resolve();},listValues:function(){return Promise.resolve(GM_listValues());},openInTab:function(u){return Promise.resolve(GM_openInTab(u));},setClipboard:function(t){GM_setClipboard(t);return Promise.resolve();},xmlHttpRequest:GM_xmlhttpRequest,info:GM_info};\n"
+	    "function GM_registerMenuCommand(){}\n"
+	    "function GM_unregisterMenuCommand(){}\n"
+	    "function GM_getResourceText(){return '';}\n"
+	    "function GM_getResourceURL(){return '';}\n"
+	    "function GM_notification(d){if(typeof d==='string')d={text:d};if(window.Notification&&Notification.permission==='granted')new Notification(d.title||'Userscript',{body:d.text});}\n"
+	    "\n"
+	);
 
-    g_string_append(out,
-        "(function() {\n"
-        "'use strict';\n"
-        "\n"
-        "var unsafeWindow = window;\n"
-        "var GM_info = {\n"
-        "  script: { name: 'userscript', version: '1.0', description: '' },\n"
-        "  scriptHandler: 'Surf'\n"
-        "};\n"
-        "function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);if(v===null)return d;try{return JSON.parse(v);}catch(e){return v;}}catch(e){return d;}}\n"
-        "function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
-        "function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
-        "function GM_listValues(){var r=[];try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k.indexOf('_gm_')===0)r.push(k.substring(4));}}catch(e){}return r;}\n"
-        "function GM_log(){console.log.apply(console,['[GM]'].concat(Array.prototype.slice.call(arguments)));}\n"
-        "function GM_openInTab(u){return window.open(u,'_blank');}\n"
-        "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);return s;}\n"
-        "function GM_setClipboard(t){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t);}\n"
-        "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);if(d.headers)Object.keys(d.headers).forEach(function(k){try{x.setRequestHeader(k,d.headers[k]);}catch(e){}});if(d.responseType)x.responseType=d.responseType;x.onload=function(){var r={responseText:x.responseText,response:x.response,status:x.status,statusText:x.statusText,readyState:x.readyState,finalUrl:x.responseURL,responseHeaders:x.getAllResponseHeaders()};if(d.onload)d.onload(r);};x.onerror=function(){if(d.onerror)d.onerror({status:x.status});};x.send(d.data||null);return{abort:function(){x.abort();}};};\n"
-        "var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();},deleteValue:function(k){GM_deleteValue(k);return Promise.resolve();},listValues:function(){return Promise.resolve(GM_listValues());},openInTab:function(u){return Promise.resolve(GM_openInTab(u));},setClipboard:function(t){GM_setClipboard(t);return Promise.resolve();},xmlHttpRequest:GM_xmlhttpRequest,info:GM_info};\n"
-        "function GM_registerMenuCommand(){}\n"
-        "function GM_unregisterMenuCommand(){}\n"
-        "function GM_getResourceText(){return '';}\n"
-        "function GM_getResourceURL(){return '';}\n"
-        "function GM_notification(d){if(typeof d==='string')d={text:d};if(window.Notification&&Notification.permission==='granted')new Notification(d.title||'Userscript',{body:d.text});}\n"
-        "\n"
-    );
+	const char *meta_start = strstr(script, "// ==UserScript==");
+	const char *meta_end = strstr(script, "// ==/UserScript==");
+	if (meta_start && meta_end) {
+		const char *name_tag = strstr(meta_start, "// @name");
+		if (name_tag && name_tag < meta_end) {
+			name_tag += 8;
+			while (*name_tag == ' ' || *name_tag == '\t') name_tag++;
+			const char *name_end = strchr(name_tag, '\n');
+			if (name_end) {
+				gchar *name = g_strndup(name_tag, name_end - name_tag);
+				g_strstrip(name);
+				gchar *escaped = g_strescape(name, NULL);
+				g_string_append_printf(out,
+				    "GM_info.script.name = \"%s\";\n", escaped);
+				g_free(escaped);
+				g_free(name);
+			}
+		}
 
-    /* Parse script metadata for GM_info */
-    const char *meta_start = strstr(script, "// ==UserScript==");
-    const char *meta_end = strstr(script, "// ==/UserScript==");
-    if (meta_start && meta_end) {
-        const char *name_tag = strstr(meta_start, "// @name");
-        if (name_tag && name_tag < meta_end) {
-            name_tag += 8;
-            while (*name_tag == ' ' || *name_tag == '\t') name_tag++;
-            const char *name_end = strchr(name_tag, '\n');
-            if (name_end) {
-                gchar *name = g_strndup(name_tag, name_end - name_tag);
-                g_strstrip(name);
-                gchar *escaped = g_strescape(name, NULL);
-                g_string_append_printf(out,
-                    "GM_info.script.name = \"%s\";\n", escaped);
-                g_free(escaped);
-                g_free(name);
-            }
-        }
+		const char *ver_tag = strstr(meta_start, "// @version");
+		if (ver_tag && ver_tag < meta_end) {
+			ver_tag += 11;
+			while (*ver_tag == ' ' || *ver_tag == '\t') ver_tag++;
+			const char *ver_end = strchr(ver_tag, '\n');
+			if (ver_end) {
+				gchar *ver = g_strndup(ver_tag, ver_end - ver_tag);
+				g_strstrip(ver);
+				gchar *escaped = g_strescape(ver, NULL);
+				g_string_append_printf(out,
+				    "GM_info.script.version = \"%s\";\n", escaped);
+				g_free(escaped);
+				g_free(ver);
+			}
+		}
+	}
 
-        const char *ver_tag = strstr(meta_start, "// @version");
-        if (ver_tag && ver_tag < meta_end) {
-            ver_tag += 11;
-            while (*ver_tag == ' ' || *ver_tag == '\t') ver_tag++;
-            const char *ver_end = strchr(ver_tag, '\n');
-            if (ver_end) {
-                gchar *ver = g_strndup(ver_tag, ver_end - ver_tag);
-                g_strstrip(ver);
-                gchar *escaped = g_strescape(ver, NULL);
-                g_string_append_printf(out,
-                    "GM_info.script.version = \"%s\";\n", escaped);
-                g_free(escaped);
-                g_free(ver);
-            }
-        }
-    }
+	g_string_append(out, "\n/* --- User Script --- */\n");
+	g_string_append(out, script);
+	g_string_append(out, "\n})();\n");
 
-    g_string_append(out, "\n/* --- User Script --- */\n");
-    g_string_append(out, script);
-    g_string_append(out, "\n})();\n");
-
-    return g_string_free(out, FALSE);
+	return g_string_free(out, FALSE);
 }
 
 static void
 setup_fifo(Client *c)
 {
-    int fd;
+	int fd;
 
-    /* Only create once */
-    if (surf_fifo)
-        return;
+	if (surf_fifo)
+		return;
 
-    surf_fifo = g_strdup_printf("/tmp/surf-fifo-%ld", (long)getpid());
+	surf_fifo = g_strdup_printf("/tmp/surf-fifo-%ld", (long)getpid());
 
-    /* Remove stale fifo if it exists */
-    unlink(surf_fifo);
-    if (mkfifo(surf_fifo, 0600) != 0) {
-        fprintf(stderr, "failed to create fifo: %s\n", surf_fifo);
-        g_free(surf_fifo);
-        surf_fifo = NULL;
-        return;
-    }
+	unlink(surf_fifo);
+	if (mkfifo(surf_fifo, 0600) != 0) {
+		fprintf(stderr, "failed to create fifo: %s\n", surf_fifo);
+		g_free(surf_fifo);
+		surf_fifo = NULL;
+		return;
+	}
 
-    /* open nonblocking so we don't hang */
-    fd = open(surf_fifo, O_RDWR | O_NONBLOCK);
-    if (fd < 0) {
-        fprintf(stderr, "failed to open fifo: %s\n", surf_fifo);
-        g_free(surf_fifo);
-        surf_fifo = NULL;
-        return;
-    }
+	fd = open(surf_fifo, O_RDWR | O_NONBLOCK);
+	if (fd < 0) {
+		fprintf(stderr, "failed to open fifo: %s\n", surf_fifo);
+		g_free(surf_fifo);
+		surf_fifo = NULL;
+		return;
+	}
 
-    fifo_chan = g_io_channel_unix_new(fd);
-    g_io_channel_set_encoding(fifo_chan, NULL, NULL);
-    g_io_channel_set_flags(fifo_chan,
-        g_io_channel_get_flags(fifo_chan) | G_IO_FLAG_NONBLOCK, NULL);
-    g_io_channel_set_close_on_unref(fifo_chan, TRUE);
-    g_io_add_watch(fifo_chan, G_IO_IN, fifo_read, c);
-
-    fprintf(stderr, "fifo created: %s\n", surf_fifo);
+	fifo_chan = g_io_channel_unix_new(fd);
+	g_io_channel_set_encoding(fifo_chan, NULL, NULL);
+	g_io_channel_set_flags(fifo_chan,
+	    g_io_channel_get_flags(fifo_chan) | G_IO_FLAG_NONBLOCK, NULL);
+	g_io_channel_set_close_on_unref(fifo_chan, TRUE);
+	g_io_add_watch(fifo_chan, G_IO_IN, fifo_read, c);
 }
 
 static void
 inject_userscripts_early(WebKitUserContentManager *cm, const char *uri)
 {
-    char *scriptdir = g_build_filename(g_get_home_dir(), ".surf", "userscripts", NULL);
-    fprintf(stderr, "inject_userscripts_early: looking in %s\n", scriptdir);
-    GDir *dir = g_dir_open(scriptdir, 0, NULL);
-    const char *filename;
+	char *scriptdir = g_build_filename(g_get_home_dir(), ".surf", "userscripts", NULL);
+	GDir *dir = g_dir_open(scriptdir, 0, NULL);
+	const char *filename;
 
-    if (!dir) {
-        fprintf(stderr, "inject_userscripts_early: cant open dir %s\n", scriptdir);
-        g_free(scriptdir);
-        return;
-    }
+	if (!dir) {
+		g_free(scriptdir);
+		return;
+	}
 
-    while ((filename = g_dir_read_name(dir))) {
-        if (!g_str_has_suffix(filename, ".user.js")) {
-            fprintf(stderr, "inject_userscripts_early: skipping non-userscript: %s\n", filename);
-            continue;
-        }
+	while ((filename = g_dir_read_name(dir))) {
+		if (!g_str_has_suffix(filename, ".user.js"))
+			continue;
 
-        char *filepath = g_build_filename(scriptdir, filename, NULL);
-        gchar *script = NULL;
-        gsize len;
+		char *filepath = g_build_filename(scriptdir, filename, NULL);
+		gchar *script = NULL;
+		gsize len;
 
-        if (!g_file_get_contents(filepath, &script, &len, NULL) || !len) {
-            fprintf(stderr, "inject_userscripts_early: failed to read %s\n", filename);
-            g_free(filepath);
-            continue;
-        }
+		if (!g_file_get_contents(filepath, &script, &len, NULL) || !len) {
+			g_free(filepath);
+			continue;
+		}
 
-        /* Determine injection time from metadata */
-        gboolean is_doc_start = (strstr(script, "@run-at") != NULL &&
-                                 strstr(script, "document-start") != NULL);
+		gboolean is_doc_start = (strstr(script, "@run-at") != NULL &&
+		                         strstr(script, "document-start") != NULL);
 
-        /* Check if script needs page-world access */
-        gboolean needs_page_world = (strstr(script, "unsafeWindow") != NULL ||
-                                     strstr(script, "@grant none") != NULL ||
-                                     strstr(script, "@grant unsafeWindow") != NULL);
+		gboolean needs_page_world = (strstr(script, "unsafeWindow") != NULL ||
+		                             strstr(script, "@grant none") != NULL ||
+		                             strstr(script, "@grant unsafeWindow") != NULL);
 
-        /* Extract @match, @include, @exclude patterns from metadata */
-        GPtrArray *allow = g_ptr_array_new_with_free_func(g_free);
-        GPtrArray *exclude = g_ptr_array_new_with_free_func(g_free);
-        gboolean has_patterns = FALSE;
+		GPtrArray *allow = g_ptr_array_new_with_free_func(g_free);
+		GPtrArray *exclude = g_ptr_array_new_with_free_func(g_free);
+		gboolean has_patterns = FALSE;
 
-        char **lines = g_strsplit(script, "\n", -1);
-        for (int i = 0; lines[i]; i++) {
-            char *line = g_strstrip(lines[i]);
-            if (g_str_has_prefix(line, "// ==/UserScript=="))
-                break;
-            if (g_str_has_prefix(line, "// @match ")) {
-                char *pattern = g_strstrip(g_strdup(line + 10));
-                g_ptr_array_add(allow, pattern);
-                has_patterns = TRUE;
-            } else if (g_str_has_prefix(line, "// @include ")) {
-                char *pattern = g_strstrip(g_strdup(line + 12));
-                g_ptr_array_add(allow, pattern);
-                has_patterns = TRUE;
-            } else if (g_str_has_prefix(line, "// @exclude ")) {
-                char *pattern = g_strstrip(g_strdup(line + 12));
-                g_ptr_array_add(exclude, pattern);
-            }
-        }
-        g_strfreev(lines);
+		char **lines = g_strsplit(script, "\n", -1);
+		for (int i = 0; lines[i]; i++) {
+			char *line = g_strstrip(lines[i]);
+			if (g_str_has_prefix(line, "// ==/UserScript=="))
+				break;
+			if (g_str_has_prefix(line, "// @match ")) {
+				g_ptr_array_add(allow, g_strstrip(g_strdup(line + 10)));
+				has_patterns = TRUE;
+			} else if (g_str_has_prefix(line, "// @include ")) {
+				g_ptr_array_add(allow, g_strstrip(g_strdup(line + 12)));
+				has_patterns = TRUE;
+			} else if (g_str_has_prefix(line, "// @exclude ")) {
+				g_ptr_array_add(exclude, g_strstrip(g_strdup(line + 12)));
+			}
+		}
+		g_strfreev(lines);
 
-        /* NULL-terminate arrays for WebKit API */
-        g_ptr_array_add(allow, NULL);
-        g_ptr_array_add(exclude, NULL);
+		g_ptr_array_add(allow, NULL);
+		g_ptr_array_add(exclude, NULL);
 
-        gchar *processed = preprocess_userscript(script);
-        fprintf(stderr, "inject_userscripts_early: processed preview: %.200s\n", processed);
+		gchar *processed = preprocess_userscript(script);
 
-        WebKitUserScriptInjectionTime inject_time = is_doc_start ?
-            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START :
-            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
+		WebKitUserScriptInjectionTime inject_time = is_doc_start ?
+		    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START :
+		    WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
 
-        const char * const *allow_list = has_patterns ?
-            (const char * const *)allow->pdata : NULL;
-        const char * const *exclude_list = has_patterns ?
-            (const char * const *)exclude->pdata : NULL;
+		const char * const *allow_list = has_patterns ?
+		    (const char * const *)allow->pdata : NULL;
+		const char * const *exclude_list = has_patterns ?
+		    (const char * const *)exclude->pdata : NULL;
 
-        WebKitUserScript *us;
+		WebKitUserScript *us;
 
-        if (needs_page_world) {
-            /*
-             * Scripts with @grant none or unsafeWindow need access to the
-             * page's real window object. We inject into a named world that
-             * shares the page's DOM and JS context.
-             *
-             * WEBKIT_USER_CONTENT_INJECT_TOP_FRAME avoids running in
-             * iframes where it could break things.
-             */
-            us = webkit_user_script_new_for_world(
-                processed,
-                WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
-                inject_time,
-                "surf-page-world",
-                allow_list,
-                exclude_list);
-        } else {
-            /*
-             * Normal scripts run in WebKit's isolated world.
-             * They get their own JS context but can still access the DOM.
-             * WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES lets them run in
-             * iframes too (matching Greasemonkey behavior).
-             */
-            us = webkit_user_script_new(
-                processed,
-                WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-                inject_time,
-                allow_list,
-                exclude_list);
-        }
+		if (needs_page_world) {
+			us = webkit_user_script_new_for_world(
+			    processed,
+			    WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+			    inject_time,
+			    "surf-page-world",
+			    allow_list,
+			    exclude_list);
+		} else {
+			us = webkit_user_script_new(
+			    processed,
+			    WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+			    inject_time,
+			    allow_list,
+			    exclude_list);
+		}
 
-        webkit_user_content_manager_add_script(cm, us);
-        webkit_user_script_unref(us);
-        g_free(processed);
+		webkit_user_content_manager_add_script(cm, us);
+		webkit_user_script_unref(us);
+		g_free(processed);
 
-        fprintf(stderr, "inject_userscripts_early: registered (%s%s): %s\n",
-                is_doc_start ? "document-start" : "document-end",
-                needs_page_world ? ", page-world" : "",
-                filename);
+		fprintf(stderr, "userscript loaded (%s%s): %s\n",
+		        is_doc_start ? "document-start" : "document-end",
+		        needs_page_world ? ", page-world" : "",
+		        filename);
 
-        g_ptr_array_free(allow, TRUE);
-        g_ptr_array_free(exclude, TRUE);
-        g_free(script);
-        g_free(filepath);
-    }
+		g_ptr_array_free(allow, TRUE);
+		g_ptr_array_free(exclude, TRUE);
+		g_free(script);
+		g_free(filepath);
+	}
 
-    g_dir_close(dir);
-    g_free(scriptdir);
+	g_dir_close(dir);
+	g_free(scriptdir);
 }
 
 static void
@@ -3366,7 +2984,6 @@ history_load(void)
 		if (!lines[i][0])
 			continue;
 
-		/* Format: timestamp<space>url[<space>title] */
 		char *space1 = strchr(lines[i], ' ');
 		if (!space1)
 			continue;
@@ -3374,7 +2991,7 @@ history_load(void)
 		long ts = atol(lines[i]);
 		char *url = space1 + 1;
 		char *space2 = strchr(url, ' ');
-		
+
 		HistoryEntry entry;
 		entry.timestamp = ts;
 		if (space2) {
@@ -3404,15 +3021,13 @@ history_add(const char *uri, const char *title)
 	if (g_str_has_prefix(uri, "file://"))
 		return;
 
-	/* Read existing history */
 	gboolean have_contents = g_file_get_contents(historyfile, &contents, NULL, NULL) && contents;
 
 	if (have_contents) {
 		gchar **lines = g_strsplit(contents, "\n", -1);
 		GString *newcontents = g_string_new(NULL);
-		gboolean dominated = FALSE;
 
-		/* Check if the most recent entry already has this URL WITH a title */
+		/* Check most recent entry */
 		for (int i = g_strv_length(lines) - 1; i >= 0; i--) {
 			if (!lines[i] || !*lines[i])
 				continue;
@@ -3430,20 +3045,18 @@ history_add(const char *uri, const char *title)
 				url_only = g_strdup(saved_url);
 
 			if (strcmp(url_only, uri) == 0) {
-				/* Same URL exists - only skip if it already has a title
-				 * and we don't have a better one */
 				if (next_space && *(next_space + 1) && (!title || !*title)) {
 					g_free(url_only);
 					g_strfreev(lines);
 					g_free(contents);
-					return; /* Already have a titled entry, nothing new to add */
+					return;
 				}
 			}
 			g_free(url_only);
-			break; /* Only check most recent */
+			break;
 		}
 
-		/* Remove ALL old entries with same URI */
+		/* Remove old entries with same URI */
 		for (int i = 0; lines[i]; i++) {
 			if (!lines[i][0])
 				continue;
@@ -3517,6 +3130,24 @@ history_hide(Client *c)
 	history_selected = -1;
 }
 
+static gboolean
+bar_update_filter(gpointer data)
+{
+	Client *c = (Client *)data;
+	const char *text;
+
+	if (c->mode != ModeCommand)
+		return FALSE;
+
+	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
+
+	if (g_str_has_prefix(text, " [COMMAND] "))
+		text = text + 11;
+
+	history_filter(c, text);
+
+	return FALSE;
+}
 
 static void
 history_filter(Client *c, const char *text)
@@ -3546,7 +3177,6 @@ history_filter(Client *c, const char *text)
 			G_CALLBACK(history_row_activated), c);
 		gtk_container_add(GTK_CONTAINER(history_scroll), history_list);
 
-		/* Find where statusbar is */
 		GList *kids = gtk_container_get_children(GTK_CONTAINER(c->vbox));
 		int statusbar_pos = 0;
 		int idx = 0;
@@ -3558,7 +3188,6 @@ history_filter(Client *c, const char *text)
 		}
 		g_list_free(kids);
 
-		/* Insert history right before statusbar */
 		gtk_box_pack_start(GTK_BOX(c->vbox), history_scroll, FALSE, FALSE, 0);
 		gtk_box_reorder_child(GTK_BOX(c->vbox), history_scroll, statusbar_pos);
 
@@ -3684,7 +3313,6 @@ history_filter(Client *c, const char *text)
 
 		gtk_list_box_insert(GTK_LIST_BOX(history_list), label, -1);
 
-		/* Apply CSS to each new row */
 		GtkListBoxRow *row = gtk_list_box_get_row_at_index(
 			GTK_LIST_BOX(history_list), count);
 		if (row) {
@@ -3777,19 +3405,15 @@ history_select(Client *c, int direction)
 }
 
 void
-tab_pin(Client *c, const Arg *a) {
+tab_pin(Client *c, const Arg *a)
+{
 	if (tabs.count <= 0)
 		return;
 
-	if (!tab_pins) {
+	if (!tab_pins)
 		tab_pins = g_malloc0(tabs.count * sizeof(gboolean));
-	}
 
 	tab_pins[tabs.active] = !tab_pins[tabs.active];
-
-	fprintf(stderr, "tab %d %s\n", tabs.active,
-		tab_pins[tabs.active] ? "pinned" : "unpinned");
-
 	updatetitle(c);
 }
 
@@ -3807,7 +3431,6 @@ pin_keepalive(gpointer data)
 		if (!tabs.views[i])
 			continue;
 
-		/* Poke the webview to prevent suspension */
 		webkit_web_view_evaluate_javascript(tabs.views[i],
 			"void(0);", -1, NULL, NULL, NULL, NULL, NULL);
 	}
@@ -3821,12 +3444,10 @@ main(int argc, char *argv[])
 	Arg arg;
 	Client *c;
 
-	/* Force WebKit into single-process mode to fix YouTube scrolling */
 	g_setenv("WEBKIT_FORCE_SANDBOX", "0", TRUE);
 
 	memset(&arg, 0, sizeof(arg));
 
-	/* command line args */
 	ARGBEGIN {
 	case 'a':
 		defconfig[CookiePolicies].val.v = EARGF(usage());
@@ -3855,8 +3476,7 @@ main(int argc, char *argv[])
 		defconfig[DiskCache].prio = 2;
 		break;
 	case 'e':
-		fprintf(stderr, "Warning: Embedding (-e) is deprecated in Wayland mode\n");
-		/* Continue without embedding */
+		/* embedding deprecated */
 		break;
 	case 'f':
 		defconfig[RunInFullscreen].val.i = 0;
@@ -3959,14 +3579,6 @@ main(int argc, char *argv[])
 
 	loaduri(c, &arg);
 	updatetitle(c);
-
-	/* Set up D-Bus event processing for Wayland */
-#ifdef WAYLAND_SUPPORT
-	if (display_ctx.backend == DISPLAY_BACKEND_WAYLAND) {
-		g_timeout_add(50, (GSourceFunc)dbus_process_events, NULL);
-		// GTK handles Wayland display events natively through gtk_main()
-	}
-#endif
 
 	gtk_main();
 	cleanup();

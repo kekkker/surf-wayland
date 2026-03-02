@@ -1,23 +1,13 @@
 /* modifier 0 means no modifier */
-static int surfuseragent    = 1;  /* Append Surf version to default WebKit user agent */
-static char *fulluseragent  = ""; /* Or override the whole user agent string */
+static int surfuseragent    = 1;
+static char *fulluseragent  = "";
 static char *scriptfile     = "~/.surf/script.js";
 static char *styledir       = "~/.surf/styles/";
 static char *certdir        = "~/.surf/certificates/";
 static char *cachedir       = "~/.surf/cache/";
 static char *cookiefile     = "~/.surf/cookies.txt";
 
-/* Display backend configuration */
-static int display_backend = 0;  /* 0=auto, 1=X11, 2=Wayland */
-
-/* Webkit default features */
-/* Highest priority value will be used.
- * Default parameters are priority 0
- * Per-uri parameters are priority 1
- * Command parameters are priority 2
- */
 static Parameter defconfig[ParameterLast] = {
-	/* parameter                    Arg value       priority */
 	[AccessMicrophone]    =       { { .i = 0 },     },
 	[AccessWebcam]        =       { { .i = 0 },     },
 	[Certificate]         =       { { .i = 0 },     },
@@ -58,26 +48,10 @@ static UriParameters uriparams[] = {
 	}, },
 };
 
-/* default window size: width, height */
 static int winsize[] = { 800, 600 };
 
 static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
                                     WEBKIT_FIND_OPTIONS_WRAP_AROUND;
-
-#define PROMPT_GO   "Go:"
-#define PROMPT_FIND "Find:"
-
-/* SETPROP(readprop, setprop, prompt)*/
-#define SETPROP(r, s, p) { \
-        .v = (const char *[]){ "/bin/sh", "-c", \
-             "prop=\"$(printf '%b' \"$(xprop -id $1 "r" " \
-             "| sed -e 's/^"r"(UTF8_STRING) = \"\\(.*\\)\"/\\1/' " \
-             "      -e 's/\\\\\\(.\\)/\\1/g')\" " \
-             "| dmenu -p '"p"' -w $1)\" " \
-             "&& xprop -id $1 -f "s" 8u -set "s" \"$prop\"", \
-             "surf-setprop", winid, NULL \
-        } \
-}
 
 /* DOWNLOAD(URI, referer) */
 #define DOWNLOAD(u, r) { \
@@ -89,9 +63,6 @@ static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
 }
 
 /* PLUMB(URI) */
-/* This called when some URI which does not begin with "about:",
- * "http://" or "https://" should be opened.
- */
 #define PLUMB(u) {\
         .v = (const char *[]){ "/bin/sh", "-c", \
              "xdg-open \"$0\"", u, NULL \
@@ -106,38 +77,21 @@ static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
 }
 
 /* styles */
-/*
- * The iteration will stop at the first match, beginning at the beginning of
- * the list.
- */
 static SiteSpecific styles[] = {
-	/* regexp               file in $styledir */
 	{ ".*",                 "default.css" },
 };
 
 /* certificates */
-/*
- * Provide custom certificate for urls
- */
 static SiteSpecific certs[] = {
-	/* regexp               file in $certdir */
 	{ "://suckless\\.org/", "suckless.org.crt" },
 };
 
 #define MODKEY GDK_CONTROL_MASK
 
-/* hotkeys */
-/*
- * If you use anything else but MODKEY and GDK_SHIFT_MASK, don't forget to
- * edit the CLEANMASK() macro.
- */
 static Key keys[] = {
 	/* modifier              keyval          function    arg */
 
-	/* --- Ctrl+ keybinds (work in both modes) --- */
-	{ MODKEY,                GDK_KEY_g,      spawn,      SETPROP("_SURF_URI", "_SURF_GO", PROMPT_GO) },
-	{ MODKEY,                GDK_KEY_f,      spawn,      SETPROP("_SURF_FIND", "_SURF_FIND", PROMPT_FIND) },
-	{ MODKEY,                GDK_KEY_slash,  spawn,      SETPROP("_SURF_FIND", "_SURF_FIND", PROMPT_FIND) },
+	/* --- Ctrl+ keybinds --- */
 	{ MODKEY,                GDK_KEY_c,      stop,       { 0 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_r,      reload,     { .i = 1 } },
 	{ MODKEY,                GDK_KEY_r,      reload,     { .i = 0 } },
@@ -147,11 +101,11 @@ static Key keys[] = {
 	{ MODKEY,                GDK_KEY_k,      scrollv,    { .i = -10 } },
 	{ MODKEY,                GDK_KEY_space,  scrollv,    { .i = +50 } },
 	{ MODKEY,                GDK_KEY_b,      scrollv,    { .i = -50 } },
+	{ MODKEY,                GDK_KEY_d,      scrollv,    { .i = +50 } },
+	{ MODKEY,                GDK_KEY_u,      scrollv,    { .i = -50 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_j,      zoom,       { .i = -1 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_k,      zoom,       { .i = +1 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_q,      zoom,       { .i = 0  } },
-	{ 0,                GDK_KEY_minus,  zoom,       { .i = -1 } },
-	{ 0|GDK_SHIFT_MASK,                GDK_KEY_plus,   zoom,       { .i = +1 } },
 	{ MODKEY,                GDK_KEY_p,      clipboard,  { .i = 1 } },
 	{ MODKEY,                GDK_KEY_y,      clipboard,  { .i = 0 } },
 	{ MODKEY,                GDK_KEY_n,      find,       { .i = +1 } },
@@ -168,14 +122,15 @@ static Key keys[] = {
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_t,      toggle,     { .i = StrictTLS } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_m,      toggle,     { .i = Style } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_d,      toggle,     { .i = DarkMode } },
-	{ MODKEY,                GDK_KEY_F1,     showxid,     { 0 } },
+	{ MODKEY,                GDK_KEY_F1,     showxid,    { 0 } },
 
-	/* --- Normal-mode bare keys (handled specially in winevent) --- */
+	/* --- Normal-mode bare keys --- */
 	{ 0,                     GDK_KEY_Escape, stop,       { 0 } },
 	{ 0,                     GDK_KEY_F11,    togglefullscreen, { 0 } },
 	{ 0,                     GDK_KEY_i,      toggleinsert, { 0 } },
-	{ 0,                     GDK_KEY_o,      openbar,    { .i = 0 } }, /* open bar with completions */
-	{ 0,                     GDK_KEY_e,      openbar,    { .i = 1 } }, /* edit current URL */
+	{ 0,                     GDK_KEY_o,      openbar,    { .i = 0 } },
+	{ 0,                     GDK_KEY_e,      openbar,    { .i = 1 } },
+	{ 0,                     GDK_KEY_slash,  opensearch, { 0 } },
 	{ 0,                     GDK_KEY_j,      scrollv,    { .i = +10 } },
 	{ 0,                     GDK_KEY_k,      scrollv,    { .i = -10 } },
 	{ 0,                     GDK_KEY_u,      scrollv,    { .i = -50 } },
@@ -184,27 +139,21 @@ static Key keys[] = {
 	{ 0,                     GDK_KEY_r,      reload,     { .i = 0 } },
 	{ 0,                     GDK_KEY_g,      scrollv,    { .i = -100 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_g,      scrollv,    { .i = +100 } },
-    { 0,                     GDK_KEY_f,      hints_start, { .i = HintModeLink } },
-    { GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
-    { 0,                     GDK_KEY_y,      hints_start, { .i = HintModeYank } },
-
-	{ 0,                     GDK_KEY_t,      tab_new,    { .i = 0 } }, /* new tab + open bar */
-	{ GDK_SHIFT_MASK,        GDK_KEY_o,      tab_new,    { .i = 0 } }, /* new tab + open bar */
+	{ 0,                     GDK_KEY_minus,  zoom,       { .i = -1 } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_plus,   zoom,       { .i = +1 } },
+	{ 0,                     GDK_KEY_f,      hints_start, { .i = HintModeLink } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
+	{ 0,                     GDK_KEY_y,      hints_start, { .i = HintModeYank } },
+	{ 0,                     GDK_KEY_t,      tab_new,    { .i = 0 } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_o,      tab_new,    { .i = 0 } },
 	{ 0,                     GDK_KEY_d,      tab_close,  { 0 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_j,      tab_next,   { 0 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_k,      tab_prev,   { 0 } },
-	{ 0,                     GDK_KEY_e,      openbar,    { .i = 1 } }, /* edit current URL */
-	{ 0,                     GDK_KEY_t,      tab_new,    { 0 } },
-	{ GDK_SHIFT_MASK,        GDK_KEY_o,      tab_new,    { 0 } },
-	{ MODKEY,                GDK_KEY_d,      scrollv,    { .i = +50 } },
-	{ MODKEY,                GDK_KEY_u,      scrollv,    { .i = -50 } },
-    { 0,                     GDK_KEY_p,     spawnuserscript, { .v = "$HOME/.surf/userscripts/surf-pass" } },
-    { GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_p,      tab_pin,    { 0 } },
+	{ 0,                     GDK_KEY_p,      spawnuserscript, { .v = "$HOME/.surf/userscripts/surf-pass" } },
 };
 
 /* button definitions */
-/* target can be OnDoc, OnLink, OnImg, OnMedia, OnEdit, OnBar, OnSel, OnAny */
 static Button buttons[] = {
 	/* target       event mask      button  function        argument        stop event */
 	{ OnLink,       0,              2,      clicknewwindow, { .i = 0 },     1 },
@@ -215,13 +164,9 @@ static Button buttons[] = {
 	{ OnMedia,      MODKEY,         1,      clickexternplayer, { 0 },       1 },
 };
 
-/* Status bar colors - qutebrowser style */
+/* Status bar colors */
 static const char *stat_bg_normal  = "#000000";
 static const char *stat_fg_normal  = "#ffffff";
-static const char *stat_bg_command = "#000000";
-static const char *stat_fg_command = "#ffffff";
-static const char *stat_fg_url     = "#87afd7"; /* blue for URLs */
-static const char *stat_fg_https   = "#5faf5f"; /* green for HTTPS */
 static const char *stat_font       = "monospace 11";
 
 static const char *searchengine = "https://duckduckgo.com/?q=%s";
