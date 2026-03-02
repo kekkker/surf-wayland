@@ -35,6 +35,7 @@ typedef struct Client {
 	int tab_pinned;
 	Mode mode;
 	GtkWidget *vbox;
+    GtkWidget *tabbar;
 	GtkWidget *statusbar;
 	GtkWidget *statentry;
 	const char *title, *overtitle, *targeturi;
@@ -51,3 +52,4 @@ void tab_close(Client *c, const Arg *a);
 void tab_next(Client *c, const Arg *a);
 void tab_prev(Client *c, const Arg *a);
 void openbar_newtab(Client *c, const Arg *a);
+void tab_switch_to(Client *c, int index);  // ADD THIS

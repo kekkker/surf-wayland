@@ -18,95 +18,33 @@
 #define MSGBUFSZ 8
 
 static WebKitWebExtension *webext;
-static int sock = -1;
 static GHashTable *pages_table = NULL;
-
-static size_t
-evalmsg(char *msg, size_t sz)
-{
-	char js[48];
-	WebKitWebPage *page = NULL;
-	JSCContext *jsc;
-	JSCValue *jsv;
-	GHashTableIter iter;
-	gpointer key, value;
-
-	if (sz < 2)
-		return 0;
-
-	/* Try exact page ID match first */
-	if ((unsigned char)msg[0] != 0) {
-		g_hash_table_iter_init(&iter, pages_table);
-		while (g_hash_table_iter_next(&iter, &key, &value)) {
-			WebKitWebPage *p = (WebKitWebPage *)value;
-			if (WEBKIT_IS_WEB_PAGE(p) &&
-			    webkit_web_page_get_id(p) == (guint64)(unsigned char)msg[0]) {
-				page = p;
-				break;
-			}
-		}
-	}
-
-	/* Fallback: use any valid page */
-	if (!page) {
-		g_hash_table_iter_init(&iter, pages_table);
-		while (g_hash_table_iter_next(&iter, &key, &value)) {
-			if (WEBKIT_IS_WEB_PAGE((WebKitWebPage *)value)) {
-				page = (WebKitWebPage *)value;
-				break;
-			}
-		}
-	}
-
-	if (!page)
-		return sz;
-
-	jsc = webkit_frame_get_js_context(webkit_web_page_get_main_frame(page));
-	jsv = NULL;
-
-	switch (msg[1]) {
-	case 'h':
-		if (sz < 3) {
-			sz = 0;
-			break;
-		}
-		sz = 3;
-		snprintf(js, sizeof(js),
-		         "window.scrollBy(window.innerWidth/100*%hhd,0);",
-		         msg[2]);
-		jsv = jsc_context_evaluate(jsc, js, -1);
-		break;
-	case 'v':
-		if (sz < 3) {
-			sz = 0;
-			break;
-		}
-		sz = 3;
-		snprintf(js, sizeof(js),
-		         "window.scrollBy(0,window.innerHeight/100*%hhd);",
-		         msg[2]);
-		jsv = jsc_context_evaluate(jsc, js, -1);
-		break;
-	default:
-		fprintf(stderr, "%s:%d:evalmsg: unknown cmd(%zu): '%#x'\n",
-		        __FILE__, __LINE__, sz, msg[1]);
-	}
-
-	g_object_unref(jsc);
-	if (jsv)
-		g_object_unref(jsv);
-
-	return sz;
-}
 
 static void
 click_at(WebKitWebPage *page, int x, int y)
 {
 	WebKitDOMDocument *doc;
-	gchar *js;
+	WebKitDOMElement *elem;
 
 	doc = webkit_web_page_get_dom_document(page);
-	js = g_strdup_printf(
+	
+	/* Get element at coordinates */
+	elem = webkit_dom_document_element_from_point(doc, x, y);
+	
+	if (!elem)
+		return;
+	
+	/* Focus the element first if it's focusable */
+	gchar *tagname = webkit_dom_element_get_tag_name(elem);
+	if (tagname && (strcmp(tagname, "INPUT") == 0 ||
+	                strcmp(tagname, "TEXTAREA") == 0 ||
+	                strcmp(tagname, "SELECT") == 0)) {
+		webkit_dom_element_focus(elem);
+	}
+	g_free(tagname);
+	
+	/* Then click it */
+	gchar *js = g_strdup_printf(
 		"document.elementFromPoint(%d, %d).click();", x, y);
 
 	WebKitDOMElement *script = webkit_dom_document_create_element(doc, "script", NULL);
@@ -125,12 +63,13 @@ static void
 find_hints(WebKitWebPage *page)
 {
 	WebKitDOMDocument *doc;
-	WebKitDOMNodeList *links, *buttons;
+	WebKitDOMNodeList *links, *buttons, *inputs, *clickable;
 	GVariantBuilder builder;
 
 	doc = webkit_web_page_get_dom_document(page);
 	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(siiii)"));
 
+	/* Links and areas */
 	links = webkit_dom_document_query_selector_all(doc, "a[href], area[href]", NULL);
 	if (links) {
 		gulong len = webkit_dom_node_list_get_length(links);
@@ -163,6 +102,7 @@ find_hints(WebKitWebPage *page)
 		g_object_unref(links);
 	}
 
+	/* Buttons */
 	buttons = webkit_dom_document_query_selector_all(doc,
 		"button, input[type=button], input[type=submit]", NULL);
 	if (buttons) {
@@ -188,6 +128,67 @@ find_hints(WebKitWebPage *page)
 			g_object_unref(rect);
 		}
 		g_object_unref(buttons);
+	}
+
+	/* Input fields, textareas, selects */
+	inputs = webkit_dom_document_query_selector_all(doc,
+		"input[type=text], input[type=search], input[type=email], input[type=password], "
+		"input[type=tel], input[type=url], input[type=number], "
+		"textarea, select, input:not([type])", NULL);
+	if (inputs) {
+		gulong len = webkit_dom_node_list_get_length(inputs);
+		for (gulong i = 0; i < len; i++) {
+			WebKitDOMNode *node = webkit_dom_node_list_item(inputs, i);
+			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
+
+			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
+			gfloat x = webkit_dom_client_rect_get_left(rect);
+			gfloat y = webkit_dom_client_rect_get_top(rect);
+			gfloat width = webkit_dom_client_rect_get_width(rect);
+			gfloat height = webkit_dom_client_rect_get_height(rect);
+
+			if (width >= 3 && height >= 3) {
+				gchar *marker = g_strdup_printf("[click:%d,%d]",
+					(gint)(x + width/2), (gint)(y + height/2));
+				g_variant_builder_add(&builder, "(siiii)",
+					marker, (gint)x, (gint)y, (gint)width, (gint)height);
+				g_free(marker);
+			}
+
+			g_object_unref(rect);
+		}
+		g_object_unref(inputs);
+	}
+
+    clickable = webkit_dom_document_query_selector_all(doc,
+        "[onclick]:not([aria-hidden=true]), "
+        "[role=button]:not([aria-hidden=true]), "
+        "[role=link]:not([aria-hidden=true]), "
+        "[role=tab], [role=menuitem], "
+        "[tabindex='0'], [tabindex='1'], [tabindex='2']", NULL);
+	if (clickable) {
+		gulong len = webkit_dom_node_list_get_length(clickable);
+		for (gulong i = 0; i < len; i++) {
+			WebKitDOMNode *node = webkit_dom_node_list_item(clickable, i);
+			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
+
+			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
+			gfloat x = webkit_dom_client_rect_get_left(rect);
+			gfloat y = webkit_dom_client_rect_get_top(rect);
+			gfloat width = webkit_dom_client_rect_get_width(rect);
+			gfloat height = webkit_dom_client_rect_get_height(rect);
+
+			if (width >= 3 && height >= 3) {
+				gchar *marker = g_strdup_printf("[click:%d,%d]",
+					(gint)(x + width/2), (gint)(y + height/2));
+				g_variant_builder_add(&builder, "(siiii)",
+					marker, (gint)x, (gint)y, (gint)width, (gint)height);
+				g_free(marker);
+			}
+
+			g_object_unref(rect);
+		}
+		g_object_unref(clickable);
 	}
 
 	GVariant *hints = g_variant_builder_end(&builder);
@@ -292,52 +293,34 @@ hint_message_received(WebKitWebPage *page, WebKitUserMessage *message)
 				WEBKIT_DOM_NODE(container), NULL);
 		}
 		return TRUE;
-	} else if (strcmp(name, "hints-click") == 0) {
-		GVariant *data = webkit_user_message_get_parameters(message);
-		gint x, y;
-		g_variant_get(data, "(ii)", &x, &y);
-		click_at(page, x, y);
-		return TRUE;
-	}
+    } else if (strcmp(name, "hints-click") == 0) {
+        GVariant *data = webkit_user_message_get_parameters(message);
+        gint x, y;
+        g_variant_get(data, "(ii)", &x, &y);
+        
+        WebKitDOMDocument *doc = webkit_web_page_get_dom_document(page);
+        WebKitDOMElement *elem = webkit_dom_document_element_from_point(doc, x, y);
+        
+        gboolean is_input = FALSE;
+        if (elem) {
+            gchar *tagname = webkit_dom_element_get_tag_name(elem);
+            if (tagname && (strcmp(tagname, "INPUT") == 0 ||
+                            strcmp(tagname, "TEXTAREA") == 0)) {
+                is_input = TRUE;
+            }
+            g_free(tagname);
+        }
+        
+        click_at(page, x, y);
+        
+        /* Send response with input status */
+        WebKitUserMessage *reply = webkit_user_message_new("hints-click-done",
+            g_variant_new_boolean(is_input));
+        webkit_user_message_send_reply(message, reply);
+        return TRUE;
+    }
 
 	return FALSE;
-}
-
-static gboolean
-readsock(GIOChannel *s, GIOCondition c, gpointer unused)
-{
-	static char msg[MSGBUFSZ];
-	static size_t msgoff;
-	GError *gerr = NULL;
-	size_t sz;
-	gsize rsz;
-
-	if (g_io_channel_read_chars(s, msg+msgoff, sizeof(msg)-msgoff, &rsz, &gerr) !=
-	    G_IO_STATUS_NORMAL) {
-		if (gerr) {
-			fprintf(stderr, "webext: error reading socket: %s\n",
-			        gerr->message);
-			g_error_free(gerr);
-		}
-		return TRUE;
-	}
-	if (msgoff >= sizeof(msg)) {
-		fprintf(stderr, "%s:%d:%s: msgoff: %zu", __FILE__, __LINE__, __func__, msgoff);
-		return FALSE;
-	}
-
-	for (rsz += msgoff; rsz; rsz -= sz) {
-		sz = evalmsg(msg, rsz);
-		if (sz == 0) {
-			break;
-		}
-		if (sz != rsz) {
-			memmove(msg, msg+sz, rsz-sz);
-		}
-	}
-	msgoff = rsz;
-
-	return TRUE;
 }
 
 static void

@@ -132,8 +132,6 @@ static Client *newclient(Client *c);
 static void loaduri(Client *c, const Arg *a);
 static const char *geturi(Client *c);
 static void updatetitle(Client *c);
-static void gettogglestats(Client *c);
-static void getpagestats(Client *c);
 static WebKitCookieAcceptPolicy cookiepolicy_get(void);
 static char cookiepolicy_set(const WebKitCookieAcceptPolicy p);
 static void seturiparameters(Client *c, const char *uri, ParamName *params);
@@ -248,6 +246,7 @@ static GtkWidget *history_scroll = NULL;
 static int history_selected = -1;
 static void tab_pin(Client *c, const Arg *a);
 static gboolean *tab_pins = NULL;
+
 static guint pin_timer = 0;
 static gboolean pin_keepalive(gpointer data);
 
@@ -648,7 +647,81 @@ tab_init(Client *c)
 	tab_pins = g_malloc0(sizeof(gboolean));
 }
 
+static gboolean
+tabbar_click(GtkWidget *w, GdkEventButton *e, Client *c)
+{
+    int idx;
+
+    if (e->button != 1)
+        return FALSE;
+
+    idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "tab-index"));
+
+    if (e->button == 2) {
+        tab_switch_to(c, idx);
+        tab_close(c, &(Arg){0});
+        return TRUE;
+    }
+
+    tab_switch_to(c, idx);
+    return TRUE;
+}
+
 static void
+update_tabbar(Client *c)
+{
+    GtkWidget *child;
+    GList *children, *iter;
+    int i;
+
+    if (!c->tabbar)
+        return;
+
+    children = gtk_container_get_children(GTK_CONTAINER(c->tabbar));
+    for (iter = children; iter; iter = iter->next)
+        gtk_widget_destroy(GTK_WIDGET(iter->data));
+    g_list_free(children);
+
+for (i = 0; i < tabs.count; i++) {
+    const char *title = webkit_web_view_get_title(tabs.views[i]);
+    const char *uri = webkit_web_view_get_uri(tabs.views[i]);
+    GtkWidget *label, *box;
+    gchar *text;
+
+    if (!title || !*title)
+        title = (uri && !g_str_has_prefix(uri, "about:")) ? uri : "New Tab";
+
+    gchar *valid_title = g_utf8_make_valid(title, -1);
+
+    if (tab_pins && tab_pins[i]) {
+        text = g_strdup_printf("[P] %s", valid_title);
+        g_free(valid_title);
+    } else {
+        text = valid_title;
+    }
+
+    label = gtk_label_new(text);
+    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);  /* Add ellipsis when too long */
+    gtk_label_set_single_line_mode(GTK_LABEL(label), TRUE);           /* Keep on one line */
+    g_free(text);
+
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);  /* ADD THIS */
+    gtk_widget_set_margin_start(label, 8);         /* ADD THIS */
+    gtk_widget_set_margin_end(label, 8);           /* ADD THIS */
+
+    box = gtk_event_box_new();
+    gtk_widget_set_size_request(box, 150, -1);  /* Minimum 150px wide */
+    gtk_container_add(GTK_CONTAINER(box), label);
+    g_object_set_data(G_OBJECT(box), "tab-index", GINT_TO_POINTER(i));
+    g_signal_connect(box, "button-press-event", G_CALLBACK(tabbar_click), c);
+    gtk_widget_set_name(box, i == tabs.active ? "tab-active" : "tab-inactive");
+    gtk_box_pack_start(GTK_BOX(c->tabbar), box, TRUE, TRUE, 2);  /* TRUE, TRUE */
+}
+
+    gtk_widget_show_all(c->tabbar);
+}
+
+void
 tab_switch_to(Client *c, int index)
 {
 	if (index < 0 || index >= tabs.count || index == tabs.active)
@@ -683,6 +756,8 @@ tab_switch_to(Client *c, int index)
 	c->progress = webkit_web_view_get_estimated_load_progress(c->view) * 100;
 	c->https = webkit_web_view_get_tls_info(c->view, &c->cert, &c->tlserr);
 	updatetitle(c);
+	
+	update_tabbar(c);  /* ADD THIS LINE */
 }
 
 void
@@ -695,7 +770,7 @@ tab_new(Client *c, const Arg *a)
 	v = newview(c, c->view);
 
 	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(v), TRUE, TRUE, 0);
-	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 0);
+	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 1);  /* CHANGE 0 to 1 */
 
 	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 
@@ -721,6 +796,7 @@ tab_new(Client *c, const Arg *a)
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_grab_focus(GTK_WIDGET(v));
 	updatetitle(c);
+	update_tabbar(c);  /* ADD THIS */
 
 	if (a && a->i == 0) {
 		Arg bar = { .i = 0 };
@@ -762,6 +838,7 @@ tab_close(Client *c, const Arg *a)
 		G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
 
 	webkit_web_view_load_uri(dead, "about:blank");
+	update_tabbar(c);  /* ADD THIS */
 }
 
 void
@@ -917,6 +994,8 @@ follow_hint(Client *c, const char *label)
 {
 	Hint *target = NULL;
 
+	fprintf(stderr, "follow_hint called with label='%s'\n", label);  /* ADD DEBUG */
+
 	for (guint i = 0; i < hintstate.hints->len; i++) {
 		Hint *h = &g_array_index(hintstate.hints, Hint, i);
 		if (strcmp(h->label, label) == 0) {
@@ -926,47 +1005,67 @@ follow_hint(Client *c, const char *label)
 	}
 
 	if (!target) {
+		fprintf(stderr, "No target found for label '%s'!\n", label);
 		hints_cleanup(c);
 		return;
 	}
 
-	if (g_str_has_prefix(target->url, "[click:")) {
-		int cx, cy;
-		if (sscanf(target->url, "[click:%d,%d]", &cx, &cy) == 2) {
-			GVariant *data = g_variant_new("(ii)", cx, cy);
-			WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
-			webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
-		}
-		hints_cleanup(c);
-		return;
-	}
+	fprintf(stderr, "Found target: url='%s'\n", target->url);  /* ADD DEBUG */
 
-	Arg arg;
-	switch (hintstate.mode) {
-	case HintModeLink:
-		arg.v = target->url;
-		loaduri(c, &arg);
-		break;
-	case HintModeNewWindow:
-		{
-			WebKitWebView *old_view = c->view;
+    if (g_str_has_prefix(target->url, "[click:")) {
+        fprintf(stderr, "Following click hint: %s\n", target->url);
+        fflush(stderr);  /* ADD THIS to force output immediately */
+        int cx, cy;
+        if (sscanf(target->url, "[click:%d,%d]", &cx, &cy) == 2) {
+            GVariant *data = g_variant_new("(ii)", cx, cy);
+            WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
+            webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+        }
+        hints_cleanup(c);
+        
+        /* Switch to insert mode after hints are gone */
+        c->mode = ModeInsert;
+        updatetitle(c);
+        return;  /* MAKE SURE THIS RETURN IS HERE! */
+    }
 
-			WebKitUserMessage *clear_msg = webkit_user_message_new("hints-clear", NULL);
-			webkit_web_view_send_message_to_page(old_view, clear_msg, NULL, NULL, NULL);
+    Arg arg;
+    switch (hintstate.mode) {
+    case HintModeLink:
+        {
+            gchar *url_copy = g_strdup(target->url);  /* Copy it first! */
+            hints_cleanup(c);
+            arg.v = url_copy;
+            loaduri(c, &arg);
+            g_free(url_copy);  /* Free after use */
+        }
+        break;
+    case HintModeNewWindow:
+        {
+            gchar *url_copy = g_strdup(target->url);
+            WebKitWebView *old_view = c->view;
 
-			tab_init(c);
-			tab_new(c, &(Arg){ .i = 1 });
-			arg.v = target->url;
-			loaduri(c, &arg);
-		}
-		break;
-	case HintModeYank:
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
-		                       target->url, -1);
-		break;
-	}
+            WebKitUserMessage *clear_msg = webkit_user_message_new("hints-clear", NULL);
+            webkit_web_view_send_message_to_page(old_view, clear_msg, NULL, NULL, NULL);
 
-	hints_cleanup(c);
+            tab_init(c);
+            tab_new(c, &(Arg){ .i = 1 });
+            hints_cleanup(c);
+            arg.v = url_copy;
+            loaduri(c, &arg);
+            g_free(url_copy);
+        }
+        break;
+    case HintModeYank:
+        {
+            gchar *url_copy = g_strdup(target->url);
+            gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
+                                   url_copy, -1);
+            hints_cleanup(c);
+            g_free(url_copy);
+        }
+        break;
+    }
 }
 
 gboolean
@@ -990,7 +1089,7 @@ hints_keypress(Client *c, GdkEventKey *e)
 			hintstate.input[len - 1] = '\0';
 			filter_hints(c);
 		} else {
-			hints_cleanup(c);
+			hints_cleanup(c);  /* No input left, exit hints */
 		}
 		return TRUE;
 	}
@@ -1004,7 +1103,7 @@ hints_keypress(Client *c, GdkEventKey *e)
 	hintstate.input = newinput;
 
 	if (hintstate.hints->len == 0) {
-		hints_cleanup(c);
+		hints_cleanup(c);  /* No hints available */
 		return TRUE;
 	}
 
@@ -1022,9 +1121,10 @@ hints_keypress(Client *c, GdkEventKey *e)
 	}
 
 	if (matches == 0) {
-		hints_cleanup(c);
+		hints_cleanup(c);  /* ADD: No matches, cleanup */
 	} else if ((int)strlen(hintstate.input) == label_len && matches == 1) {
 		follow_hint(c, matched_label);
+		/* hints_cleanup is called inside follow_hint */
 	} else {
 		filter_hints(c);
 	}
@@ -1056,6 +1156,9 @@ hints_receive_data(Client *c, GVariant *data)
 		hint.url = g_strdup(url);
 		hint.x = x;
 		hint.y = y;
+		
+		fprintf(stderr, "Hint[%s]: url='%s'\n", hint.label, hint.url);  /* ADD DEBUG */
+		
 		g_array_append_val(hintstate.hints, hint);
 	}
 
@@ -1090,30 +1193,7 @@ updatetitle(Client *c)
 	g_free(title);
 
 	updatebar(c);
-}
-
-void
-gettogglestats(Client *c)
-{
-	togglestats[0] = cookiepolicy_set(cookiepolicy_get());
-	togglestats[1] = curconfig[CaretBrowsing].val.i ?   'C' : 'c';
-	togglestats[2] = curconfig[Geolocation].val.i ?     'G' : 'g';
-	togglestats[3] = curconfig[DiskCache].val.i ?       'D' : 'd';
-	togglestats[4] = curconfig[LoadImages].val.i ?      'I' : 'i';
-	togglestats[5] = curconfig[JavaScript].val.i ?      'S' : 's';
-	togglestats[6] = curconfig[Style].val.i ?           'M' : 'm';
-	togglestats[8] = curconfig[Certificate].val.i ?     'X' : 'x';
-	togglestats[9] = curconfig[StrictTLS].val.i ?       'T' : 't';
-}
-
-void
-getpagestats(Client *c)
-{
-	if (c->https)
-		pagestats[0] = (c->tlserr || c->insecure) ?  'U' : 'T';
-	else
-		pagestats[0] = '-';
-	pagestats[1] = '\0';
+	update_tabbar(c);
 }
 
 WebKitCookieAcceptPolicy
@@ -1774,9 +1854,59 @@ showview(WebKitWebView *v, Client *c)
 	c->pageid = webkit_web_view_get_page_id(c->view);
 	c->win = createwindow(c);
 
-	c->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(c->view),
-	                   TRUE, TRUE, 0);
+    c->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+
+    /* Tab bar at TOP */
+    c->tabbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
+    gtk_widget_set_name(c->tabbar, "tabbar");
+    gtk_box_pack_start(GTK_BOX(c->vbox), c->tabbar, FALSE, FALSE, 0);
+
+    /* Then the webview */
+    gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(c->view),
+                       TRUE, TRUE, 0);
+
+    /* Tab bar styling - add this RIGHT AFTER creating c->tabbar */
+    GtkCssProvider *tabcss = gtk_css_provider_new();
+    gchar *tabcssstr = g_strdup_printf(
+        "#tabbar {"
+        "  background-color: #1a1a1a;"
+        "  padding: 0px;"
+        "}"
+        "#tab-active {"
+        "  background-color: #4a4a4a;"
+        "  color: #ffffff;"
+        "  padding: 2px 8px;"
+        "  margin: 0px;"
+        "  border: none;"
+        "  border-radius: 0px;"
+        "}"
+        "#tab-inactive {"
+        "  background-color: #2a2a2a;"
+        "  color: #888888;"
+        "  padding: 2px 8px;"
+        "  border-radius: 0px;"
+        "}"
+        "#tab-inactive:hover {"
+        "  background-color: #353535;"
+        "  color: #aaaaaa;"
+        "}"
+    );
+    gtk_css_provider_load_from_data(tabcss, tabcssstr, -1, NULL);
+    g_free(tabcssstr);
+
+    /* Apply to the tabbar itself */
+    gtk_style_context_add_provider(
+        gtk_widget_get_style_context(c->tabbar),
+        GTK_STYLE_PROVIDER(tabcss),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+/* Apply globally so child widgets inherit it */
+gtk_style_context_add_provider_for_screen(
+	gdk_screen_get_default(),
+	GTK_STYLE_PROVIDER(tabcss),
+	GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+
+g_object_unref(tabcss);
 
 	c->statusbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
@@ -1826,7 +1956,11 @@ showview(WebKitWebView *v, Client *c)
 	g_object_unref(css);
 
 	gtk_container_add(GTK_CONTAINER(c->win), c->vbox);
-	gtk_widget_show_all(c->win);
+
+    gtk_widget_show_all(c->win);
+
+    tab_init(c);  /* Make sure tab system is initialized */
+    update_tabbar(c);  /* Draw the tabs */
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
 	generate_instance_id(c);
@@ -1987,6 +2121,8 @@ titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 	const char *uri = geturi(c);
 	if (c->title && *c->title && uri && !g_str_has_prefix(uri, "about:"))
 		history_add(uri, c->title);
+	
+	update_tabbar(c);
 }
 
 static gboolean
@@ -2529,7 +2665,7 @@ closebar(Client *c)
 void
 openbar_newtab(Client *c, const Arg *a)
 {
-	c->mode = ModeCommand;  // MOVE THIS TO TOP
+	c->mode = ModeCommand;
 	c->newtab_pending = 1;
 
 	history_load();
