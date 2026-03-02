@@ -2725,11 +2725,13 @@ spawnuserscript(Client *c, const Arg *a)
 static gchar *
 preprocess_userscript(const gchar *script)
 {
-	gboolean needs_main_world = (strstr(script, "unsafeWindow") != NULL ||
-	                              strstr(script, "@grant unsafeWindow") != NULL ||
-	                              strstr(script, "@grant none") != NULL ||
-	                              strstr(script, "window.fetch") != NULL ||
-	                              strstr(script, "w.fetch") != NULL);
+	/*
+	 * Only use main-world injection for scripts that explicitly
+	 * need access to the page's JS objects. @grant none just means
+	 * "no GM permissions needed" - it does NOT require page world.
+	 */
+	gboolean needs_main_world = (strstr(script, "unsafeWindow") != NULL &&
+	                              strstr(script, "@grant unsafeWindow") != NULL);
 
 	if (needs_main_world) {
 		GString *out = g_string_new(NULL);
@@ -2752,6 +2754,7 @@ preprocess_userscript(const gchar *script)
 		return g_string_free(out, FALSE);
 	}
 
+	/* All other scripts: wrap in IIFE with GM shims, inject in isolated world */
 	GString *out = g_string_new(NULL);
 
 	g_string_append(out,
@@ -2772,7 +2775,7 @@ preprocess_userscript(const gchar *script)
 	    "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);return s;}\n"
 	    "function GM_setClipboard(t){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t);}\n"
 	    "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);if(d.headers)Object.keys(d.headers).forEach(function(k){try{x.setRequestHeader(k,d.headers[k]);}catch(e){}});if(d.responseType)x.responseType=d.responseType;x.onload=function(){var r={responseText:x.responseText,response:x.response,status:x.status,statusText:x.statusText,readyState:x.readyState,finalUrl:x.responseURL,responseHeaders:x.getAllResponseHeaders()};if(d.onload)d.onload(r);};x.onerror=function(){if(d.onerror)d.onerror({status:x.status});};x.send(d.data||null);return{abort:function(){x.abort();}};};\n"
-	    "var GM={getValue:function(k,d){return Promise.resolve(GM _getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();},deleteValue:function(k){GM_deleteValue(k);return Promise.resolve();},listValues:function(){return Promise.resolve(GM_listValues());},openInTab:function(u){return Promise.resolve(GM_openInTab(u));},setClipboard:function(t){GM_setClipboard(t);return Promise.resolve();},xmlHttpRequest:GM_xmlhttpRequest,info:GM_info};\n"
+	    "var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();},deleteValue:function(k){GM_deleteValue(k);return Promise.resolve();},listValues:function(){return Promise.resolve(GM_listValues());},openInTab:function(u){return Promise.resolve(GM_openInTab(u));},setClipboard:function(t){GM_setClipboard(t);return Promise.resolve();},xmlHttpRequest:GM_xmlhttpRequest,info:GM_info};\n"
 	    "function GM_registerMenuCommand(){}\n"
 	    "function GM_unregisterMenuCommand(){}\n"
 	    "function GM_getResourceText(){return '';}\n"
@@ -2781,6 +2784,7 @@ preprocess_userscript(const gchar *script)
 	    "\n"
 	);
 
+	/* Parse metadata for GM_info */
 	const char *meta_start = strstr(script, "// ==UserScript==");
 	const char *meta_end = strstr(script, "// ==/UserScript==");
 	if (meta_start && meta_end) {
@@ -2886,8 +2890,7 @@ inject_userscripts_early(WebKitUserContentManager *cm, const char *uri)
 		gboolean is_doc_start = (strstr(script, "@run-at") != NULL &&
 		                         strstr(script, "document-start") != NULL);
 
-		gboolean needs_page_world = (strstr(script, "unsafeWindow") != NULL ||
-		                             strstr(script, "@grant none") != NULL ||
+		gboolean needs_page_world = (strstr(script, "unsafeWindow") != NULL &&
 		                             strstr(script, "@grant unsafeWindow") != NULL);
 
 		GPtrArray *allow = g_ptr_array_new_with_free_func(g_free);
