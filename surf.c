@@ -258,6 +258,13 @@ static int showxidflag = 0;
 static int cookiepolicy;
 Client *clients;
 
+/* Userscript support */
+static char *surf_fifo;
+static GIOChannel *fifo_chan;
+static void setup_fifo(Client *c);
+static void spawnuserscript(Client *c, const Arg *a);
+static void inject_userscripts_early(WebKitUserContentManager *cm, const char *uri);
+
 #ifdef X11_SUPPORT
 static Atom atoms[AtomLast];
 static Window embed;
@@ -459,6 +466,7 @@ setup(void)
 				uriparams[i].config[j] = defconfig[j];
 		}
 	}
+    setup_fifo(NULL);
 }
 
 void
@@ -1636,6 +1644,10 @@ cleanup(void)
 	dbus_cleanup();
 #endif
 	display_cleanup(&display_ctx);
+    if (surf_fifo) {
+        unlink(surf_fifo);
+        g_free(surf_fifo);
+    }
 }
 
 /* Function to handle display backend failures */
@@ -1740,6 +1752,7 @@ newview(Client *c, WebKitWebView *rv)
 		useragent = webkit_settings_get_user_agent(settings);
 
 		contentmanager = webkit_user_content_manager_new();
+        inject_userscripts_early(contentmanager, "");  /* must be here */
 
 		if (curconfig[Ephemeral].val.i) {
 			context = webkit_web_context_new_ephemeral();
@@ -2176,40 +2189,35 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 void
 loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 {
-	const char *uri = geturi(c);
+    const char *uri = geturi(c);
 
-	switch (e) {
-	case WEBKIT_LOAD_STARTED:
-		setatom(c, AtomUri, uri);
-		c->title = uri;
-		c->https = c->insecure = 0;
-		seturiparameters(c, uri, loadtransient);
-		if (c->errorpage)
-			c->errorpage = 0;
-		else
-			g_clear_object(&c->failedcert);
-		break;
-	case WEBKIT_LOAD_REDIRECTED:
-		setatom(c, AtomUri, uri);
-		c->title = uri;
-		seturiparameters(c, uri, loadtransient);
-		break;
-	case WEBKIT_LOAD_COMMITTED:
-		setatom(c, AtomUri, uri);
-		c->title = uri;
-		seturiparameters(c, uri, loadcommitted);
-		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
-		                                        &c->tlserr);
-		break;
-	case WEBKIT_LOAD_FINISHED:
-		seturiparameters(c, uri, loadfinished);
-		/* Disabled until we write some WebKitWebExtension for
-		 * manipulating the DOM directly.
-		evalscript(c, "document.documentElement.style.overflow = '%s'",
-		    enablescrollbars ? "auto" : "hidden");
-		*/
-		runscript(c);
-		break;
+    switch (e) {
+    case WEBKIT_LOAD_STARTED:
+        setatom(c, AtomUri, uri);
+        c->title = uri;
+        c->https = c->insecure = 0;
+        seturiparameters(c, uri, loadtransient);
+        if (c->errorpage)
+            c->errorpage = 0;
+        else
+            g_clear_object(&c->failedcert);
+        break;
+    case WEBKIT_LOAD_REDIRECTED:
+        setatom(c, AtomUri, uri);
+        c->title = uri;
+        seturiparameters(c, uri, loadtransient);
+        break;
+    case WEBKIT_LOAD_COMMITTED:
+        setatom(c, AtomUri, uri);
+        c->title = uri;
+        seturiparameters(c, uri, loadcommitted);
+        c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
+                                                &c->tlserr);
+        break;
+    case WEBKIT_LOAD_FINISHED:
+        seturiparameters(c, uri, loadfinished);
+        runscript(c);
+        break;
 	}
 	updatetitle(c);
 }
@@ -2848,6 +2856,386 @@ clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h)
 
 	arg = (Arg)VIDEOPLAY(webkit_hit_test_result_get_media_uri(h));
 	spawn(c, &arg);
+}
+
+static gboolean
+fifo_read(GIOChannel *chan, GIOCondition cond, gpointer data)
+{
+    Client *c;
+    gchar *line = NULL;
+    gsize len;
+    GError *err = NULL;
+
+    /* Use the first client (active window) */
+    c = clients;
+    if (!c)
+        return TRUE;
+
+    if (g_io_channel_read_line(chan, &line, &len, NULL, &err) == G_IO_STATUS_NORMAL) {
+        if (line) {
+            g_strstrip(line);
+            fprintf(stderr, "fifo cmd: %s\n", line);
+
+            if (g_str_has_prefix(line, "message-error ")) {
+                fprintf(stderr, "userscript error: %s\n", line + 14);
+            } else if (g_str_has_prefix(line, "message-info ")) {
+                fprintf(stderr, "userscript info: %s\n", line + 13);
+            } else if (g_str_has_prefix(line, "jseval ")) {
+                const char *js = line + 7;
+                while (*js == '-') {
+                    while (*js && *js != ' ')
+                        js++;
+                    while (*js == ' ')
+                        js++;
+                }
+                if (*js)
+                    evalscript(c, "%s", js);
+            } else if (g_str_has_prefix(line, "open ")) {
+                const char *url = line + 5;
+                gboolean new_tab = FALSE;
+                while (*url == '-') {
+                    if (g_str_has_prefix(url, "-t")) {
+                        new_tab = TRUE;
+                    }
+                    while (*url && *url != ' ')
+                        url++;
+                    while (*url == ' ')
+                        url++;
+                }
+                if (*url) {
+                    Arg a = { .v = url };
+                    if (new_tab)
+                        newwindow(c, &a, 0);
+                    else
+                        loaduri(c, &a);
+                }
+            }
+            g_free(line);
+        }
+    }
+
+    if (err) g_error_free(err);
+    return TRUE;
+}
+
+void
+spawnuserscript(Client *c, const Arg *a)
+{
+    const char *script = a->v;
+    const char *uri = geturi(c);
+    const char *title = c->title ? c->title : "";
+
+    if (!surf_fifo) {
+        fprintf(stderr, "spawnuserscript: no fifo\n");
+        return;
+    }
+
+    /* Fork and exec the userscript with environment set up */
+    if (fork() == 0) {
+        /* Set environment variables compatible with qutebrowser userscripts */
+        setenv("SURF_FIFO", surf_fifo, 1);
+        setenv("SURF_URL", uri, 1);
+        setenv("SURF_TITLE", title, 1);
+        setenv("SURF_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
+
+        /* qutebrowser compatibility aliases */
+        setenv("QUTE_FIFO", surf_fifo, 1);
+        setenv("QUTE_URL", uri, 1);
+        setenv("QUTE_TITLE", title, 1);
+        setenv("QUTE_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
+
+#ifdef X11_SUPPORT
+        if (display_ctx.backend == DISPLAY_BACKEND_X11 && display_ctx.data.x11.dpy)
+            close(ConnectionNumber(display_ctx.data.x11.dpy));
+#endif
+        close(spair[0]);
+        close(spair[1]);
+        setsid();
+        execl("/bin/sh", "sh", "-c", script, NULL);
+        fprintf(stderr, "spawnuserscript: exec failed: %s\n", script);
+        exit(1);
+    }
+}
+
+static gchar *
+preprocess_userscript(const gchar *script)
+{
+    /* Check if this script needs main-world access */
+    gboolean needs_main_world = (strstr(script, "unsafeWindow") != NULL ||
+                                  strstr(script, "@grant unsafeWindow") != NULL ||
+                                  strstr(script, "@grant none") != NULL ||
+                                  strstr(script, "window.fetch") != NULL ||
+                                  strstr(script, "w.fetch") != NULL);
+
+    gboolean is_doc_start = (strstr(script, "@run-at") != NULL &&
+                              strstr(script, "document-start") != NULL);
+
+    if (needs_main_world) {
+        GString *out = g_string_new(NULL);
+
+        /* NO script element - just shims + script directly */
+        /* evalscript bypasses CSP since it's native injection */
+        g_string_append(out,
+            "(function(){\n"
+            "var unsafeWindow = window;\n"
+            "var GM_info = {script:{name:'userscript',version:'1.0'},scriptHandler:'Surf'};\n"
+            "function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}\n"
+            "function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
+            "function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
+            "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);}\n"
+            "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);x.onload=function(){if(d.onload)d.onload({responseText:x.responseText,status:x.status});};x.send(d.data||null);}\n"
+            "var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();}};\n"
+        );
+
+        g_string_append(out, script);
+        g_string_append(out, "\n})();\n");
+
+        return g_string_free(out, FALSE);
+    }
+
+    /* Non-main-world scripts: wrap in IIFE with GM shims directly */
+    GString *out = g_string_new(NULL);
+
+    g_string_append(out,
+        "(function() {\n"
+        "'use strict';\n"
+        "\n"
+        "var unsafeWindow = window;\n"
+        "var GM_info = {\n"
+        "  script: { name: 'userscript', version: '1.0', description: '' },\n"
+        "  scriptHandler: 'Surf'\n"
+        "};\n"
+        "function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);if(v===null)return d;try{return JSON.parse(v);}catch(e){return v;}}catch(e){return d;}}\n"
+        "function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
+        "function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
+        "function GM_listValues(){var r=[];try{for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i);if(k.indexOf('_gm_')===0)r.push(k.substring(4));}}catch(e){}return r;}\n"
+        "function GM_log(){console.log.apply(console,['[GM]'].concat(Array.prototype.slice.call(arguments)));}\n"
+        "function GM_openInTab(u){return window.open(u,'_blank');}\n"
+        "function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);return s;}\n"
+        "function GM_setClipboard(t){if(navigator.clipboard&&navigator.clipboard.writeText)navigator.clipboard.writeText(t);}\n"
+        "function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);if(d.headers)Object.keys(d.headers).forEach(function(k){try{x.setRequestHeader(k,d.headers[k]);}catch(e){}});if(d.responseType)x.responseType=d.responseType;x.onload=function(){var r={responseText:x.responseText,response:x.response,status:x.status,statusText:x.statusText,readyState:x.readyState,finalUrl:x.responseURL,responseHeaders:x.getAllResponseHeaders()};if(d.onload)d.onload(r);};x.onerror=function(){if(d.onerror)d.onerror({status:x.status});};x.send(d.data||null);return{abort:function(){x.abort();}};};\n"
+        "var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();},deleteValue:function(k){GM_deleteValue(k);return Promise.resolve();},listValues:function(){return Promise.resolve(GM_listValues());},openInTab:function(u){return Promise.resolve(GM_openInTab(u));},setClipboard:function(t){GM_setClipboard(t);return Promise.resolve();},xmlHttpRequest:GM_xmlhttpRequest,info:GM_info};\n"
+        "function GM_registerMenuCommand(){}\n"
+        "function GM_unregisterMenuCommand(){}\n"
+        "function GM_getResourceText(){return '';}\n"
+        "function GM_getResourceURL(){return '';}\n"
+        "function GM_notification(d){if(typeof d==='string')d={text:d};if(window.Notification&&Notification.permission==='granted')new Notification(d.title||'Userscript',{body:d.text});}\n"
+        "\n"
+    );
+
+    /* Parse script metadata for GM_info */
+    const char *meta_start = strstr(script, "// ==UserScript==");
+    const char *meta_end = strstr(script, "// ==/UserScript==");
+    if (meta_start && meta_end) {
+        const char *name_tag = strstr(meta_start, "// @name");
+        if (name_tag && name_tag < meta_end) {
+            name_tag += 8;
+            while (*name_tag == ' ' || *name_tag == '\t') name_tag++;
+            const char *name_end = strchr(name_tag, '\n');
+            if (name_end) {
+                gchar *name = g_strndup(name_tag, name_end - name_tag);
+                g_strstrip(name);
+                gchar *escaped = g_strescape(name, NULL);
+                g_string_append_printf(out,
+                    "GM_info.script.name = \"%s\";\n", escaped);
+                g_free(escaped);
+                g_free(name);
+            }
+        }
+
+        const char *ver_tag = strstr(meta_start, "// @version");
+        if (ver_tag && ver_tag < meta_end) {
+            ver_tag += 11;
+            while (*ver_tag == ' ' || *ver_tag == '\t') ver_tag++;
+            const char *ver_end = strchr(ver_tag, '\n');
+            if (ver_end) {
+                gchar *ver = g_strndup(ver_tag, ver_end - ver_tag);
+                g_strstrip(ver);
+                gchar *escaped = g_strescape(ver, NULL);
+                g_string_append_printf(out,
+                    "GM_info.script.version = \"%s\";\n", escaped);
+                g_free(escaped);
+                g_free(ver);
+            }
+        }
+    }
+
+    g_string_append(out, "\n/* --- User Script --- */\n");
+    g_string_append(out, script);
+    g_string_append(out, "\n})();\n");
+
+    return g_string_free(out, FALSE);
+}
+
+static void
+setup_fifo(Client *c)
+{
+    int fd;
+
+    /* Only create once */
+    if (surf_fifo)
+        return;
+
+    surf_fifo = g_strdup_printf("/tmp/surf-fifo-%ld", (long)getpid());
+
+    /* Remove stale fifo if it exists */
+    unlink(surf_fifo);
+    if (mkfifo(surf_fifo, 0600) != 0) {
+        fprintf(stderr, "failed to create fifo: %s\n", surf_fifo);
+        g_free(surf_fifo);
+        surf_fifo = NULL;
+        return;
+    }
+
+    /* open nonblocking so we don't hang */
+    fd = open(surf_fifo, O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        fprintf(stderr, "failed to open fifo: %s\n", surf_fifo);
+        g_free(surf_fifo);
+        surf_fifo = NULL;
+        return;
+    }
+
+    fifo_chan = g_io_channel_unix_new(fd);
+    g_io_channel_set_encoding(fifo_chan, NULL, NULL);
+    g_io_channel_set_flags(fifo_chan,
+        g_io_channel_get_flags(fifo_chan) | G_IO_FLAG_NONBLOCK, NULL);
+    g_io_channel_set_close_on_unref(fifo_chan, TRUE);
+    g_io_add_watch(fifo_chan, G_IO_IN, fifo_read, c);
+
+    fprintf(stderr, "fifo created: %s\n", surf_fifo);
+}
+
+static void
+inject_userscripts_early(WebKitUserContentManager *cm, const char *uri)
+{
+    char *scriptdir = g_build_filename(g_get_home_dir(), ".surf", "userscripts", NULL);
+    fprintf(stderr, "inject_userscripts_early: looking in %s\n", scriptdir);
+    GDir *dir = g_dir_open(scriptdir, 0, NULL);
+    const char *filename;
+
+    if (!dir) {
+        fprintf(stderr, "inject_userscripts_early: cant open dir %s\n", scriptdir);
+        g_free(scriptdir);
+        return;
+    }
+
+    while ((filename = g_dir_read_name(dir))) {
+        if (!g_str_has_suffix(filename, ".user.js")) {
+            fprintf(stderr, "inject_userscripts_early: skipping non-userscript: %s\n", filename);
+            continue;
+        }
+
+        char *filepath = g_build_filename(scriptdir, filename, NULL);
+        gchar *script = NULL;
+        gsize len;
+
+        if (!g_file_get_contents(filepath, &script, &len, NULL) || !len) {
+            fprintf(stderr, "inject_userscripts_early: failed to read %s\n", filename);
+            g_free(filepath);
+            continue;
+        }
+
+        /* Determine injection time from metadata */
+        gboolean is_doc_start = (strstr(script, "@run-at") != NULL &&
+                                 strstr(script, "document-start") != NULL);
+
+        /* Check if script needs page-world access */
+        gboolean needs_page_world = (strstr(script, "unsafeWindow") != NULL ||
+                                     strstr(script, "@grant none") != NULL ||
+                                     strstr(script, "@grant unsafeWindow") != NULL);
+
+        /* Extract @match, @include, @exclude patterns from metadata */
+        GPtrArray *allow = g_ptr_array_new_with_free_func(g_free);
+        GPtrArray *exclude = g_ptr_array_new_with_free_func(g_free);
+        gboolean has_patterns = FALSE;
+
+        char **lines = g_strsplit(script, "\n", -1);
+        for (int i = 0; lines[i]; i++) {
+            char *line = g_strstrip(lines[i]);
+            if (g_str_has_prefix(line, "// ==/UserScript=="))
+                break;
+            if (g_str_has_prefix(line, "// @match ")) {
+                char *pattern = g_strstrip(g_strdup(line + 10));
+                g_ptr_array_add(allow, pattern);
+                has_patterns = TRUE;
+            } else if (g_str_has_prefix(line, "// @include ")) {
+                char *pattern = g_strstrip(g_strdup(line + 12));
+                g_ptr_array_add(allow, pattern);
+                has_patterns = TRUE;
+            } else if (g_str_has_prefix(line, "// @exclude ")) {
+                char *pattern = g_strstrip(g_strdup(line + 12));
+                g_ptr_array_add(exclude, pattern);
+            }
+        }
+        g_strfreev(lines);
+
+        /* NULL-terminate arrays for WebKit API */
+        g_ptr_array_add(allow, NULL);
+        g_ptr_array_add(exclude, NULL);
+
+        gchar *processed = preprocess_userscript(script);
+        fprintf(stderr, "inject_userscripts_early: processed preview: %.200s\n", processed);
+
+        WebKitUserScriptInjectionTime inject_time = is_doc_start ?
+            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START :
+            WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
+
+        const char * const *allow_list = has_patterns ?
+            (const char * const *)allow->pdata : NULL;
+        const char * const *exclude_list = has_patterns ?
+            (const char * const *)exclude->pdata : NULL;
+
+        WebKitUserScript *us;
+
+        if (needs_page_world) {
+            /*
+             * Scripts with @grant none or unsafeWindow need access to the
+             * page's real window object. We inject into a named world that
+             * shares the page's DOM and JS context.
+             *
+             * WEBKIT_USER_CONTENT_INJECT_TOP_FRAME avoids running in
+             * iframes where it could break things.
+             */
+            us = webkit_user_script_new_for_world(
+                processed,
+                WEBKIT_USER_CONTENT_INJECT_TOP_FRAME,
+                inject_time,
+                "surf-page-world",
+                allow_list,
+                exclude_list);
+        } else {
+            /*
+             * Normal scripts run in WebKit's isolated world.
+             * They get their own JS context but can still access the DOM.
+             * WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES lets them run in
+             * iframes too (matching Greasemonkey behavior).
+             */
+            us = webkit_user_script_new(
+                processed,
+                WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+                inject_time,
+                allow_list,
+                exclude_list);
+        }
+
+        webkit_user_content_manager_add_script(cm, us);
+        webkit_user_script_unref(us);
+        g_free(processed);
+
+        fprintf(stderr, "inject_userscripts_early: registered (%s%s): %s\n",
+                is_doc_start ? "document-start" : "document-end",
+                needs_page_world ? ", page-world" : "",
+                filename);
+
+        g_ptr_array_free(allow, TRUE);
+        g_ptr_array_free(exclude, TRUE);
+        g_free(script);
+        g_free(filepath);
+    }
+
+    g_dir_close(dir);
+    g_free(scriptdir);
 }
 
 int

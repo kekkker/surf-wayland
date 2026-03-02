@@ -32,7 +32,7 @@ static Parameter defconfig[ParameterLast] = {
 	[FontSize]            =       { { .i = 12 },    },
 	[Geolocation]         =       { { .i = 0 },     },
 	[HideBackground]      =       { { .i = 0 },     },
-	[Inspector]           =       { { .i = 0 },     },
+	[Inspector]           =       { { .i = 1 },     },
 	[JavaScript]          =       { { .i = 1 },     },
 	[KioskMode]           =       { { .i = 0 },     },
 	[LoadImages]          =       { { .i = 1 },     },
@@ -159,7 +159,7 @@ static Key keys[] = {
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_p,      print,      { 0 } },
 	{ MODKEY,                GDK_KEY_t,      showcert,   { 0 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_a,      togglecookiepolicy, { 0 } },
-	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_o,      toggleinspector, { 0 } },
+	{ MODKEY,                GDK_KEY_o,      toggleinspector, { 0 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_c,      toggle,     { .i = CaretBrowsing } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_g,      toggle,     { .i = Geolocation } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_s,      toggle,     { .i = JavaScript } },
@@ -196,6 +196,7 @@ static Key keys[] = {
 	{ GDK_SHIFT_MASK,        GDK_KEY_o,      tab_new,    { 0 } },
 	{ MODKEY,                GDK_KEY_d,      scrollv,    { .i = +50 } },
 	{ MODKEY,                GDK_KEY_u,      scrollv,    { .i = -50 } },
+    { 0,                     GDK_KEY_p,     spawnuserscript, { .v = "$HOME/.surf/userscripts/surf-pass" } },
 };
 
 /* button definitions */

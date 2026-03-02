@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# surf userscript: pass + bemenu (username inside entry)
+
+set -euo pipefail
+
+export PASS_COLOR=never
+
+error() {
+    echo "$1" >&2
+    echo "message-error \"$1\"" >"$SURF_FIFO"
+}
+
+[[ -z "${SURF_FIFO:-}" ]] && exit 1
+
+URL="${SURF_URL:-${1:-}}"
+[[ -z "$URL" ]] && error "Missing URL" && exit 1
+
+#######################################
+# Extract host
+#######################################
+HOST=$(printf "%s\n" "$URL" | sed -E 's#^[a-z]+://##; s#/.*##; s#:.*##')
+
+#######################################
+# Find domain folder (color-stripped)
+#######################################
+DOMAIN_FOLDER=$(
+    pass find "$HOST" 2>/dev/null |
+        sed -r 's/\x1B\[[0-9;]*[mK]//g' |
+        sed '1d' |
+        sed 's/^[│├└─ ]*//' |
+        paste -sd /
+)
+
+[[ -z "$DOMAIN_FOLDER" ]] && error "No credentials found for $HOST" && exit 1
+
+#######################################
+# List credentials (color-stripped)
+#######################################
+mapfile -t ENTRIES < <(
+    pass ls "$DOMAIN_FOLDER" |
+        sed -r 's/\x1B\[[0-9;]*[mK]//g' |
+        sed '1d' |
+        sed -E 's/^[│├└─ ]+//'
+)
+
+[[ "${#ENTRIES[@]}" -eq 0 ]] && error "No credentials found for $HOST" && exit 1
+
+#######################################
+# Select credential
+#######################################
+if [[ "${#ENTRIES[@]}" -eq 1 ]]; then
+    SELECTED="${ENTRIES[0]}"
+else
+    SELECTED=$(printf "%s\n" "${ENTRIES[@]}" | bemenu -p "Select credentials" || true)
+    [[ -z "$SELECTED" ]] && exit 0
+fi
+
+#######################################
+# Extract password and username from entry
+#######################################
+SECRET=$(pass show "$DOMAIN_FOLDER/$SELECTED")
+PASSWORD=$(printf "%s\n" "$SECRET" | sed -n '1p')
+USERNAME=$(printf "%s\n" "$SECRET" | grep -i "^user:" | sed -E 's/^user:\s*//i' | head -1)
+
+[[ -z "$PASSWORD" ]] && error "Missing password" && exit 1
+
+# If no username found, use the entry name as fallback
+if [[ -z "$USERNAME" ]]; then
+    USERNAME="$SELECTED"
+fi
+
+#######################################
+# Escape for JS (handle quotes, backslashes)
+#######################################
+escape_js() {
+    printf '%s' "$1" | sed "s/\\\\/\\\\\\\\/g; s/'/\\\'/g"
+}
+
+USERNAME_ESC=$(escape_js "$USERNAME")
+PASSWORD_ESC=$(escape_js "$PASSWORD")
+
+#######################################
+# Inject into page (INLINE JS, NO NEWLINES)
+#######################################
+JS="(function(){function visible(e){const s=getComputedStyle(e);return s.display!=='none'&&s.visibility!=='hidden'&&e.offsetWidth>0;}let userFilled=false;document.querySelectorAll('input').forEach(i=>{if(!userFilled&&visible(i)&&(i.type==='text'||i.type==='email')){i.focus();i.value='$USERNAME_ESC';i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));userFilled=true;}});document.querySelectorAll('input[type=password]').forEach(i=>{if(visible(i)){i.focus();i.value='$PASSWORD_ESC';i.dispatchEvent(new Event('input',{bubbles:true}));i.dispatchEvent(new Event('change',{bubbles:true}));}});})();"
+
+echo "jseval -q $JS" >"$SURF_FIFO"
