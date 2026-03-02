@@ -1,101 +1,380 @@
-surf - simple webkit-based browser
-==================================
-surf is a simple Web browser based on WebKit/GTK+.
+# surf - simple webkit-based browser
+![surf Logo](surf.png)
 
-## Wayland Support
+surf is a simple Web browser based on WebKit/GTK+ with a modal, keyboard-driven interface inspired by qutebrowser and vim.
 
-Surf now supports native Wayland rendering in addition to X11. This provides better integration with Wayland compositors and improved security.
+## About This Fork
 
-### Building for Wayland
+This is a fork of the suckless surf browser that reimplements many qutebrowser features while maintaining surf's minimalist philosophy. The goal is to provide a lightweight, keyboard-driven browser with vim-like modal editing and modern features like hint-based navigation, built-in tabs, and userscript support.
 
-To build surf with Wayland support:
+## Features
 
-```bash
-make WAYLAND=1
-```
+- **Modal Interface**: Vi-style Normal/Insert/Command/Search/Hint modes (qutebrowser-inspired)
+- **Built-in Tab Management**: Process-based tabs with visual tab bar
+- **Hint-based Navigation**: Keyboard-driven link following (no mouse required)
+- **History & Completion**: Smart URL completion with fuzzy matching
+- **Userscript Support**: Compatible with Greasemonkey/Tampermonkey scripts
+- **Password Integration**: Built-in pass(1) integration for form filling
+- **Wayland Native**: Pure Wayland implementation (no X11 dependencies)
 
-To build with X11 support:
+## Differences from Upstream surf
 
-```bash
-make X11=1
-```
+This fork differs significantly from vanilla surf:
 
-### Running on Wayland
+| Feature | Upstream surf | This Fork |
+|---------|---------------|-----------|
+| Interface | Single-key bindings | Modal (Normal/Insert/Command/etc.) |
+| Tabs | External (tabbed/dmenu) | Built-in tab bar |
+| Navigation | Mouse-centric | Hint-based keyboard navigation |
+| URL bar | dmenu prompt | Integrated command bar |
+| Completion | None | History-based with fuzzy matching |
+| Userscripts | Limited | Full Greasemonkey API support |
+| Display | X11/Wayland | Wayland only |
 
-If you're running in a Wayland environment, surf will automatically detect and use the Wayland backend if compiled with Wayland support.
+If you want the original minimalist surf, use the upstream version. This fork is for users who want qutebrowser's UX in a lighter package.
 
-### Key Differences from X11
+## Requirements
 
-- **Window Identification**: Uses instance IDs instead of X11 window IDs
-- **External Tools**: Communicates via D-Bus instead of X11 properties
-- **Embedding**: XEmbed is not supported on Wayland (see tabbing alternatives)
-- **Automation**: Use `surf-dbus.sh` instead of `xprop`-based scripts
+To build surf you need:
+- GTK+ 3 and WebKit2GTK 4.1 header files
+- GDK Wayland backend (`gdk-wayland-3.0`)
+- C compiler (gcc or clang)
 
-### New Features
+Optional dependencies:
+- `pass` - for password manager integration
+- `bemenu` or `dmenu` - for password selection UI
 
-- D-Bus interface for external tool integration
-- Process-based tabbing alternative
-- Improved security through Wayland isolation
-- Better integration with modern desktop environments
+## Installation
 
-Requirements
-------------
-In order to build surf you need GTK+ and Webkit/GTK+ header files.
-For Wayland support, you also need wayland-client, wayland-cursor, and dbus-1 development packages.
+Edit `config.mk` to match your local setup (surf is installed into the `/usr/local` namespace by default).
 
-In order to use the functionality of the url-bar, also install dmenu[0].
-
-Installation
-------------
-Edit config.mk to match your local setup (surf is installed into
-the /usr/local namespace by default).
-
-Afterwards enter the following command to build and install surf (if
-necessary as root):
-
-    make clean install
-
-Running surf
-------------
-run
-	surf [URI]
-
-See the manpage for further options.
-
-Running surf in tabbed
-----------------------
-For running surf in tabbed[1] there is a script included in the distribution,
-which is run like this:
-
-	surf-open.sh [URI]
-
-Further invocations of the script will run surf with the specified URI in this
-instance of tabbed.
-
-For Wayland, you can use the process-based tabbing alternative:
-
-	surf-tab [URI]
-
-### External Tool Integration
-
-For Wayland environments, use the D-Bus interface:
+Build and install (as root if necessary):
 
 ```bash
-# List all surf instances
-surf-dbus.sh list
-
-# Navigate to URL
-surf-dbus.sh go <instance_id> <url>
-
-# Get current URI
-surf-dbus.sh uri <instance_id>
-
-# Find text on page
-surf-dbus.sh find <instance_id> <text>
+make clean install
 ```
 
-See MIGRATION.md for detailed migration instructions from X11 to Wayland.
+## Usage
 
-[0] http://tools.suckless.org/dmenu
-[1] http://tools.suckless.org/tabbed
+Basic usage:
 
+```bash
+surf [URI]
+```
+
+### Keyboard Interface
+
+#### Normal Mode (default)
+
+**Navigation & Tabs:**
+| Key | Action |
+|-----|--------|
+| `o` | Open URL prompt |
+| `O` | Open URL prompt (edit current) |
+| `t` | New tab |
+| `Shift+O` | New tab with URL prompt |
+| `d` | Close current tab |
+| `Shift+J` | Next tab |
+| `Shift+K` | Previous tab |
+| `Shift+P` | Pin/unpin current tab |
+
+**Link Following:**
+| Key | Action |
+|-----|--------|
+| `f` | Follow link (hint mode) |
+| `Shift+F` | Follow link in new tab |
+| `y` | Yank link URL (hint mode) |
+
+**Scrolling:**
+| Key | Action |
+|-----|--------|
+| `j` / `k` | Scroll down/up |
+| `u` | Half page up |
+| `Ctrl+d` | Half page down |
+| `gg` | Scroll to top |
+| `Shift+G` | Scroll to bottom |
+
+**Page Control:**
+| Key | Action |
+|-----|--------|
+| `h` | Back in history |
+| `l` | Forward in history |
+| `r` | Reload page |
+| `Shift+R` | Reload (bypass cache) |
+| `/` | Search in page |
+| `Esc` | Cancel/stop loading |
+
+**Mode Switching:**
+| Key | Action |
+|-----|--------|
+| `i` | Enter insert mode |
+
+**Other:**
+| Key | Action |
+|-----|--------|
+| `p` | Password manager (pass) |
+| `Ctrl+o` | Toggle web inspector |
+| `Ctrl+Shift+J/K` | Zoom in/out |
+
+#### Insert Mode
+
+All keypresses go to web content (for typing in forms, etc.).
+
+**Important:** Press `Esc` to return to Normal mode.
+
+Insert mode is automatically activated when clicking on text inputs.
+
+#### Command Mode (`o` / `O` / `Shift+O`)
+
+Type URL or search term in the command bar:
+- Press `Enter` to navigate
+- Press `Tab` / `Shift+Tab` to cycle through history completions
+- Press `Ctrl+n` / `Ctrl+p` to navigate completions
+- Press `Esc` to cancel
+
+**URL Detection:**
+- Contains `.` or starts with `localhost` → Treated as URL
+- Otherwise → Searches using configured search engine (default: DuckDuckGo)
+
+**Examples:**
+```
+example.com          → https://example.com
+localhost:8080       → http://localhost:8080
+rust error handling  → https://duckduckgo.com/?q=rust+error+handling
+```
+
+#### Search Mode (`/`)
+
+Type search term and results highlight as you type:
+- `Ctrl+n` or bare `n` - Next match
+- `Ctrl+p` or `Shift+N` - Previous match
+- `Enter` - Accept and exit search
+- `Esc` - Cancel search
+
+#### Hint Mode (`f` / `Shift+F` / `y`)
+
+Links, buttons, and form elements are labeled with keyboard hints (home row keys: `asdfghjkl`).
+
+**Activation:**
+- `f` - Follow link in current tab
+- `Shift+F` - Follow link in new tab
+- `y` - Yank (copy) link URL to clipboard
+
+**Usage:**
+1. Press `f` (or `Shift+F`, `y`)
+2. Type the hint label (e.g., `as`)
+3. Link/element activates automatically
+
+**Features:**
+- Works on links, buttons, inputs, and clickable elements
+- Autocompletes as you type
+- Press `Esc` to cancel
+
+### Userscripts
+
+Place Greasemonkey/Tampermonkey compatible scripts in `~/.surf/userscripts/`.
+
+Scripts must have `.user.js` extension and standard metadata:
+
+```javascript
+// ==UserScript==
+// @name         Example Script
+// @match        https://example.com/*
+// @run-at       document-end
+// @grant        GM_getValue
+// ==/UserScript==
+
+// Your code here
+```
+
+**Supported metadata:**
+- `@name` - Script name
+- `@version` - Version string
+- `@match` / `@include` - URL patterns where script runs
+- `@exclude` - URL patterns to skip
+- `@run-at` - `document-start` or `document-end` (injection timing)
+- `@grant` - Permissions (`none`, `unsafeWindow`, API functions)
+
+**Supported APIs:**
+- `GM_getValue(key, default)` - Persistent storage (get)
+- `GM_setValue(key, value)` - Persistent storage (set)
+- `GM_deleteValue(key)` - Delete stored value
+- `GM_listValues()` - List all keys
+- `GM_xmlhttpRequest(details)` - Cross-origin HTTP requests
+- `GM_addStyle(css)` - Inject CSS
+- `GM_openInTab(url)` - Open new tab
+- `GM_setClipboard(text)` - Copy to clipboard
+- `GM_log(...)` - Console logging
+- `GM_info` - Script metadata
+- `unsafeWindow` - Access page's JavaScript context (requires `@grant unsafeWindow`)
+
+**IPC with surf:**
+
+Userscripts can communicate with surf via `$SURF_FIFO`:
+
+```bash
+# In userscript (bash):
+echo "open -t https://example.com" > "$SURF_FIFO"  # Open in new tab
+echo "jseval console.log('hello')" > "$SURF_FIFO"  # Execute JS
+echo "message-info Script complete" > "$SURF_FIFO" # Show message
+```
+
+Available environment variables in userscripts:
+- `$SURF_FIFO` - Path to command FIFO
+- `$SURF_URL` - Current page URL
+- `$SURF_TITLE` - Current page title
+- `$SURF_MODE` - Current mode (normal/insert)
+
+### Password Manager Integration
+
+surf includes built-in `pass` integration via the `surf-pass` userscript.
+
+**Setup:**
+
+```bash
+# Store passwords in pass (format: domain/username)
+pass insert www.example.com/username
+```
+
+Password entry format:
+```
+<password>
+user: <username>
+```
+
+**Usage:**
+
+1. Press `p` in Normal mode on a login page
+2. If multiple accounts exist, select one from bemenu
+3. Username and password are auto-filled
+
+**Example pass structure:**
+```
+~/.password-store/
+  github.com/
+    myusername
+  reddit.com/
+    account1
+    account2
+```
+
+The script matches based on domain and supports multiple accounts per site.
+
+### Tab Management
+
+Tabs are displayed in a tab bar at the top of the window.
+
+**Visual Indicators:**
+- Active tab: Highlighted background
+- Pinned tabs: Prefixed with `[P]`
+- Tab count shown in window title: `[2/5]`
+
+**Interaction:**
+- Left-click tab to switch
+- Middle-click to close tab
+- Keyboard: `Shift+J` / `Shift+K` to cycle
+
+**Pinned Tabs:**
+- Press `Shift+P` to pin/unpin current tab
+- Pinned tabs are kept alive (prevent process suspension)
+- Useful for background music players, chat apps, etc.
+
+### History
+
+History is automatically saved to `~/.surf/history` with format:
+```
+<timestamp> <url> <title>
+```
+
+**Features:**
+- Deduplicates entries (latest timestamp wins)
+- Updates titles on page load
+- Ignores `about:*` and `file://` URLs
+
+**Completion:**
+
+When in Command mode (`o`), start typing to filter history:
+- Matches against both URL and title
+- Supports multiple space-separated search terms (AND logic)
+- Shows up to 15 most recent matches
+- Navigate with `Tab` / `Shift+Tab` or `Ctrl+n` / `Ctrl+p`
+
+### Configuration
+
+Edit `config.h` before building to customize:
+
+**Key bindings:**
+```c
+static Key keys[] = {
+    { MODKEY, GDK_KEY_o, openbar, { .i = 0 } },
+    // ...
+};
+```
+
+**Search engine:**
+```c
+static const char *searchengine = "https://duckduckgo.com/?q=%s";
+```
+
+**Colors:**
+```c
+static const char *stat_bg_normal  = "#000000";
+static const char *stat_fg_normal  = "#ffffff";
+static const char *stat_font       = "monospace 11";
+```
+
+**WebKit settings:**
+```c
+static Parameter defconfig[ParameterLast] = {
+    [JavaScript]      = { { .i = 1 }, },
+    [DarkMode]        = { { .i = 1 }, },
+    [Inspector]       = { { .i = 1 }, },
+    // ...
+};
+```
+
+**Site-specific settings:**
+```c
+static UriParameters uriparams[] = {
+    { "(://|\\.)example\\.com(/|$)", {
+        [JavaScript] = { { .i = 0 }, },  // Disable JS on example.com
+    }, },
+};
+```
+
+**Custom styles:**
+
+Place CSS files in `~/.surf/styles/`:
+- `default.css` - Applied to all sites
+- Site-specific styles configured in `config.h`
+
+## Known Issues
+
+- **No session restore** - Tabs are lost on restart (use history)
+- **No quickmarks** - Use browser history or bookmarks in password manager
+- **No ad blocking** - Use userscripts or DNS-level blocking
+- **Wayland-only** - Won't run on X11 (use Xwayland if needed)
+
+## Contributing
+
+This is a personal fork focused on my workflow. Bug reports and patches welcome, but I may not accept feature requests that deviate from the qutebrowser-inspired design.
+
+**Development:**
+```bash
+git clone <your-fork>
+cd surf
+make clean && make
+./surf
+```
+
+## License
+
+MIT/X Consortium License (same as upstream surf). See LICENSE file.
+
+## Links
+
+- Forked surf: https://github.com/DGC75/surf-wayland
+- Upstream surf: https://surf.suckless.org
+- qutebrowser: https://qutebrowser.org
+- suckless: https://suckless.org
+- suckless: https://suckless.org
