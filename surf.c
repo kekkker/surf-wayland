@@ -257,6 +257,8 @@ static display_context_t display_ctx;
 static int showxidflag = 0;
 static int cookiepolicy;
 Client *clients;
+/* Track all web process sockets */
+static GArray *webext_sockets = NULL;
 
 /* Userscript support */
 static char *surf_fifo;
@@ -377,12 +379,23 @@ setup(void)
 	/* Initialize random seed */
 	srand(time(NULL));
 
+	/* Initialize socket tracking */
+	webext_sockets = g_array_new(FALSE, FALSE, sizeof(int));
+
 	/* clean up any zombies immediately */
 	sigchld(0);
 	if (signal(SIGHUP, sighup) == SIG_ERR)
 		die("Can't install SIGHUP handler");
 
 	gtk_init(NULL, NULL);
+	
+	/* Force single web process for all pages */
+	#pragma GCC diagnostic push
+	#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+	webkit_web_context_set_process_model(
+	    webkit_web_context_get_default(),
+	    WEBKIT_PROCESS_MODEL_SHARED_SECONDARY_PROCESS);
+	#pragma GCC diagnostic pop
 
 	gdpy = gdk_display_get_default();
 	if (!gdpy)
@@ -2303,10 +2316,10 @@ viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
 		if (c->view == v)
 			break;
 	}
-
-	if (!c) {
+	if (!c)
+		c = clients;
+	if (!c)
 		return TRUE;
-	}
 
 	/* Handle hints data from extension */
 	if (strcmp(name, "hints-data") == 0) {
@@ -2322,12 +2335,8 @@ viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
 		return TRUE;
 	}
 
-	if (spair[1] < 0)
-		return TRUE;
-
-	gfd = g_unix_fd_list_new_from_array(&spair[1], 1);
-	r = webkit_user_message_new_with_fd_list("surf-pipe", NULL, gfd);
-
+	/* Just acknowledge - no socket needed anymore */
+	r = webkit_user_message_new("surf-ack", NULL);
 	webkit_user_message_send_reply(m, r);
 
 	return TRUE;
@@ -2648,22 +2657,26 @@ zoom(Client *c, const Arg *a)
 static void
 msgext(Client *c, char type, const Arg *a)
 {
-	static unsigned char msg[MSGBUFSZ];
-	int ret;
+	char js[128];
 
-	if (spair[0] < 0)
-		return;
-
-	ret = snprintf(msg, sizeof(msg), "%c%c%c",
-	               (unsigned char)c->pageid, type, (signed char)a->i);
-	if (ret >= sizeof(msg)) {
-		fprintf(stderr, "surf: message too long: %d\n", ret);
+	switch (type) {
+	case 'v':
+		snprintf(js, sizeof(js),
+		         "window.scrollBy(0,window.innerHeight/100*%d);",
+		         a->i);
+		break;
+	case 'h':
+		snprintf(js, sizeof(js),
+		         "window.scrollBy(window.innerWidth/100*%d,0);",
+		         a->i);
+		break;
+	default:
+		fprintf(stderr, "surf: msgext unknown type: %c\n", type);
 		return;
 	}
 
-	if (send(spair[0], msg, ret, 0) != ret)
-		fprintf(stderr, "surf: error sending: %hhu/%c/%d (%d)\n",
-		        (unsigned char)c->pageid, type, a->i, ret);
+	webkit_web_view_evaluate_javascript(c->view, js, -1,
+	    NULL, NULL, NULL, NULL, NULL);
 }
 
 void
@@ -3807,6 +3820,9 @@ main(int argc, char *argv[])
 {
 	Arg arg;
 	Client *c;
+
+	/* Force WebKit into single-process mode to fix YouTube scrolling */
+	g_setenv("WEBKIT_FORCE_SANDBOX", "0", TRUE);
 
 	memset(&arg, 0, sizeof(arg));
 

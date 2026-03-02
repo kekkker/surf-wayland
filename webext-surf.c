@@ -18,27 +18,48 @@
 #define MSGBUFSZ 8
 
 static WebKitWebExtension *webext;
-static GtkWidget *hint_overlay = NULL;
-static int sock;
+static int sock = -1;
+static GHashTable *pages_table = NULL;
 
-/*
- * Return:
- * 0 No data processed: need more data
- * > 0 Amount of data processed or discarded
- */
 static size_t
 evalmsg(char *msg, size_t sz)
 {
 	char js[48];
-	WebKitWebPage *page;
+	WebKitWebPage *page = NULL;
 	JSCContext *jsc;
 	JSCValue *jsv;
-
-	if (!(page = webkit_web_extension_get_page(webext, msg[0])))
-		return sz;
+	GHashTableIter iter;
+	gpointer key, value;
 
 	if (sz < 2)
 		return 0;
+
+	/* Try exact page ID match first */
+	if ((unsigned char)msg[0] != 0) {
+		g_hash_table_iter_init(&iter, pages_table);
+		while (g_hash_table_iter_next(&iter, &key, &value)) {
+			WebKitWebPage *p = (WebKitWebPage *)value;
+			if (WEBKIT_IS_WEB_PAGE(p) &&
+			    webkit_web_page_get_id(p) == (guint64)(unsigned char)msg[0]) {
+				page = p;
+				break;
+			}
+		}
+	}
+
+	/* Fallback: use any valid page */
+	if (!page) {
+		g_hash_table_iter_init(&iter, pages_table);
+		while (g_hash_table_iter_next(&iter, &key, &value)) {
+			if (WEBKIT_IS_WEB_PAGE((WebKitWebPage *)value)) {
+				page = (WebKitWebPage *)value;
+				break;
+			}
+		}
+	}
+
+	if (!page)
+		return sz;
 
 	jsc = webkit_frame_get_js_context(webkit_web_page_get_main_frame(page));
 	jsv = NULL;
@@ -88,7 +109,6 @@ click_at(WebKitWebPage *page, int x, int y)
 	js = g_strdup_printf(
 		"document.elementFromPoint(%d, %d).click();", x, y);
 
-	/* Execute via a script element */
 	WebKitDOMElement *script = webkit_dom_document_create_element(doc, "script", NULL);
 	webkit_dom_element_set_inner_html(script, js, NULL);
 	webkit_dom_node_append_child(
@@ -101,7 +121,6 @@ click_at(WebKitWebPage *page, int x, int y)
 	g_free(js);
 }
 
-/* Find all clickable elements using DOM */
 static void
 find_hints(WebKitWebPage *page)
 {
@@ -112,7 +131,6 @@ find_hints(WebKitWebPage *page)
 	doc = webkit_web_page_get_dom_document(page);
 	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(siiii)"));
 
-	/* Get all links */
 	links = webkit_dom_document_query_selector_all(doc, "a[href], area[href]", NULL);
 	if (links) {
 		gulong len = webkit_dom_node_list_get_length(links);
@@ -120,20 +138,17 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMNode *node = webkit_dom_node_list_item(links, i);
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
-			/* REMOVED: WebKitDOMElement *html_elem = WEBKIT_DOM_HTML_ELEMENT(elem); */
-
-			/* Get bounding rect */
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
 			gfloat x = webkit_dom_client_rect_get_left(rect);
 			gfloat y = webkit_dom_client_rect_get_top(rect);
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
-			/* Skip invisible elements */
-			if (width < 3 || height < 3)
+			if (width < 3 || height < 3) {
+				g_object_unref(rect);
 				continue;
+			}
 
-			/* Get URL */
 			gchar *url = webkit_dom_html_anchor_element_get_href(
 				WEBKIT_DOM_HTML_ANCHOR_ELEMENT(elem));
 
@@ -148,7 +163,6 @@ find_hints(WebKitWebPage *page)
 		g_object_unref(links);
 	}
 
-	/* Get all buttons */
 	buttons = webkit_dom_document_query_selector_all(doc,
 		"button, input[type=button], input[type=submit]", NULL);
 	if (buttons) {
@@ -164,7 +178,6 @@ find_hints(WebKitWebPage *page)
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
 			if (width >= 3 && height >= 3) {
-				/* Mark as clickable with position for click simulation */
 				gchar *marker = g_strdup_printf("[click:%d,%d]",
 					(gint)(x + width/2), (gint)(y + height/2));
 				g_variant_builder_add(&builder, "(siiii)",
@@ -182,7 +195,6 @@ find_hints(WebKitWebPage *page)
 	webkit_web_page_send_message_to_view(page, msg, NULL, NULL, NULL);
 }
 
-/* Draw hint overlays using DOM */
 static void
 draw_hints(WebKitWebPage *page, GVariant *hints_data)
 {
@@ -194,7 +206,6 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 
 	doc = webkit_web_page_get_dom_document(page);
 
-	/* Remove old hints */
 	container = webkit_dom_document_get_element_by_id(doc, "surf-hints-container");
 	if (container) {
 		webkit_dom_node_remove_child(
@@ -202,38 +213,63 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 			WEBKIT_DOM_NODE(container), NULL);
 	}
 
-	/* Create new container */
 	container = webkit_dom_document_create_element(doc, "div", NULL);
 	webkit_dom_element_set_id(container, "surf-hints-container");
 	webkit_dom_element_set_attribute(container, "style",
-		"position: fixed; top: 0; left: 0; width: 100%; height: 100%; "
-		"z-index: 2147483647; pointer-events: none;", NULL);
+		"all: initial !important;"
+		"position: fixed !important;"
+		"top: 0 !important; left: 0 !important;"
+		"width: 100vw !important; height: 100vh !important;"
+		"z-index: 2147483647 !important;"
+		"pointer-events: none !important;"
+		"display: block !important;", NULL);
 
-	webkit_dom_node_append_child(
-		WEBKIT_DOM_NODE(webkit_dom_document_get_body(doc)),
-		WEBKIT_DOM_NODE(container), NULL);
-
-	/* Add hint elements */
 	g_variant_iter_init(&iter, hints_data);
 	while (g_variant_iter_loop(&iter, "(ssii)", &label, &url, &x, &y)) {
-		WebKitDOMElement *hint = webkit_dom_document_create_element(doc, "span", NULL);
+		WebKitDOMElement *hint;
+		WebKitDOMText *text_node;
+		gchar *style_str;
 
-		gchar *style = g_strdup_printf(
-			"position: absolute; left: %dpx; top: %dpx; "
-			"background: #ffff00; color: #000000; "
-			"font: bold 12px monospace; padding: 2px 4px; "
-			"border: 1px solid #000; z-index: 2147483647;",
+		hint = webkit_dom_document_create_element(doc, "div", NULL);
+		
+		text_node = webkit_dom_document_create_text_node(doc, label);
+		webkit_dom_node_append_child(WEBKIT_DOM_NODE(hint),
+			WEBKIT_DOM_NODE(text_node), NULL);
+		
+		style_str = g_strdup_printf(
+			"all: initial !important;"
+			"position: absolute !important;"
+			"left: %dpx !important; top: %dpx !important;"
+			"display: inline-block !important;"
+			"background: #ffff00 !important;"
+			"color: #000000 !important;"
+			"font-family: monospace !important;"
+			"font-size: 11px !important;"
+			"font-weight: bold !important;"
+			"line-height: 13px !important;"
+			"padding: 2px 4px !important;"
+			"border: 1px solid #000000 !important;"
+			"border-radius: 2px !important;"
+			"z-index: 2147483647 !important;"
+			"pointer-events: none !important;"
+			"visibility: visible !important;"
+			"opacity: 1 !important;"
+			"text-align: center !important;"
+			"box-shadow: 0 0 3px rgba(0,0,0,0.5) !important;",
 			x, y);
-		webkit_dom_element_set_attribute(hint, "style", style, NULL);
-		g_free(style);
+		
+		webkit_dom_element_set_attribute(hint, "style", style_str, NULL);
+		g_free(style_str);
 
-		webkit_dom_element_set_inner_html(hint, label, NULL);
 		webkit_dom_node_append_child(WEBKIT_DOM_NODE(container),
 			WEBKIT_DOM_NODE(hint), NULL);
 	}
+
+	webkit_dom_node_append_child(
+		WEBKIT_DOM_NODE(webkit_dom_document_get_document_element(doc)),
+		WEBKIT_DOM_NODE(container), NULL);
 }
 
-/* Handle hint messages from surf */
 static gboolean
 hint_message_received(WebKitWebPage *page, WebKitUserMessage *message)
 {
@@ -293,11 +329,9 @@ readsock(GIOChannel *s, GIOCondition c, gpointer unused)
 	for (rsz += msgoff; rsz; rsz -= sz) {
 		sz = evalmsg(msg, rsz);
 		if (sz == 0) {
-			/* need more data */
 			break;
 		}
 		if (sz != rsz) {
-			/* continue processing message */
 			memmove(msg, msg+sz, rsz-sz);
 		}
 	}
@@ -310,38 +344,35 @@ static void
 pageusermessagereply(GObject *o, GAsyncResult *r, gpointer page)
 {
 	WebKitUserMessage *m;
-	GUnixFDList *gfd;
-	GIOChannel *gchansock;
-	const char *name;
-	int nfd;
 
 	m = webkit_web_page_send_message_to_view_finish(page, r, NULL);
-	name = webkit_user_message_get_name(m);
-	if (strcmp(name, "surf-pipe") != 0) {
-		fprintf(stderr, "webext-surf: Unknown User Reply: %s\n", name);
+	if (!m)
 		return;
-	}
 
-	gfd = webkit_user_message_get_fd_list(m);
-	if ((nfd = g_unix_fd_list_get_length(gfd)) != 1) {
-		fprintf(stderr, "webext-surf: Too many file-descriptors: %d\n", nfd);
-		return;
-	}
+	/* Socket no longer needed - scrolling uses evaluate_javascript */
+	fprintf(stderr, "WEBEXT PID=%d: page registered with surf\n", getpid());
+}
 
-	sock = g_unix_fd_list_get(gfd, 0, NULL);
-
-	gchansock = g_io_channel_unix_new(sock);
-	g_io_channel_set_encoding(gchansock, NULL, NULL);
-	g_io_channel_set_flags(gchansock, g_io_channel_get_flags(gchansock)
-	                       | G_IO_FLAG_NONBLOCK, NULL);
-	g_io_channel_set_close_on_unref(gchansock, TRUE);
-	g_io_add_watch(gchansock, G_IO_IN, readsock, NULL);
+static void
+page_weak_notify(gpointer data, GObject *dead_page)
+{
+	guint64 pageid = GPOINTER_TO_UINT(data);
+	if (pages_table)
+		g_hash_table_remove(pages_table, GUINT_TO_POINTER(pageid));
 }
 
 void
 pagecreated(WebKitWebExtension *e, WebKitWebPage *p, gpointer unused)
 {
 	WebKitUserMessage *msg;
+	guint64 pageid;
+
+	pageid = webkit_web_page_get_id(p);
+	fprintf(stderr, "WEBEXT PID=%d: page-created, pageid=%lu\n", getpid(), pageid);
+
+	g_hash_table_insert(pages_table, GUINT_TO_POINTER(pageid), p);
+
+	g_object_weak_ref(G_OBJECT(p), page_weak_notify, GUINT_TO_POINTER(pageid));
 
 	msg = webkit_user_message_new("page-created", NULL);
 	webkit_web_page_send_message_to_view(p, msg, NULL, pageusermessagereply, p);
@@ -352,7 +383,10 @@ pagecreated(WebKitWebExtension *e, WebKitWebPage *p, gpointer unused)
 G_MODULE_EXPORT void
 webkit_web_extension_initialize(WebKitWebExtension *e)
 {
+	fprintf(stderr, "WEBEXT PID=%d: web extension initialized\n", getpid());
+
 	webext = e;
+	pages_table = g_hash_table_new(g_direct_hash, g_direct_equal);
 
 	g_signal_connect(G_OBJECT(e), "page-created",
 	                 G_CALLBACK(pagecreated), NULL);
