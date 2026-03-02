@@ -197,6 +197,7 @@ static Key keys[] = {
 	{ MODKEY,                GDK_KEY_d,      scrollv,    { .i = +50 } },
 	{ MODKEY,                GDK_KEY_u,      scrollv,    { .i = -50 } },
     { 0,                     GDK_KEY_p,     spawnuserscript, { .v = "$HOME/.surf/userscripts/surf-pass" } },
+    { GDK_SHIFT_MASK,        GDK_KEY_f,      hints_start, { .i = HintModeNewWindow } },
 };
 
 /* button definitions */

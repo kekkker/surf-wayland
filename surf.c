@@ -953,8 +953,7 @@ request_hints_from_extension(Client *c)
 
 /* Cleanup hint state */
 void
-hints_cleanup(Client *c)
-{
+hints_cleanup(Client *c) {
 	if (!hintstate.active)
 		return;
 	
@@ -970,11 +969,14 @@ hints_cleanup(Client *c)
 	
 	g_free(hintstate.input);
 	hintstate.input = NULL;
-	hintstate.active = 0;
 	
-	/* Tell extension to remove hint overlays */
-	WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
-	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+	/* Only send clear if we're still on the same page that had hints */
+	if (hintstate.active && hintstate.pageid == webkit_web_view_get_page_id(c->view)) {
+		WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
+		webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+	}
+	
+	hintstate.active = 0;
 	
 	/* Return to normal mode */
 	c->mode = ModeNormal;
@@ -1022,9 +1024,7 @@ filter_hints(Client *c)
 }
 
 /* Follow a hint */
-static void
-follow_hint(Client *c, const char *label)
-{
+static void follow_hint(Client *c, const char *label) {
 	Hint *target = NULL;
 
 	for (guint i = 0; i < hintstate.hints->len; i++) {
@@ -1059,8 +1059,20 @@ follow_hint(Client *c, const char *label)
 		loaduri(c, &arg);
 		break;
 	case HintModeNewWindow:
-		arg.v = target->url;
-		newwindow(c, &arg, 0);
+		/* Clean up hints on the CURRENT tab before switching */
+		{
+			WebKitWebView *old_view = c->view;
+			
+			/* Remove hint overlays from current tab */
+			WebKitUserMessage *clear_msg = webkit_user_message_new("hints-clear", NULL);
+			webkit_web_view_send_message_to_page(old_view, clear_msg, NULL, NULL, NULL);
+			
+			/* Now open new tab and load URL */
+			tab_init(c);
+			tab_new(c, &(Arg){0});
+			arg.v = target->url;
+			loaduri(c, &arg);
+		}
 		break;
 	case HintModeYank:
 		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
