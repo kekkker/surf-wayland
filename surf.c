@@ -5,6 +5,7 @@
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <glib.h>
 #include <inttypes.h>
@@ -239,6 +240,7 @@ static void findfailed(WebKitFindController *f, Client *c);
 
 static GArray *history_entries = NULL;
 static char *historyfile;
+static time_t history_mtime = 0;
 static void history_add(const char *uri, const char *title);
 static void history_load(void);
 static void history_filter(Client *c, const char *text);
@@ -333,8 +335,6 @@ setup(void)
 {
 	GdkDisplay *gdpy;
 	int i, j;
-
-	srand(time(NULL));
 
 	sigchld(0);
 	if (signal(SIGHUP, sighup) == SIG_ERR)
@@ -551,7 +551,7 @@ static void
 generate_instance_id(Client *c)
 {
 	snprintf(c->instance_id, sizeof(c->instance_id),
-	         "surf-%ld-%d", (long)getpid(), rand());
+	         "surf-%ld-%u", (long)getpid(), g_random_int());
 }
 
 Client *
@@ -756,11 +756,12 @@ tab_switch_to(Client *c, int index)
 	gtk_widget_set_can_focus(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 
-	c->title = webkit_web_view_get_title(c->view);
+	g_free(c->title);
+	c->title = g_strdup(webkit_web_view_get_title(c->view));
 	c->progress = webkit_web_view_get_estimated_load_progress(c->view) * 100;
 	c->https = webkit_web_view_get_tls_info(c->view, &c->cert, &c->tlserr);
 	updatetitle(c);
-	
+
 	update_tabbar(c);
 }
 
@@ -797,6 +798,7 @@ tab_new(Client *c, const Arg *a)
 	g_signal_connect(c->finder, "failed-to-find-text",
 	                 G_CALLBACK(findfailed), c);
 	
+	g_free(c->title);
 	c->title = NULL;
 	c->progress = 100;
 	c->mode = ModeNormal;
@@ -1562,8 +1564,9 @@ void
 spawn(Client *c, const Arg *a)
 {
 	if (fork() == 0) {
-		close(spair[0]);
-		close(spair[1]);
+		int _maxfd = (int)sysconf(_SC_OPEN_MAX);
+		for (int _fd = 3; _fd < _maxfd; _fd++)
+			close(_fd);
 		setsid();
 		execvp(((char **)a->v)[0], (char **)a->v);
 		fprintf(stderr, "%s: execvp %s", argv0, ((char **)a->v)[0]);
@@ -2106,7 +2109,8 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 
 	switch (e) {
 	case WEBKIT_LOAD_STARTED:
-		c->title = uri;
+		g_free(c->title);
+		c->title = g_strdup(uri);
 		c->https = c->insecure = 0;
 		seturiparameters(c, uri, loadtransient);
 		if (c->errorpage)
@@ -2115,11 +2119,13 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 			g_clear_object(&c->failedcert);
 		break;
 	case WEBKIT_LOAD_REDIRECTED:
-		c->title = uri;
+		g_free(c->title);
+		c->title = g_strdup(uri);
 		seturiparameters(c, uri, loadtransient);
 		break;
 	case WEBKIT_LOAD_COMMITTED:
-		c->title = uri;
+		g_free(c->title);
+		c->title = g_strdup(uri);
 		seturiparameters(c, uri, loadcommitted);
 		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
 		                                        &c->tlserr);
@@ -2144,7 +2150,8 @@ progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 void
 titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 {
-	c->title = webkit_web_view_get_title(c->view);
+	g_free(c->title);
+	c->title = g_strdup(webkit_web_view_get_title(c->view));
 	updatetitle(c);
 
 	const char *uri = geturi(c);
@@ -2205,12 +2212,13 @@ mousetargetchanged(WebKitWebView *v, WebKitHitTestResult *h, guint modifiers,
 
 	c->mousepos = h;
 
+	g_free(c->targeturi);
 	if (hc & OnLink)
-		c->targeturi = webkit_hit_test_result_get_link_uri(h);
+		c->targeturi = g_strdup(webkit_hit_test_result_get_link_uri(h));
 	else if (hc & OnImg)
-		c->targeturi = webkit_hit_test_result_get_image_uri(h);
+		c->targeturi = g_strdup(webkit_hit_test_result_get_image_uri(h));
 	else if (hc & OnMedia)
-		c->targeturi = webkit_hit_test_result_get_media_uri(h);
+		c->targeturi = g_strdup(webkit_hit_test_result_get_media_uri(h));
 	else
 		c->targeturi = NULL;
 
@@ -2942,8 +2950,10 @@ spawnuserscript(Client *c, const Arg *a)
 		setenv("QUTE_TITLE", title, 1);
 		setenv("QUTE_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
 
-		close(spair[0]);
-		close(spair[1]);
+		/* Close all fds >= 3 so parent's sockets/fifo don't leak */
+		int _maxfd = (int)sysconf(_SC_OPEN_MAX);
+		for (int _fd = 3; _fd < _maxfd; _fd++)
+			close(_fd);
 		setsid();
 		execl("/bin/sh", "sh", "-c", script, NULL);
 		fprintf(stderr, "spawnuserscript: exec failed: %s\n", script);
@@ -3061,11 +3071,16 @@ static void
 setup_fifo(Client *c)
 {
 	int fd;
+	const char *runtime_dir;
 
 	if (surf_fifo)
 		return;
 
-	surf_fifo = g_strdup_printf("/tmp/surf-fifo-%ld", (long)getpid());
+	runtime_dir = getenv("XDG_RUNTIME_DIR");
+	if (!runtime_dir || !*runtime_dir)
+		runtime_dir = "/tmp";
+
+	surf_fifo = g_strdup_printf("%s/surf-fifo-%ld", runtime_dir, (long)getpid());
 
 	unlink(surf_fifo);
 	if (mkfifo(surf_fifo, 0600) != 0) {
@@ -3198,9 +3213,20 @@ inject_userscripts_early(WebKitUserContentManager *cm, const char *uri)
 static void
 history_load(void)
 {
+	struct stat st;
 	gchar *contents = NULL;
 	gchar **lines;
 	int i;
+
+	if (!historyfile)
+		return;
+
+	/* Only reload when the file has been modified */
+	if (stat(historyfile, &st) == 0) {
+		if (history_entries && st.st_mtime == history_mtime)
+			return;
+		history_mtime = st.st_mtime;
+	}
 
 	if (history_entries) {
 		for (i = 0; i < (int)history_entries->len; i++) {
@@ -3212,9 +3238,6 @@ history_load(void)
 	}
 
 	history_entries = g_array_new(FALSE, TRUE, sizeof(HistoryEntry));
-
-	if (!historyfile)
-		return;
 
 	if (!g_file_get_contents(historyfile, &contents, NULL, NULL) || !contents)
 		return;
@@ -3679,6 +3702,8 @@ pin_keepalive(gpointer data)
 		if (!tab_pins[i])
 			continue;
 		if (!tabs.views[i])
+			continue;
+		if (!webkit_web_view_is_playing_audio(tabs.views[i]))
 			continue;
 
 		webkit_web_view_evaluate_javascript(tabs.views[i],

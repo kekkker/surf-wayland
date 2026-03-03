@@ -38,7 +38,7 @@ typedef struct Client {
     GtkWidget *tabbar;
 	GtkWidget *statusbar;
 	GtkWidget *statentry;
-	const char *title, *overtitle, *targeturi;
+	char *title, *overtitle, *targeturi;
 	const char *needle;
 	int newtab_pending;
 	int find_match_count;
