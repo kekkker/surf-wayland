@@ -41,6 +41,8 @@ typedef struct Client {
 	const char *title, *overtitle, *targeturi;
 	const char *needle;
 	int newtab_pending;
+	int find_match_count;
+	int find_current_match;
 	struct Client *next;
 } Client;
 
@@ -52,4 +54,4 @@ void tab_close(Client *c, const Arg *a);
 void tab_next(Client *c, const Arg *a);
 void tab_prev(Client *c, const Arg *a);
 void openbar_newtab(Client *c, const Arg *a);
-void tab_switch_to(Client *c, int index);  // ADD THIS
+void tab_switch_to(Client *c, int index);

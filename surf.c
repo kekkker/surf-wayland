@@ -234,6 +234,9 @@ static void setup_fifo(Client *c);
 static void spawnuserscript(Client *c, const Arg *a);
 static void inject_userscripts_early(WebKitUserContentManager *cm, const char *uri);
 
+static void findcountchanged(WebKitFindController *f, guint count, Client *c);
+static void findfailed(WebKitFindController *f, Client *c);
+
 static GArray *history_entries = NULL;
 static char *historyfile;
 static void history_add(const char *uri, const char *title);
@@ -705,9 +708,9 @@ for (i = 0; i < tabs.count; i++) {
     gtk_label_set_single_line_mode(GTK_LABEL(label), TRUE);           /* Keep on one line */
     g_free(text);
 
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0);  /* ADD THIS */
-    gtk_widget_set_margin_start(label, 8);         /* ADD THIS */
-    gtk_widget_set_margin_end(label, 8);           /* ADD THIS */
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0);
+    gtk_widget_set_margin_start(label, 8);
+    gtk_widget_set_margin_end(label, 8);
 
     box = gtk_event_box_new();
     gtk_widget_set_size_request(box, 150, -1);  /* Minimum 150px wide */
@@ -741,6 +744,13 @@ tab_switch_to(Client *c, int index)
 	c->view = tabs.views[index];
 	c->pageid = webkit_web_view_get_page_id(c->view);
 	c->finder = webkit_web_view_get_find_controller(c->view);
+	
+	c->finder = webkit_web_view_get_find_controller(c->view);
+	g_signal_connect(c->finder, "counted-matches",
+	                 G_CALLBACK(findcountchanged), c);
+	g_signal_connect(c->finder, "failed-to-find-text",
+	                 G_CALLBACK(findfailed), c);
+
 	c->inspector = webkit_web_view_get_inspector(c->view);
 	c->settings = webkit_web_view_get_settings(c->view);
 	c->context = webkit_web_view_get_context(c->view);
@@ -757,7 +767,7 @@ tab_switch_to(Client *c, int index)
 	c->https = webkit_web_view_get_tls_info(c->view, &c->cert, &c->tlserr);
 	updatetitle(c);
 	
-	update_tabbar(c);  /* ADD THIS LINE */
+	update_tabbar(c);
 }
 
 void
@@ -770,7 +780,7 @@ tab_new(Client *c, const Arg *a)
 	v = newview(c, c->view);
 
 	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(v), TRUE, TRUE, 0);
-	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 1);  /* CHANGE 0 to 1 */
+	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 1);
 
 	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 
@@ -785,6 +795,14 @@ tab_new(Client *c, const Arg *a)
 
 	c->view = v;
 	c->pageid = webkit_web_view_get_page_id(v);
+	c->finder = webkit_web_view_get_find_controller(v);
+	
+	/* Connect find signals for this new view */
+	g_signal_connect(c->finder, "counted-matches",
+	                 G_CALLBACK(findcountchanged), c);
+	g_signal_connect(c->finder, "failed-to-find-text",
+	                 G_CALLBACK(findfailed), c);
+	
 	c->title = NULL;
 	c->progress = 100;
 	c->mode = ModeNormal;
@@ -796,7 +814,7 @@ tab_new(Client *c, const Arg *a)
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_grab_focus(GTK_WIDGET(v));
 	updatetitle(c);
-	update_tabbar(c);  /* ADD THIS */
+	update_tabbar(c);
 
 	if (a && a->i == 0) {
 		Arg bar = { .i = 0 };
@@ -837,7 +855,7 @@ tab_close(Client *c, const Arg *a)
 		G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
 
 	webkit_web_view_load_uri(dead, "about:blank");
-	update_tabbar(c);  /* ADD THIS */
+	update_tabbar(c);
 }
 
 void
@@ -1713,6 +1731,9 @@ newview(Client *c, WebKitWebView *rv)
 	g_signal_connect(G_OBJECT(v), "web-process-terminated",
 			 G_CALLBACK(webprocessterminated), c);
 
+	c->find_match_count = 0;
+	c->find_current_match = 0;
+
 	c->context = context;
 	c->settings = settings;
 
@@ -1755,6 +1776,9 @@ buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
 {
 	WebKitHitTestResultContext element;
 	int i;
+
+	if (!c->mousepos)
+		return FALSE;
 
 	element = webkit_hit_test_result_get_context(c->mousepos);
 
@@ -1847,6 +1871,10 @@ showview(WebKitWebView *v, Client *c)
 	char *cssstr;
 
 	c->finder = webkit_web_view_get_find_controller(c->view);
+	gulong sig1 = g_signal_connect(c->finder, "counted-matches",
+	                 G_CALLBACK(findcountchanged), c);
+	gulong sig2 = g_signal_connect(c->finder, "failed-to-find-text",
+	                 G_CALLBACK(findfailed), c);
 	c->inspector = webkit_web_view_get_inspector(c->view);
 
 	c->pageid = webkit_web_view_get_page_id(c->view);
@@ -1870,7 +1898,7 @@ showview(WebKitWebView *v, Client *c)
         "  background-color: #1a1a1a;"
         "  padding: 0px;"
         "  font-family: 'Terminus (TTF)';"
-        "  font-size: '11px';"
+        "  font-size: 11px;"
         "}"
         "#tab-active {"
         "  background-color: #4a4a4a;"
@@ -2540,10 +2568,22 @@ void
 find(Client *c, const Arg *a)
 {
 	if (a && a->i) {
-		if (a->i > 0)
+		if (a->i > 0) {
 			webkit_find_controller_search_next(c->finder);
-		else
+			if (c->find_match_count > 0) {
+				c->find_current_match++;
+				if (c->find_current_match > c->find_match_count)
+					c->find_current_match = 1;
+			}
+		} else {
 			webkit_find_controller_search_previous(c->finder);
+			if (c->find_match_count > 0) {
+				c->find_current_match--;
+				if (c->find_current_match < 1)
+					c->find_current_match = c->find_match_count;
+			}
+		}
+		updatebar(c);
 	} else {
 		opensearch(c, NULL);
 	}
@@ -2553,6 +2593,8 @@ void
 opensearch(Client *c, const Arg *a)
 {
 	c->mode = ModeSearch;
+	c->find_match_count = 0;
+	c->find_current_match = 0;
 
 	gtk_widget_set_can_focus(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
@@ -2566,23 +2608,7 @@ opensearch(Client *c, const Arg *a)
 static gboolean
 bar_update_search(gpointer data)
 {
-	Client *c = (Client *)data;
-	const char *text;
-
-	if (c->mode != ModeSearch)
-		return FALSE;
-
-	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
-	if (g_str_has_prefix(text, " [SEARCH] "))
-		text = text + 10;
-
-	if (text && *text) {
-		webkit_find_controller_search(c->finder, text,
-		    findopts, G_MAXUINT);
-	} else {
-		webkit_find_controller_search_finish(c->finder);
-	}
-
+	/* Do nothing - search only happens on Enter */
 	return FALSE;
 }
 
@@ -2612,12 +2638,18 @@ updatebar(Client *c)
 	if (c->progress > 0 && c->progress < 100)
 		text = g_strdup_printf(" [%s] [%i%%] %s", modestr,
 		                       c->progress, uri);
+	else if (c->find_match_count > 0)
+		text = g_strdup_printf(" [%s] [%d/%d] %s", modestr,
+		                       c->find_current_match, c->find_match_count, uri);
 	else
 		text = g_strdup_printf(" [%s] %s", modestr, uri);
 
 	gtk_entry_set_text(GTK_ENTRY(c->statentry), text);
 	g_free(text);
 }
+
+
+
 
 void
 openbar(Client *c, const Arg *a)
@@ -2651,7 +2683,7 @@ void
 closebar(Client *c)
 {
 	c->mode = ModeNormal;
-	c->newtab_pending = 0;    /* ADD THIS LINE */
+	c->newtab_pending = 0;
 
 	history_hide(c);
 
@@ -2691,15 +2723,27 @@ baractivate(GtkEntry *entry, Client *c)
 	text = gtk_entry_get_text(entry);
 
 	if (c->mode == ModeSearch) {
+		/* Extract search term */
 		input = text;
 		if (g_str_has_prefix(text, " [SEARCH] "))
 			input = text + 10;
+		else if (g_str_has_prefix(text, " [SEARCH "))
+			input = strchr(text + 9, ']') + 2;
 
 		if (input && *input) {
+			/* Start the search (highlights matches) */
 			webkit_find_controller_search(c->finder, input,
 			    findopts, G_MAXUINT);
+			
+			/* Count matches (triggers counted-matches signal) */
+			webkit_find_controller_count_matches(c->finder, input,
+			    findopts, G_MAXUINT);
+			
+			c->find_current_match = 1;
 		}
+		
 		closebar(c);
+		updatebar(c);
 		return;
 	}
 
@@ -2714,19 +2758,17 @@ baractivate(GtkEntry *entry, Client *c)
 
 	if (input && *input) {
 		if (c->newtab_pending) {
-			/* Save the input BEFORE closing bar */
 			gchar *saved_input = g_strdup(input);
 			c->newtab_pending = 0;
 
-			closebar(c);  /* CLOSE BAR FIRST */
+			closebar(c);
 
-			/* NOW create tab and load */
 			tab_init(c);
 			tab_new(c, &(Arg){ .i = 1 });
 			Arg a = { .v = saved_input };
 			loaduri(c, &a);
 			g_free(saved_input);
-			return;  /* Early return since we already closed bar */
+			return;
 		} else {
 			Arg a = { .v = input };
 			loaduri(c, &a);
@@ -3680,6 +3722,22 @@ updatebar_style(Client *c)
 	    GTK_STYLE_PROVIDER(css),
 	    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
 	g_object_unref(css);
+}
+
+static void
+findcountchanged(WebKitFindController *f, guint count, Client *c)
+{
+	c->find_match_count = count;
+	updatebar(c);
+}
+
+
+static void
+findfailed(WebKitFindController *f, Client *c)
+{
+	c->find_match_count = 0;
+	c->find_current_match = 0;
+	updatebar(c);  /* MAKE SURE THIS IS HERE */
 }
 
 int

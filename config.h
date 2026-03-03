@@ -167,6 +167,6 @@ static Button buttons[] = {
 /* Status bar colors */
 static const char *stat_bg_normal  = "#000000";
 static const char *stat_fg_normal  = "#ffffff";
-static const char *stat_font       = "Terminus (TTF) 11";  /* Change this */
+static const char *stat_font       = "11px 'Terminus (TTF)'";
 
 static const char *searchengine = "https://duckduckgo.com/?q=%s";
