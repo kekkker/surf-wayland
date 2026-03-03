@@ -1077,8 +1077,13 @@ follow_hint(Client *c, const char *label)
     case HintModeYank:
         {
             gchar *url_copy = g_strdup(target->url);
+
+            /* Use GtkClipboard directly instead of shelling out */
+            gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+                                   url_copy, -1);
             gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
                                    url_copy, -1);
+
             hints_cleanup(c);
             g_free(url_copy);
         }
