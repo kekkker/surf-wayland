@@ -58,9 +58,23 @@ find_hints(WebKitWebPage *page)
 			gchar *url = webkit_dom_html_anchor_element_get_href(
 				WEBKIT_DOM_HTML_ANCHOR_ELEMENT(elem));
 
-			if (url && strlen(url) > 0) {
+			/* Skip javascript: and other non-http(s) links - treat as clickable elements instead */
+			if (url && strlen(url) > 0 &&
+			    !g_str_has_prefix(url, "javascript:") &&
+			    !g_str_has_prefix(url, "about:") &&
+			    !g_str_has_prefix(url, "#")) {
 				g_variant_builder_add(&builder, "(siiii)",
 					url, (gint)x, (gint)y, (gint)width, (gint)height);
+			} else if (url && g_str_has_prefix(url, "javascript:")) {
+				/* Treat javascript: links as clickable elements */
+				guint id = hint_id_counter++;
+				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
+				                    g_object_ref(elem));
+				
+				gchar *marker = g_strdup_printf("[elem:%u]", id);
+				g_variant_builder_add(&builder, "(siiii)",
+					marker, (gint)x, (gint)y, (gint)width, (gint)height);
+				g_free(marker);
 			}
 
 			g_free(url);
