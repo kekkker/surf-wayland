@@ -137,8 +137,8 @@ static Key keys[] = {
 	{ 0,                     GDK_KEY_h,      navigate,   { .i = -1 } },
 	{ 0,                     GDK_KEY_l,      navigate,   { .i = +1 } },
 	{ 0,                     GDK_KEY_r,      reload,     { .i = 0 } },
-	{ 0,                     GDK_KEY_g,      scrollv,    { .i = -100 } },
-	{ GDK_SHIFT_MASK,        GDK_KEY_g,      scrollv,    { .i = +100 } },
+	{ 0,                     GDK_KEY_g,      scrollv,    { .i = -1000000 } },
+	{ GDK_SHIFT_MASK,        GDK_KEY_g,      scrollv,    { .i = +1000000 } },
 	{ 0,                     GDK_KEY_minus,  zoom,       { .i = -1 } },
 	{ GDK_SHIFT_MASK,        GDK_KEY_plus,   zoom,       { .i = +1 } },
 	{ 0,                     GDK_KEY_f,      hints_start, { .i = HintModeLink } },
@@ -167,6 +167,6 @@ static Button buttons[] = {
 /* Status bar colors */
 static const char *stat_bg_normal  = "#000000";
 static const char *stat_fg_normal  = "#ffffff";
-static const char *stat_font       = "monospace 11";
+static const char *stat_font       = "Terminus (TTF) 11";  /* Change this */
 
 static const char *searchengine = "https://duckduckgo.com/?q=%s";

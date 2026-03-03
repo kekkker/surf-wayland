@@ -209,6 +209,7 @@ static void toggleinsert(Client *c, const Arg *a);
 static void openbar(Client *c, const Arg *a);
 static void closebar(Client *c);
 static void updatebar(Client *c);
+static void updatebar_style(Client *c);
 static void baractivate(GtkEntry *entry, Client *c);
 static gboolean barkeypress(GtkWidget *w, GdkEvent *e, Client *c);
 static gboolean bar_update_search(gpointer data);
@@ -810,7 +811,6 @@ tab_close(Client *c, const Arg *a)
 	int idx;
 
 	if (tabs.count <= 1) {
-		gtk_widget_destroy(c->win);
 		return;
 	}
 
@@ -1156,8 +1156,6 @@ hints_receive_data(Client *c, GVariant *data)
 		hint.url = g_strdup(url);
 		hint.x = x;
 		hint.y = y;
-		
-		fprintf(stderr, "Hint[%s]: url='%s'\n", hint.label, hint.url);  /* ADD DEBUG */
 		
 		g_array_append_val(hintstate.hints, hint);
 	}
@@ -1871,6 +1869,8 @@ showview(WebKitWebView *v, Client *c)
         "#tabbar {"
         "  background-color: #1a1a1a;"
         "  padding: 0px;"
+        "  font-family: 'Terminus (TTF)';"
+        "  font-size: '11px';"
         "}"
         "#tab-active {"
         "  background-color: #4a4a4a;"
@@ -2559,7 +2559,7 @@ opensearch(Client *c, const Arg *a)
 	gtk_entry_set_text(GTK_ENTRY(c->statentry), " [SEARCH] ");
 	gtk_widget_grab_focus(c->statentry);
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
-
+	updatebar_style(c);
 	updatetitle(c);
 }
 
@@ -2598,6 +2598,7 @@ updatebar(Client *c)
 	if (c->mode == ModeCommand || c->mode == ModeSearch)
 		return;
 
+	updatebar_style(c);
 	uri = geturi(c);
 
 	switch (c->mode) {
@@ -2642,7 +2643,7 @@ openbar(Client *c, const Arg *a)
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
 
 	history_filter(c, "");
-
+	updatebar_style(c);
 	updatetitle(c);
 }
 
@@ -2679,6 +2680,7 @@ openbar_newtab(Client *c, const Arg *a)
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
 
 	history_filter(c, "");
+    updatebar_style(c);
 }
 
 void
@@ -3625,6 +3627,59 @@ pin_keepalive(gpointer data)
 	}
 
 	return TRUE;
+}
+
+static void
+updatebar_style(Client *c)
+{
+	GtkCssProvider *css;
+	const char *bg, *fg;
+
+	switch (c->mode) {
+	case ModeInsert:
+		bg = "#005f00";
+		fg = "#ffffff";
+		break;
+	case ModeCommand:
+		bg = "#1a1a1a";
+		fg = "#87afd7";
+		break;
+	case ModeSearch:
+		bg = "#1a1a1a";
+		fg = "#d7af5f";
+		break;
+	case ModeHint:
+		bg = "#5f5f00";
+		fg = "#ffffff";
+		break;
+	default: /* ModeNormal */
+		bg = stat_bg_normal;
+		fg = stat_fg_normal;
+		break;
+	}
+
+	css = gtk_css_provider_new();
+	gchar *cssstr = g_strdup_printf(
+	    "#surf-statusbar { background-color: %s; }"
+	    "#surf-statentry {"
+	    "  background-color: %s;"
+	    "  color: %s;"
+	    "  font: %s;"
+	    "  border: none; border-radius: 0;"
+	    "  padding: 1px 6px; min-height: 18px;"
+	    "}", bg, bg, fg, stat_font);
+	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
+	g_free(cssstr);
+
+	gtk_style_context_add_provider(
+	    gtk_widget_get_style_context(c->statusbar),
+	    GTK_STYLE_PROVIDER(css),
+	    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+	gtk_style_context_add_provider(
+	    gtk_widget_get_style_context(c->statentry),
+	    GTK_STYLE_PROVIDER(css),
+	    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+	g_object_unref(css);
 }
 
 int
