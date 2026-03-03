@@ -1701,7 +1701,7 @@ newview(Client *c, WebKitWebView *rv)
 
 		if (!curconfig[Ephemeral].val.i)
 			webkit_cookie_manager_set_persistent_storage(cookiemanager,
-			    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_TEXT);
+			    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
 		webkit_cookie_manager_set_accept_policy(cookiemanager,
 		    cookiepolicy_get());
 		webkit_web_context_set_preferred_languages(context,

@@ -5,7 +5,7 @@ static char *scriptfile     = "~/.surf/script.js";
 static char *styledir       = "~/.surf/styles/";
 static char *certdir        = "~/.surf/certificates/";
 static char *cachedir       = "~/.surf/cache/";
-static char *cookiefile     = "~/.surf/cookies.txt";
+static char *cookiefile     = "~/.surf/cookies.sqlite";
 
 /* External file picker for <input type="file">.
  * {} is replaced with a temp file path; picker writes selected paths one per line.
