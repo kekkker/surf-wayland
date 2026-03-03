@@ -671,7 +671,6 @@ tabbar_click(GtkWidget *w, GdkEventButton *e, Client *c)
 static void
 update_tabbar(Client *c)
 {
-    GtkWidget *child;
     GList *children, *iter;
     int i;
 
@@ -927,6 +926,10 @@ hints_cleanup(Client *c)
 	if (!hintstate.active)
 		return;
 
+	/* Always try to clear the overlay */
+	WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
+	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+
 	if (hintstate.hints) {
 		for (guint i = 0; i < hintstate.hints->len; i++) {
 			Hint *h = &g_array_index(hintstate.hints, Hint, i);
@@ -939,11 +942,6 @@ hints_cleanup(Client *c)
 
 	g_free(hintstate.input);
 	hintstate.input = NULL;
-
-	if (hintstate.active && hintstate.pageid == webkit_web_view_get_page_id(c->view)) {
-		WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
-		webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
-	}
 
 	hintstate.active = 0;
 
@@ -994,8 +992,6 @@ follow_hint(Client *c, const char *label)
 {
 	Hint *target = NULL;
 
-	fprintf(stderr, "follow_hint called with label='%s'\n", label);  /* ADD DEBUG */
-
 	for (guint i = 0; i < hintstate.hints->len; i++) {
 		Hint *h = &g_array_index(hintstate.hints, Hint, i);
 		if (strcmp(h->label, label) == 0) {
@@ -1005,39 +1001,43 @@ follow_hint(Client *c, const char *label)
 	}
 
 	if (!target) {
-		fprintf(stderr, "No target found for label '%s'!\n", label);
 		hints_cleanup(c);
 		return;
 	}
 
-	fprintf(stderr, "Found target: url='%s'\n", target->url);  /* ADD DEBUG */
-
-    if (g_str_has_prefix(target->url, "[click:")) {
-        fprintf(stderr, "Following click hint: %s\n", target->url);
-        fflush(stderr);  /* ADD THIS to force output immediately */
-        int cx, cy;
-        if (sscanf(target->url, "[click:%d,%d]", &cx, &cy) == 2) {
-            GVariant *data = g_variant_new("(ii)", cx, cy);
+    if (g_str_has_prefix(target->url, "[input:")) {
+        guint elem_id;
+        if (sscanf(target->url, "[input:%u]", &elem_id) == 1) {
+            GVariant *data = g_variant_new("(u)", elem_id);
             WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
             webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
         }
         hints_cleanup(c);
-        
-        /* Switch to insert mode after hints are gone */
         c->mode = ModeInsert;
         updatetitle(c);
-        return;  /* MAKE SURE THIS RETURN IS HERE! */
+        return;
+    }
+
+    if (g_str_has_prefix(target->url, "[elem:")) {
+        guint elem_id;
+        if (sscanf(target->url, "[elem:%u]", &elem_id) == 1) {
+            GVariant *data = g_variant_new("(u)", elem_id);
+            WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
+            webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+        }
+        hints_cleanup(c);
+        return;
     }
 
     Arg arg;
     switch (hintstate.mode) {
     case HintModeLink:
         {
-            gchar *url_copy = g_strdup(target->url);  /* Copy it first! */
+            gchar *url_copy = g_strdup(target->url);
             hints_cleanup(c);
             arg.v = url_copy;
             loaduri(c, &arg);
-            g_free(url_copy);  /* Free after use */
+            g_free(url_copy);
         }
         break;
     case HintModeNewWindow:
@@ -1225,7 +1225,7 @@ cookiepolicy_set(const WebKitCookieAcceptPolicy p)
 void
 seturiparameters(Client *c, const char *uri, ParamName *params)
 {
-	Parameter *config, *uriconfig = NULL;
+	Parameter *uriconfig = NULL;
 	int i, p;
 
 	for (i = 0; i < LENGTH(uriparams); ++i) {
