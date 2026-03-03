@@ -2479,9 +2479,13 @@ clipboard(Client *c, const Arg *a)
 		                           GDK_SELECTION_PRIMARY),
 		                           pasteuri, c);
 	} else {
-		gtk_clipboard_set_text(gtk_clipboard_get(
-		                       GDK_SELECTION_PRIMARY), c->targeturi
-		                       ? c->targeturi : geturi(c), -1);
+		const char *uri = c->targeturi ? c->targeturi : geturi(c);
+		
+		/* Copy to both PRIMARY and CLIPBOARD */
+		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+		                       uri, -1);
+		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
+		                       uri, -1);
 	}
 }
 
