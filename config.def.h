@@ -7,6 +7,20 @@ static char *certdir        = "~/.surf/certificates/";
 static char *cachedir       = "~/.surf/cache/";
 static char *cookiefile     = "~/.surf/cookies.txt";
 
+/* External file picker for <input type="file">.
+ * {} is replaced with a temp file path; picker writes selected paths one per line.
+ * NULL = use the default WebKit dialog. */
+static const char *filepicker_cmd[] = {
+	"foot", "-e", "sh", "-c",
+	"nnn -p '{}'",
+	NULL
+};
+
+/* Shell command run inside foot for download directory picking.
+ * {} is replaced with the NNN_TMPFILE path. Press ^G in nnn to confirm dir.
+ * NULL or "" = skip picker, download directly. */
+static const char *downloadpicker_cmd = "NNN_TMPFILE='{}' nnn";
+
 /* Display backend configuration */
 static int display_backend = 0;  /* 0=auto, 1=X11, 2=Wayland */
 
@@ -81,7 +95,7 @@ static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
 
 /* DOWNLOAD(URI, referer) */
 #define DOWNLOAD(u, r) { \
-        .v = (const char *[]){ "st", "-e", "/bin/sh", "-c",\
+        .v = (const char *[]){ "foot", "-e", "/bin/sh", "-c",\
              "curl -g -L -J -O -A \"$1\" -b \"$2\" -c \"$2\"" \
              " -e \"$3\" \"$4\"; read", \
              "surf-download", useragent, cookiefile, r, u, NULL \

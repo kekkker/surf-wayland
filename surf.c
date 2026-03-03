@@ -178,8 +178,22 @@ static void insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e,
                             Client *c);
 static void downloadstarted(WebKitWebContext *wc, WebKitDownload *d,
                             Client *c);
-static void responsereceived(WebKitDownload *d, GParamSpec *ps, Client *c);
-static void download(Client *c, WebKitURIResponse *r);
+static gboolean decidedestination(WebKitDownload *d,
+                                   gchar *suggested_filename, Client *c);
+static void dlprogress(WebKitDownload *d, GParamSpec *ps, gpointer unused);
+static void dlfinished(WebKitDownload *d, gpointer unused);
+static void dl_clear(Client *c, const Arg *a);
+
+typedef struct {
+	guint    index;      /* 1-based display number */
+	gchar   *name;       /* suggested filename */
+	guint64  prev_recv;  /* bytes received at last speed sample */
+	gdouble  prev_time;  /* elapsed seconds at last speed sample */
+	gdouble  speed;      /* smoothed bytes/sec */
+	gint64   total;      /* content-length, -1 if unknown */
+	gboolean done;
+	GtkWidget *label;
+} DlData;
 static gboolean viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m,
                               gpointer u);
 static void webprocessterminated(WebKitWebView *v,
@@ -187,6 +201,8 @@ static void webprocessterminated(WebKitWebView *v,
                                  Client *c);
 static void closeview(WebKitWebView *v, Client *c);
 static void destroywin(GtkWidget* w, Client *c);
+static gboolean filechooser(WebKitWebView *v, WebKitFileChooserRequest *r,
+                             Client *c);
 
 /* Hotkeys */
 static void pasteuri(GtkClipboard *clipboard, const char *text, gpointer d);
@@ -775,7 +791,7 @@ tab_new(Client *c, const Arg *a)
 	v = newview(c, c->view);
 
 	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(v), TRUE, TRUE, 0);
-	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 1);
+	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 2);
 
 	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 
@@ -1195,6 +1211,7 @@ updatetitle(Client *c)
 		name = c->title;
 	else
 		name = "";
+
 
 	pin = (tab_pins && tabs.active >= 0 && tabs.active < tabs.count &&
 	       tab_pins[tabs.active]) ? "[P]" : "";
@@ -1734,6 +1751,8 @@ newview(Client *c, WebKitWebView *rv)
 			 G_CALLBACK(viewusrmsgrcv), c);
 	g_signal_connect(G_OBJECT(v), "web-process-terminated",
 			 G_CALLBACK(webprocessterminated), c);
+	g_signal_connect(G_OBJECT(v), "run-file-chooser",
+			 G_CALLBACK(filechooser), c);
 
 	c->find_match_count = 0;
 	c->find_current_match = 0;
@@ -1955,6 +1974,12 @@ g_object_unref(tabcss);
 
 	gtk_box_pack_end(GTK_BOX(c->vbox), c->statusbar, FALSE, FALSE, 0);
 
+	/* Download bar: below tabbar, same width, hidden until a download starts */
+	c->dlbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	gtk_widget_set_name(c->dlbar, "surf-dlbar");
+	gtk_box_pack_start(GTK_BOX(c->vbox), c->dlbar, FALSE, FALSE, 0);
+	gtk_box_reorder_child(GTK_BOX(c->vbox), c->dlbar, 1);
+
 	css = gtk_css_provider_new();
 	cssstr = g_strdup_printf(
 	    "#surf-statusbar {"
@@ -1970,8 +1995,19 @@ g_object_unref(tabcss);
 	    "  border-radius: 0;"
 	    "  padding: 1px 6px;"
 	    "  min-height: 18px;"
+	    "}"
+	    "#surf-dlbar {"
+	    "  background-color: %s;"
+	    "  padding: 1px 6px;"
+	    "  min-height: 18px;"
+	    "}"
+	    "#surf-dllabel {"
+	    "  color: %s;"
+	    "  font: %s;"
+	    "  padding: 0 4px;"
 	    "}",
 	    stat_bg_normal,
+	    stat_bg_normal, stat_fg_normal, stat_font,
 	    stat_bg_normal, stat_fg_normal, stat_font);
 	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
 	g_free(cssstr);
@@ -1979,17 +2015,15 @@ g_object_unref(tabcss);
 	gtk_widget_set_name(c->statusbar, "surf-statusbar");
 	gtk_widget_set_name(c->statentry, "surf-statentry");
 
-	gtk_style_context_add_provider(
-	    gtk_widget_get_style_context(c->statusbar),
-	    GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-	gtk_style_context_add_provider(
-	    gtk_widget_get_style_context(c->statentry),
+	gtk_style_context_add_provider_for_screen(
+	    gdk_screen_get_default(),
 	    GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref(css);
 
 	gtk_container_add(GTK_CONTAINER(c->win), c->vbox);
 
     gtk_widget_show_all(c->win);
+    gtk_widget_hide(c->dlbar); /* hidden until first download */
 
     tab_init(c);  /* Make sure tab system is initialized */
     update_tabbar(c);  /* Draw the tabs */
@@ -2362,8 +2396,7 @@ decideresource(WebKitPolicyDecision *d, Client *c)
 	if (webkit_response_policy_decision_is_mime_type_supported(r)) {
 		webkit_policy_decision_use(d);
 	} else {
-		webkit_policy_decision_ignore(d);
-		download(c, res);
+		webkit_policy_decision_download(d);
 	}
 }
 
@@ -2373,25 +2406,204 @@ insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e, Client *c)
 	c->insecure = 1;
 }
 
+static gchar *
+fmt_size(guint64 bytes)
+{
+	if (bytes >= (guint64)1024*1024*1024)
+		return g_strdup_printf("%.2fGB", bytes / (1024.0*1024.0*1024.0));
+	if (bytes >= 1024*1024)
+		return g_strdup_printf("%.2fMB", bytes / (1024.0*1024.0));
+	if (bytes >= 1024)
+		return g_strdup_printf("%.2fKB", bytes / 1024.0);
+	return g_strdup_printf("%"G_GUINT64_FORMAT"B", bytes);
+}
+
+static void
+dl_update_label(WebKitDownload *d)
+{
+	DlData *dd = g_object_get_data(G_OBJECT(d), "dl-data");
+	if (!dd || !dd->label) return;
+
+	gdouble elapsed = webkit_download_get_elapsed_time(d);
+	guint64 recv    = webkit_download_get_received_data_length(d);
+	gdouble pct     = webkit_download_get_estimated_progress(d);
+
+	/* Speed: exponential moving average, sampled when enough time passed */
+	gdouble dt = elapsed - dd->prev_time;
+	if (dt >= 0.5 && !dd->done) {
+		gdouble inst = (recv - dd->prev_recv) / dt;
+		dd->speed = (dd->prev_time == 0.0) ? inst : dd->speed * 0.6 + inst * 0.4;
+		dd->prev_recv = recv;
+		dd->prev_time = elapsed;
+	}
+
+	gchar *recv_str  = fmt_size(recv);
+	int    esec      = (int)elapsed;
+	gchar *txt;
+
+	const gchar *name = dd->name ? dd->name : "?";
+	if (dd->done) {
+		if (dd->total > 0) {
+			gchar *tot_str = fmt_size((guint64)dd->total);
+			txt = g_strdup_printf("%u: %s [100%%|%s]", dd->index, name, tot_str);
+			g_free(tot_str);
+		} else {
+			txt = g_strdup_printf("%u: %s [done|%s]", dd->index, name, recv_str);
+		}
+	} else if (dd->speed > 0 && dd->total > 0) {
+		gchar *spd_str = fmt_size((guint64)dd->speed);
+		gchar *tot_str = fmt_size((guint64)dd->total);
+		txt = g_strdup_printf("%u: %s [%s/s|%d:%02d|%.0f%%|%s/%s]",
+		                      dd->index, name, spd_str, esec/60, esec%60,
+		                      pct*100.0, recv_str, tot_str);
+		g_free(spd_str);
+		g_free(tot_str);
+	} else if (dd->total > 0) {
+		gchar *tot_str = fmt_size((guint64)dd->total);
+		txt = g_strdup_printf("%u: %s [%d:%02d|%.0f%%|%s/%s]",
+		                      dd->index, name, esec/60, esec%60,
+		                      pct*100.0, recv_str, tot_str);
+		g_free(tot_str);
+	} else {
+		txt = g_strdup_printf("%u: %s [%s]", dd->index, name, recv_str);
+	}
+	g_free(recv_str);
+	gtk_label_set_text(GTK_LABEL(dd->label), txt);
+	g_free(txt);
+}
+
 void
 downloadstarted(WebKitWebContext *wc, WebKitDownload *d, Client *c)
 {
-	g_signal_connect(G_OBJECT(d), "notify::response",
-	                 G_CALLBACK(responsereceived), c);
+	g_signal_connect(G_OBJECT(d), "decide-destination",
+	                 G_CALLBACK(decidedestination), c);
 }
 
-void
-responsereceived(WebKitDownload *d, GParamSpec *ps, Client *c)
+static void
+dl_data_free(DlData *dd)
 {
-	download(c, webkit_download_get_response(d));
-	webkit_download_cancel(d);
+	g_free(dd->name);
+	g_free(dd);
 }
 
-void
-download(Client *c, WebKitURIResponse *r)
+gboolean
+decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 {
-	Arg a = (Arg)DOWNLOAD(webkit_uri_response_get_uri(r), geturi(c));
-	spawn(c, &a);
+	const char *dldir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+	if (!dldir) dldir = g_get_home_dir();
+
+	gchar *dest = NULL;
+
+	if (!downloadpicker_cmd || !*downloadpicker_cmd) {
+		gchar *path = g_build_filename(dldir, suggested_filename, NULL);
+		dest = g_filename_to_uri(path, NULL, NULL);
+		g_free(path);
+	} else {
+		/* Create NNN_TMPFILE and substitute {} in picker command */
+		gchar *nnn_tmp = g_strdup("/tmp/surf-dldir-XXXXXX");
+		int fd = mkstemp(nnn_tmp);
+		if (fd >= 0) close(fd);
+
+		gchar **parts  = g_strsplit(downloadpicker_cmd, "{}", -1);
+		gchar *nnn_cmd = g_strjoinv(nnn_tmp, parts);
+		g_strfreev(parts);
+
+		/* Run foot+nnn, blocking until the user quits */
+		pid_t pid = fork();
+		if (pid == 0) {
+			chdir(dldir);
+			execlp("foot", "foot", "sh", "-c", nnn_cmd, NULL);
+			exit(1);
+		}
+		g_free(nnn_cmd);
+		if (pid > 0)
+			waitpid(pid, NULL, 0); /* brief UI freeze while user picks dir */
+
+		/* nnn writes "cd '/chosen/dir'" to NNN_TMPFILE on quit */
+		gchar *chosen_dir = NULL;
+		gchar *contents   = NULL;
+		if (g_file_get_contents(nnn_tmp, &contents, NULL, NULL) && contents) {
+			g_strchomp(contents);
+			if (g_str_has_prefix(contents, "cd '") && strlen(contents) > 5) {
+				gchar *p = contents + 4;
+				gchar *q = strrchr(p, '\'');
+				if (q) { *q = '\0'; chosen_dir = g_strdup(p); }
+			}
+			g_free(contents);
+		}
+		g_unlink(nnn_tmp);
+		g_free(nnn_tmp);
+
+		if (!chosen_dir) {
+			webkit_download_cancel(d);
+			return TRUE;
+		}
+
+		gchar *path = g_build_filename(chosen_dir, suggested_filename, NULL);
+		dest = g_filename_to_uri(path, NULL, NULL);
+		g_free(chosen_dir);
+		g_free(path);
+	}
+
+	webkit_download_set_destination(d, dest);
+	g_free(dest);
+
+	/* Build per-download tracking struct */
+	static guint dl_counter = 0;
+	WebKitURIResponse *resp = webkit_download_get_response(d);
+	gint64 clen = resp ? webkit_uri_response_get_content_length(resp) : -1;
+
+	DlData *dd    = g_new0(DlData, 1);
+	dd->index     = ++dl_counter;
+	dd->name      = g_strdup(suggested_filename);
+	dd->total     = clen;
+	dd->prev_time = 0.0;
+	dd->prev_recv = 0;
+	dd->speed     = 0.0;
+	dd->done      = FALSE;
+
+	/* Single label in the horizontal dlbar */
+	GtkWidget *lbl = gtk_label_new(NULL);
+	gtk_widget_set_name(lbl, "surf-dllabel");
+	dd->label = lbl;
+
+	g_object_set_data_full(G_OBJECT(d), "dl-data", dd,
+	                       (GDestroyNotify)dl_data_free);
+
+	gtk_box_pack_start(GTK_BOX(c->dlbar), lbl, FALSE, FALSE, 0);
+	dl_update_label(d); /* set initial text before showing */
+	gtk_widget_show_all(c->dlbar);
+
+	g_signal_connect(d, "notify::estimated-progress",
+	                 G_CALLBACK(dlprogress), NULL);
+	g_signal_connect(d, "finished", G_CALLBACK(dlfinished), NULL);
+	g_signal_connect(d, "failed",   G_CALLBACK(dlfinished), NULL);
+	return TRUE;
+}
+
+static void
+dlprogress(WebKitDownload *d, GParamSpec *ps, gpointer unused)
+{
+	dl_update_label(d);
+}
+
+static void
+dlfinished(WebKitDownload *d, gpointer unused)
+{
+	DlData *dd = g_object_get_data(G_OBJECT(d), "dl-data");
+	if (!dd) return;
+	dd->done = TRUE;
+	dl_update_label(d);
+}
+
+static void
+dl_clear(Client *c, const Arg *a)
+{
+	GList *rows = gtk_container_get_children(GTK_CONTAINER(c->dlbar));
+	for (GList *l = rows; l; l = l->next)
+		gtk_widget_destroy(GTK_WIDGET(l->data));
+	g_list_free(rows);
+	gtk_widget_hide(c->dlbar);
 }
 
 void
@@ -2401,6 +2613,130 @@ webprocessterminated(WebKitWebView *v, WebKitWebProcessTerminationReason r,
 	fprintf(stderr, "web process terminated: %s\n",
 	        r == WEBKIT_WEB_PROCESS_CRASHED ? "crashed" : "no memory");
 	closeview(v, c);
+}
+
+typedef struct {
+	WebKitFileChooserRequest *req;
+	gboolean allow_multiple;
+	char *tmpfile;
+} FileChooserData;
+
+static void
+filechooser_done(GObject *source, GAsyncResult *result, gpointer userdata)
+{
+	FileChooserData *fcd = userdata;
+	GError *err = NULL;
+
+	g_subprocess_wait_finish(G_SUBPROCESS(source), result, &err);
+	if (err) {
+		g_error_free(err);
+		webkit_file_chooser_request_cancel(fcd->req);
+		goto cleanup;
+	}
+
+	/* Read selected paths from the temp file, one per line */
+	gchar *contents = NULL;
+	if (!g_file_get_contents(fcd->tmpfile, &contents, NULL, NULL) ||
+	    !contents || *contents == '\0') {
+		webkit_file_chooser_request_cancel(fcd->req);
+		goto cleanup;
+	}
+
+	gchar **lines = g_strsplit(contents, "\n", -1);
+	g_free(contents);
+
+	/* Build NULL-terminated array of non-empty paths */
+	GPtrArray *paths = g_ptr_array_new();
+	for (int i = 0; lines[i]; i++) {
+		if (lines[i][0] != '\0')
+			g_ptr_array_add(paths, lines[i]);
+	}
+	g_ptr_array_add(paths, NULL);
+
+	if (paths->len > 1) {
+		webkit_file_chooser_request_select_files(fcd->req,
+			(const gchar *const *)paths->pdata);
+	} else {
+		webkit_file_chooser_request_cancel(fcd->req);
+	}
+
+	g_strfreev(lines);
+	g_ptr_array_free(paths, FALSE);
+
+cleanup:
+	g_unlink(fcd->tmpfile);
+	g_free(fcd->tmpfile);
+	g_object_unref(fcd->req);
+	g_free(fcd);
+}
+
+static gboolean
+filechooser(WebKitWebView *v, WebKitFileChooserRequest *r, Client *c)
+{
+	(void)v; (void)c;
+
+	if (!filepicker_cmd[0])
+		return FALSE; /* fall back to default dialog */
+
+	/* Create a temp file for the picker to write selected paths to */
+	gchar *tmpfile = g_strdup("/tmp/surf-filepick-XXXXXX");
+	int fd = mkstemp(tmpfile);
+	if (fd < 0) {
+		g_free(tmpfile);
+		return FALSE;
+	}
+	close(fd);
+
+	/* Build argv: replace {} with the temp file path */
+	GPtrArray *argv = g_ptr_array_new();
+	for (int i = 0; filepicker_cmd[i]; i++) {
+		if (strcmp(filepicker_cmd[i], "{}") == 0)
+			g_ptr_array_add(argv, tmpfile);
+		else {
+			/* Also replace {} inside shell -c string */
+			if (strstr(filepicker_cmd[i], "{}")) {
+				gchar **parts = g_strsplit(filepicker_cmd[i], "{}", -1);
+				gchar *replaced = g_strjoinv(tmpfile, parts);
+				g_strfreev(parts);
+				g_ptr_array_add(argv, replaced);
+				/* replaced is owned by argv; free after subprocess */
+			} else {
+				g_ptr_array_add(argv, (gpointer)filepicker_cmd[i]);
+			}
+		}
+	}
+	g_ptr_array_add(argv, NULL);
+
+	GError *err = NULL;
+	GSubprocess *proc = g_subprocess_newv(
+		(const gchar *const *)argv->pdata,
+		G_SUBPROCESS_FLAGS_NONE, &err);
+
+	/* Free any replaced strings */
+	for (guint i = 0; i < argv->len - 1; i++) {
+		if (argv->pdata[i] != tmpfile &&
+		    (filepicker_cmd[i] == NULL ||
+		     (argv->pdata[i] != (gpointer)filepicker_cmd[i])))
+			g_free(argv->pdata[i]);
+	}
+	g_ptr_array_free(argv, FALSE);
+
+	if (!proc || err) {
+		if (err) g_error_free(err);
+		g_unlink(tmpfile);
+		g_free(tmpfile);
+		return FALSE;
+	}
+
+	FileChooserData *fcd = g_new0(FileChooserData, 1);
+	fcd->req = g_object_ref(r);
+	fcd->allow_multiple = webkit_file_chooser_request_get_select_multiple(r);
+	fcd->tmpfile = tmpfile;
+
+	g_subprocess_wait_async(proc, NULL, filechooser_done, fcd);
+	g_object_unref(proc);
+
+	return TRUE; /* handled */
 }
 
 void

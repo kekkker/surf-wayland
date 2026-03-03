@@ -7,6 +7,22 @@ static char *certdir        = "~/.surf/certificates/";
 static char *cachedir       = "~/.surf/cache/";
 static char *cookiefile     = "~/.surf/cookies.txt";
 
+/* External file picker for <input type="file">: {} replaced with temp file path */
+static const char *filepicker_cmd[] = {
+	"foot", "-e", "sh", "-c",
+	"NNN_PLUG='p:preview-tui' NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' nnn -a -p '{}'",
+	NULL
+};
+
+/* Shell command run inside foot for download directory picking.
+ * {} is replaced with the NNN_TMPFILE path.
+ * Navigate to dest dir in nnn, press q — curl then runs in the same terminal.
+ * Set to "" to skip the picker and download directly. */
+static const char *downloadpicker_cmd =
+	"NNN_PLUG='p:preview-tui' "
+	"NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' "
+	"NNN_TMPFILE='{}' nnn -a";
+
 static Parameter defconfig[ParameterLast] = {
 	[AccessMicrophone]    =       { { .i = 0 },     },
 	[AccessWebcam]        =       { { .i = 0 },     },
@@ -55,7 +71,7 @@ static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
 
 /* DOWNLOAD(URI, referer) */
 #define DOWNLOAD(u, r) { \
-        .v = (const char *[]){ "st", "-e", "/bin/sh", "-c",\
+        .v = (const char *[]){ "foot", "-e", "/bin/sh", "-c",\
              "curl -g -L -J -O -A \"$1\" -b \"$2\" -c \"$2\"" \
              " -e \"$3\" \"$4\"; read", \
              "surf-download", useragent, cookiefile, r, u, NULL \
@@ -93,6 +109,7 @@ static Key keys[] = {
 
 	/* --- Ctrl+ keybinds --- */
 	{ MODKEY,                GDK_KEY_c,      stop,       { 0 } },
+	{ MODKEY,                GDK_KEY_s,      dl_clear,   { 0 } },
 	{ MODKEY|GDK_SHIFT_MASK, GDK_KEY_r,      reload,     { .i = 1 } },
 	{ MODKEY,                GDK_KEY_r,      reload,     { .i = 0 } },
 	{ MODKEY,                GDK_KEY_l,      navigate,   { .i = +1 } },
