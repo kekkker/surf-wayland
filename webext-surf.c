@@ -26,11 +26,21 @@ static void
 find_hints(WebKitWebPage *page)
 {
 	WebKitDOMDocument *doc;
+	WebKitDOMDOMWindow *win;
 	WebKitDOMNodeList *links, *buttons, *inputs, *clickable;
 	GVariantBuilder builder;
+	glong scroll_x, scroll_y;
 
 	doc = webkit_web_page_get_dom_document(page);
 	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(siiii)"));
+
+	/* Get scroll offsets to convert viewport-relative getBoundingClientRect
+	 * values into document-absolute coordinates.  The hint overlay uses
+	 * position:absolute (no positioned ancestor) which is document-absolute,
+	 * so this keeps hints aligned at any scroll position and zoom level. */
+	win = webkit_dom_document_get_default_view(doc);
+	scroll_x = win ? webkit_dom_dom_window_get_page_x_offset(win) : 0;
+	scroll_y = win ? webkit_dom_dom_window_get_page_y_offset(win) : 0;
 
 	/* Clear old hint elements */
 	if (hint_elements)
@@ -45,8 +55,8 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect);
-			gfloat y = webkit_dom_client_rect_get_top(rect);
+			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
+			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
@@ -93,8 +103,8 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect);
-			gfloat y = webkit_dom_client_rect_get_top(rect);
+			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
+			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
@@ -102,7 +112,7 @@ find_hints(WebKitWebPage *page)
 				guint id = hint_id_counter++;
 				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
 				                    g_object_ref(elem));
-				
+
 				gchar *marker = g_strdup_printf("[elem:%u]", id);
 				g_variant_builder_add(&builder, "(siiii)",
 					marker, (gint)x, (gint)y, (gint)width, (gint)height);
@@ -126,8 +136,8 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect);
-			gfloat y = webkit_dom_client_rect_get_top(rect);
+			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
+			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
@@ -135,7 +145,7 @@ find_hints(WebKitWebPage *page)
 				guint id = hint_id_counter++;
 				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
 				                    g_object_ref(elem));
-				
+
 				gchar *marker = g_strdup_printf("[input:%u]", id);
 				g_variant_builder_add(&builder, "(siiii)",
 					marker, (gint)x, (gint)y, (gint)width, (gint)height);
@@ -158,8 +168,8 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect);
-			gfloat y = webkit_dom_client_rect_get_top(rect);
+			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
+			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
 
@@ -167,7 +177,7 @@ find_hints(WebKitWebPage *page)
 				guint id = hint_id_counter++;
 				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
 				                    g_object_ref(elem));
-				
+
 				gchar *marker = g_strdup_printf("[elem:%u]", id);
 				g_variant_builder_add(&builder, "(siiii)",
 					marker, (gint)x, (gint)y, (gint)width, (gint)height);
@@ -202,16 +212,13 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 			WEBKIT_DOM_NODE(container), NULL);
 	}
 
+	/* Plain grouping node — no positioning, just used for bulk removal */
 	container = webkit_dom_document_create_element(doc, "div", NULL);
 	webkit_dom_element_set_id(container, "surf-hints-container");
 	webkit_dom_element_set_attribute(container, "style",
 		"all: initial !important;"
-		"position: fixed !important;"
-		"top: 0 !important; left: 0 !important;"
-		"width: 100vw !important; height: 100vh !important;"
-		"z-index: 2147483647 !important;"
-		"pointer-events: none !important;"
-		"display: block !important;", NULL);
+		"display: block !important;"
+		"pointer-events: none !important;", NULL);
 
 	g_variant_iter_init(&iter, hints_data);
 	while (g_variant_iter_loop(&iter, "(ssii)", &label, &url, &x, &y)) {
@@ -220,11 +227,14 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 		gchar *style_str;
 
 		hint = webkit_dom_document_create_element(doc, "div", NULL);
-		
+
 		text_node = webkit_dom_document_create_text_node(doc, label);
 		webkit_dom_node_append_child(WEBKIT_DOM_NODE(hint),
 			WEBKIT_DOM_NODE(text_node), NULL);
-		
+
+		/* position:absolute with no positioned ancestor = document-absolute.
+		 * Coordinates come from getBoundingClientRect() + scrollX/Y, so they
+		 * are already document-absolute and scroll/zoom invariant. */
 		style_str = g_strdup_printf(
 			"all: initial !important;"
 			"position: absolute !important;"
