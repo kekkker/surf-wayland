@@ -656,9 +656,6 @@ tabbar_click(GtkWidget *w, GdkEventButton *e, Client *c)
 {
     int idx;
 
-    if (e->button != 1)
-        return FALSE;
-
     idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "tab-index"));
 
     if (e->button == 2) {
@@ -667,8 +664,12 @@ tabbar_click(GtkWidget *w, GdkEventButton *e, Client *c)
         return TRUE;
     }
 
-    tab_switch_to(c, idx);
-    return TRUE;
+    if (e->button == 1) {
+        tab_switch_to(c, idx);
+        return TRUE;
+    }
+
+    return FALSE;
 }
 
 static void
@@ -744,13 +745,6 @@ tab_switch_to(Client *c, int index)
 	c->view = tabs.views[index];
 	c->pageid = webkit_web_view_get_page_id(c->view);
 	c->finder = webkit_web_view_get_find_controller(c->view);
-	
-	c->finder = webkit_web_view_get_find_controller(c->view);
-	g_signal_connect(c->finder, "counted-matches",
-	                 G_CALLBACK(findcountchanged), c);
-	g_signal_connect(c->finder, "failed-to-find-text",
-	                 G_CALLBACK(findfailed), c);
-
 	c->inspector = webkit_web_view_get_inspector(c->view);
 	c->settings = webkit_web_view_get_settings(c->view);
 	c->context = webkit_web_view_get_context(c->view);
@@ -854,7 +848,7 @@ tab_close(Client *c, const Arg *a)
 	g_signal_handlers_disconnect_matched(dead,
 		G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
 
-	webkit_web_view_load_uri(dead, "about:blank");
+	gtk_widget_destroy(GTK_WIDGET(dead));
 	update_tabbar(c);
 }
 
@@ -1428,8 +1422,10 @@ setcert(Client *c, const char *uri)
 	}
 
 	if ((uri = strstr(uri, "https://"))) {
+		const char *slash;
 		uri += sizeof("https://") - 1;
-		host = g_strndup(uri, strchr(uri, '/') - uri);
+		slash = strchr(uri, '/');
+		host = slash ? g_strndup(uri, slash - uri) : g_strdup(uri);
 		webkit_web_context_allow_tls_certificate_for_host(c->context,
 		    cert, host);
 		g_free(host);
@@ -1876,9 +1872,9 @@ showview(WebKitWebView *v, Client *c)
 	char *cssstr;
 
 	c->finder = webkit_web_view_get_find_controller(c->view);
-	gulong sig1 = g_signal_connect(c->finder, "counted-matches",
+	g_signal_connect(c->finder, "counted-matches",
 	                 G_CALLBACK(findcountchanged), c);
-	gulong sig2 = g_signal_connect(c->finder, "failed-to-find-text",
+	g_signal_connect(c->finder, "failed-to-find-text",
 	                 G_CALLBACK(findfailed), c);
 	c->inspector = webkit_web_view_get_inspector(c->view);
 
@@ -2673,9 +2669,11 @@ openbar(Client *c, const Arg *a)
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
 	if (a->i) {
+		gchar *tmp;
 		uri = geturi(c);
-		gtk_entry_set_text(GTK_ENTRY(c->statentry),
-		                   g_strdup_printf(" [COMMAND] %s", uri));
+		tmp = g_strdup_printf(" [COMMAND] %s", uri);
+		gtk_entry_set_text(GTK_ENTRY(c->statentry), tmp);
+		g_free(tmp);
 	} else {
 		gtk_entry_set_text(GTK_ENTRY(c->statentry), " [COMMAND] ");
 	}
@@ -2736,8 +2734,10 @@ baractivate(GtkEntry *entry, Client *c)
 		input = text;
 		if (g_str_has_prefix(text, " [SEARCH] "))
 			input = text + 10;
-		else if (g_str_has_prefix(text, " [SEARCH "))
-			input = strchr(text + 9, ']') + 2;
+		else if (g_str_has_prefix(text, " [SEARCH ")) {
+			char *bracket = strchr(text + 9, ']');
+			input = bracket ? bracket + 2 : text;
+		}
 
 		if (input && *input) {
 			/* Start the search (highlights matches) */
@@ -3332,10 +3332,18 @@ history_add(const char *uri, const char *title)
 			return;
 	}
 
-	if (title && *title)
-		fprintf(f, "%ld %s %s\n", (long)time(NULL), uri, title);
-	else
+	if (title && *title) {
+		gchar *safe_title = g_strdup(title);
+		/* Strip newlines to avoid corrupting the line-based history format */
+		for (gchar *p = safe_title; *p; p++) {
+			if (*p == '\n' || *p == '\r')
+				*p = ' ';
+		}
+		fprintf(f, "%ld %s %s\n", (long)time(NULL), uri, safe_title);
+		g_free(safe_title);
+	} else {
 		fprintf(f, "%ld %s\n", (long)time(NULL), uri);
+	}
 	fclose(f);
 }
 
@@ -3683,7 +3691,7 @@ pin_keepalive(gpointer data)
 static void
 updatebar_style(Client *c)
 {
-	GtkCssProvider *css;
+	GtkCssProvider *css, *old_css;
 	const char *bg, *fg;
 
 	switch (c->mode) {
@@ -3709,6 +3717,17 @@ updatebar_style(Client *c)
 		break;
 	}
 
+	/* Remove old provider before adding new one to prevent accumulation */
+	old_css = g_object_get_data(G_OBJECT(c->statusbar), "bar-css");
+	if (old_css) {
+		gtk_style_context_remove_provider(
+		    gtk_widget_get_style_context(c->statusbar),
+		    GTK_STYLE_PROVIDER(old_css));
+		gtk_style_context_remove_provider(
+		    gtk_widget_get_style_context(c->statentry),
+		    GTK_STYLE_PROVIDER(old_css));
+	}
+
 	css = gtk_css_provider_new();
 	gchar *cssstr = g_strdup_printf(
 	    "#surf-statusbar { background-color: %s; }"
@@ -3730,7 +3749,10 @@ updatebar_style(Client *c)
 	    gtk_widget_get_style_context(c->statentry),
 	    GTK_STYLE_PROVIDER(css),
 	    GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
-	g_object_unref(css);
+
+	/* Transfer ownership to the widget data; g_object_unref called on replace */
+	g_object_set_data_full(G_OBJECT(c->statusbar), "bar-css",
+	    css, g_object_unref);
 }
 
 static void
@@ -3754,8 +3776,6 @@ main(int argc, char *argv[])
 {
 	Arg arg;
 	Client *c;
-
-	g_setenv("WEBKIT_FORCE_SANDBOX", "0", TRUE);
 
 	memset(&arg, 0, sizeof(arg));
 
