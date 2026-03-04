@@ -269,6 +269,7 @@ static int history_selected = -1;
 static void tab_pin(Client *c, const Arg *a);
 static gboolean *tab_pins = NULL;
 static void tab_reopen(Client *c, const Arg *a);
+static void tab_move(Client *c, const Arg *a);
 #define CLOSED_TAB_MAX 20
 static char *closed_tab_stack[CLOSED_TAB_MAX];
 static int closed_tab_top = 0;
@@ -799,14 +800,18 @@ tab_new(Client *c, const Arg *a)
 
 	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 
+	int insert_at = tabs.active + 1;
 	tabs.count++;
 	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
-	tabs.views[tabs.count - 1] = v;
-
 	tab_pins = g_realloc(tab_pins, tabs.count * sizeof(gboolean));
-	tab_pins[tabs.count - 1] = FALSE;
+	memmove(&tabs.views[insert_at + 1], &tabs.views[insert_at],
+	        (tabs.count - 1 - insert_at) * sizeof(WebKitWebView *));
+	memmove(&tab_pins[insert_at + 1], &tab_pins[insert_at],
+	        (tabs.count - 1 - insert_at) * sizeof(gboolean));
+	tabs.views[insert_at] = v;
+	tab_pins[insert_at] = FALSE;
 
-	tabs.active = tabs.count - 1;
+	tabs.active = insert_at;
 
 	c->view = v;
 	c->pageid = webkit_web_view_get_page_id(v);
@@ -914,6 +919,27 @@ tab_prev(Client *c, const Arg *a)
 		return;
 	int prev = (tabs.active - 1 + tabs.count) % tabs.count;
 	tab_switch_to(c, prev);
+}
+
+void
+tab_move(Client *c, const Arg *a)
+{
+	int idx = tabs.active;
+	int new_idx = idx + a->i;
+
+	if (new_idx < 0 || new_idx >= tabs.count)
+		return;
+
+	WebKitWebView *tmp = tabs.views[idx];
+	tabs.views[idx] = tabs.views[new_idx];
+	tabs.views[new_idx] = tmp;
+
+	gboolean ptmp = tab_pins[idx];
+	tab_pins[idx] = tab_pins[new_idx];
+	tab_pins[new_idx] = ptmp;
+
+	tabs.active = new_idx;
+	update_tabbar(c);
 }
 
 /* Hint label characters (home row keys) */

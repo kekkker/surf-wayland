@@ -114,8 +114,8 @@ static Key keys[] = {
 	{ MODKEY,                GDK_KEY_r,      reload,     { .i = 0 } },
 	{ MODKEY,                GDK_KEY_l,      navigate,   { .i = +1 } },
 	{ MODKEY,                GDK_KEY_h,      navigate,   { .i = -1 } },
-	{ MODKEY,                GDK_KEY_j,      scrollv,    { .i = +10 } },
-	{ MODKEY,                GDK_KEY_k,      scrollv,    { .i = -10 } },
+	{ MODKEY,                GDK_KEY_j,      tab_move,   { .i = +1 } },
+	{ MODKEY,                GDK_KEY_k,      tab_move,   { .i = -1 } },
 	{ MODKEY,                GDK_KEY_space,  scrollv,    { .i = +50 } },
 	{ MODKEY,                GDK_KEY_b,      scrollv,    { .i = -50 } },
 	{ MODKEY,                GDK_KEY_d,      scrollv,    { .i = +50 } },
@@ -184,4 +184,4 @@ static const char *stat_bg_normal  = "#000000";
 static const char *stat_fg_normal  = "#ffffff";
 static const char *stat_font       = "11px 'Terminus (TTF)'";
 
-static const char *searchengine = "https://duckduckgo.com/?q=%s";
+static const char *searchengine = "https://find.xenorio.xyz/?q=%s";
