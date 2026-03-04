@@ -233,6 +233,7 @@ static void updatebar_style(Client *c);
 static void baractivate(GtkEntry *entry, Client *c);
 static gboolean barkeypress(GtkWidget *w, GdkEvent *e, Client *c);
 static gboolean bar_update_search(gpointer data);
+static void find_highlight_update(Client *c, const char *needle);
 
 /* Tab management */
 static void tab_init(Client *c);
@@ -3189,6 +3190,40 @@ openbar_newtab(Client *c, const Arg *a)
 }
 
 static void
+find_highlight_update(Client *c, const char *needle)
+{
+	if (!needle || !*needle) {
+		evalscript(c, "if(typeof CSS!=='undefined'&&CSS.highlights)"
+					  "CSS.highlights.delete('surf-find');");
+		return;
+	}
+	gchar *esc = g_strescape(needle, NULL);
+	evalscript(
+		c,
+		"(function(){"
+		"if(!document.getElementById('_surf_find_css')){"
+		"var s=document.createElement('style');"
+		"s.id='_surf_find_css';"
+		"s.textContent='::highlight(surf-find){"
+		"background:#ff8c00;color:#000;outline:1px solid #c05000;}';"
+		"(document.head||document.documentElement).appendChild(s);}"
+		"if(typeof CSS==='undefined'||!CSS.highlights)return;"
+		"CSS.highlights.delete('surf-find');"
+		"var nd='%s',lo=nd.toLowerCase(),len=nd.length;"
+		"var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);"
+		"var rs=[],n,t,lt,i;"
+		"while((n=w.nextNode())){"
+		"t=n.textContent;lt=t.toLowerCase();i=0;"
+		"while((i=lt.indexOf(lo,i))!==-1){"
+		"var r=new Range();r.setStart(n,i);r.setEnd(n,i+len);"
+		"rs.push(r);i+=len;}}"
+		"if(rs.length)CSS.highlights.set('surf-find',new Highlight(...rs));"
+		"})()",
+		esc);
+	g_free(esc);
+}
+
+static void
 baractivate(GtkEntry *entry, Client *c)
 {
 	const char *text, *input;
@@ -3214,6 +3249,7 @@ baractivate(GtkEntry *entry, Client *c)
 			webkit_find_controller_count_matches(c->finder, input,
 												 findopts, G_MAXUINT);
 
+			find_highlight_update(c, input);
 			c->find_current_match = 1;
 		}
 
@@ -3259,8 +3295,10 @@ static gboolean
 barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 {
 	if (e->key.keyval == GDK_KEY_Escape) {
-		if (c->mode == ModeSearch)
+		if (c->mode == ModeSearch) {
 			webkit_find_controller_search_finish(c->finder);
+			find_highlight_update(c, NULL);
+		}
 		closebar(c);
 		return TRUE;
 	}
