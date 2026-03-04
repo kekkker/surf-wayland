@@ -2288,7 +2288,21 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 static void
 loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 {
-	const char *uri = geturi(c);
+	const char *uri;
+
+	/* Background tab: don't touch c->view state (certs, params, scripts).
+	 * Only track history on finish and refresh the tab bar label. */
+	if (v != c->view) {
+		if (e == WEBKIT_LOAD_FINISHED) {
+			uri = webkit_web_view_get_uri(v);
+			if (uri && *uri)
+				history_add(uri, webkit_web_view_get_title(v));
+		}
+		update_tabbar(c);
+		return;
+	}
+
+	uri = geturi(c);
 
 	switch (e) {
 	case WEBKIT_LOAD_STARTED:
@@ -2325,6 +2339,10 @@ loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 static void
 progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 {
+	if (v != c->view) {
+		update_tabbar(c);
+		return;
+	}
 	c->progress = webkit_web_view_get_estimated_load_progress(c->view) *
 				  100;
 	updatetitle(c);
@@ -2333,14 +2351,15 @@ progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 static void
 titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 {
-	g_free(c->title);
-	c->title = g_strdup(webkit_web_view_get_title(c->view));
-	updatetitle(c);
+	if (view == c->view) {
+		g_free(c->title);
+		c->title = g_strdup(webkit_web_view_get_title(c->view));
+		updatetitle(c);
 
-	const char *uri = geturi(c);
-	if (c->title && *c->title && uri && !g_str_has_prefix(uri, "about:"))
-		history_add(uri, c->title);
-
+		const char *uri = geturi(c);
+		if (c->title && *c->title && uri && !g_str_has_prefix(uri, "about:"))
+			history_add(uri, c->title);
+	}
 	update_tabbar(c);
 }
 
@@ -2953,6 +2972,15 @@ screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	struct tm *tm;
 	time_t t;
 
+	/* The view may have been destroyed (tab closed / web process crashed)
+	 * while the snapshot was in flight.  After gtk_widget_destroy() the
+	 * GObject is still alive (GTask holds a ref) but the WebKit internals
+	 * are torn down; calling get_snapshot_finish on it crashes inside
+	 * WebKit.  gtk_widget_get_realized() is FALSE after destroy — safe
+	 * to check here since we are on the single GLib main thread. */
+	if (!gtk_widget_get_realized(GTK_WIDGET(obj)))
+		return;
+
 	surf = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(obj),
 											   res, &err);
 	if (err) {
@@ -2981,14 +3009,13 @@ screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	cairo_surface_write_to_png(surf, path);
 	cairo_surface_destroy(surf);
 
-	/* Flash path in status bar via the client stored as user_data */
-	Client *c = data;
-	if (c && c->statentry) {
-		char msg[PATH_MAX + 16];
-		snprintf(msg, sizeof(msg), " [SCREENSHOT] %s", path);
-		gtk_entry_set_text(GTK_ENTRY(c->statentry), msg);
-		g_timeout_add_seconds(3, (GSourceFunc)updatebar, c);
-	}
+	(void)data;
+	fprintf(stderr, "screenshot: %s\n", path);
+
+	/* Desktop notification — no pointer to Client needed */
+	char *argv[] = {"notify-send", "-t", "4000", "Screenshot saved", path, NULL};
+	g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
+				  NULL, NULL, NULL, NULL);
 }
 
 static void
@@ -3395,8 +3422,9 @@ find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data)
 		g_error_free(err);
 		return;
 	}
-	if (!jsc_value_is_string(val)) {
-		g_object_unref(val);
+	if (!val || !jsc_value_is_string(val)) {
+		if (val)
+			g_object_unref(val);
 		return;
 	}
 	text = jsc_value_to_string(val);
