@@ -3525,7 +3525,17 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 		return FALSE;
 	}
 
-	/* Tab / Shift+Tab for completions (command mode only) */
+	/* Arrow keys / Tab / Ctrl+n/p for history navigation.
+	 * Must return TRUE to consume Up/Down — otherwise GTK moves focus
+	 * from the entry to the history_scroll widget, making the bar dead. */
+	if (e->key.keyval == GDK_KEY_Up) {
+		history_select(c, -1);
+		return TRUE;
+	}
+	if (e->key.keyval == GDK_KEY_Down) {
+		history_select(c, +1);
+		return TRUE;
+	}
 	if (e->key.keyval == GDK_KEY_Tab) {
 		if (e->key.state & GDK_SHIFT_MASK)
 			history_select(c, -1);
@@ -3533,7 +3543,6 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 			history_select(c, +1);
 		return TRUE;
 	}
-
 	if ((e->key.state & GDK_CONTROL_MASK) && e->key.keyval == GDK_KEY_n) {
 		history_select(c, +1);
 		return TRUE;
