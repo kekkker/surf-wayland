@@ -268,6 +268,10 @@ static GtkWidget *history_scroll = NULL;
 static int history_selected = -1;
 static void tab_pin(Client *c, const Arg *a);
 static gboolean *tab_pins = NULL;
+static void tab_reopen(Client *c, const Arg *a);
+#define CLOSED_TAB_MAX 20
+static char *closed_tab_stack[CLOSED_TAB_MAX];
+static int closed_tab_top = 0;
 
 static guint pin_timer = 0;
 static gboolean pin_keepalive(gpointer data);
@@ -866,8 +870,30 @@ tab_close(Client *c, const Arg *a)
 	g_signal_handlers_disconnect_matched(dead,
 		G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
 
+	const char *dead_uri = webkit_web_view_get_uri(dead);
+	if (dead_uri && strcmp(dead_uri, "about:blank") != 0) {
+		if (closed_tab_top == CLOSED_TAB_MAX) {
+			g_free(closed_tab_stack[0]);
+			memmove(closed_tab_stack, closed_tab_stack + 1,
+			        (CLOSED_TAB_MAX - 1) * sizeof(char *));
+			closed_tab_top--;
+		}
+		closed_tab_stack[closed_tab_top++] = g_strdup(dead_uri);
+	}
+
 	gtk_widget_destroy(GTK_WIDGET(dead));
 	update_tabbar(c);
+}
+
+void
+tab_reopen(Client *c, const Arg *a)
+{
+	if (closed_tab_top == 0)
+		return;
+	char *uri = closed_tab_stack[--closed_tab_top];
+	tab_new(c, &(Arg){ .i = 1 });
+	loaduri(c, &(Arg){ .v = uri });
+	g_free(uri);
 }
 
 void
