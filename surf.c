@@ -1705,6 +1705,11 @@ destroyclient(Client *c)
 
 	webkit_web_view_stop_loading(c->view);
 
+	if (c->mousepos) {
+		g_object_unref(c->mousepos);
+		c->mousepos = NULL;
+	}
+
 	for (p = clients; p && p->next != c; p = p->next)
 		;
 	if (p)
@@ -2347,7 +2352,9 @@ mousetargetchanged(WebKitWebView *v, WebKitHitTestResult *h, guint modifiers,
 {
 	WebKitHitTestResultContext hc = webkit_hit_test_result_get_context(h);
 
-	c->mousepos = h;
+	if (c->mousepos)
+		g_object_unref(c->mousepos);
+	c->mousepos = g_object_ref(h);
 
 	g_free(c->targeturi);
 	if (hc & OnLink)
