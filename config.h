@@ -246,9 +246,8 @@ static Key keys[] = {
 /* button definitions */
 static Button buttons[] = {
 	/* target       event mask      button  function        argument        stop event */
-	{OnLink, 0, 2, clicknewwindow, {.i = 0}, 1},
-	{OnLink, MODKEY, 2, clicknewwindow, {.i = 1}, 1},
-	{OnLink, MODKEY, 1, clicknewwindow, {.i = 1}, 1},
+	{OnLink, 0, 2, clicknewtab, {0}, 1},    /* middle click: background tab */
+	{OnLink, MODKEY, 1, clicknewtab, {0}, 1}, /* ctrl+click: background tab */
 	{OnAny, 0, 8, clicknavigate, {.i = -1}, 1},
 	{OnAny, 0, 9, clicknavigate, {.i = +1}, 1},
 	{OnMedia, MODKEY, 1, clickexternplayer, {0}, 1},
@@ -259,4 +258,4 @@ static const char *stat_bg_normal = "#000000";
 static const char *stat_fg_normal = "#ffffff";
 static const char *stat_font = "11px 'Terminus (TTF)'";
 
-static const char *searchengine = "https://find.xenorio.xyz/?q=%s";
+static const char *searchengine = "https://searx.syscat.org/?q=%s";

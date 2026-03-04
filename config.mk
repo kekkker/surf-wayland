@@ -31,6 +31,6 @@ WEBEXTCFLAGS = -fPIC $(WEBEXTINC) $(CPPFLAGS) \
                -Wno-sign-compare -Wno-missing-field-initializers -g -O1
 
 LIBS = $(GTKLIB)
-SURFLDFLAGS =
+SURFLDFLAGS = -rdynamic
 
 CC = cc

@@ -12,6 +12,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <execinfo.h>
+#include <fcntl.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -124,6 +126,7 @@ static void usage(void);
 static void setup(void);
 static void sigchld(int unused);
 static void sighup(int unused);
+static void crashhandler(int sig, siginfo_t *info, void *ctx);
 static char *buildfile(const char *path);
 static char *buildpath(const char *path);
 static char *untildepath(const char *path);
@@ -249,6 +252,7 @@ static void hints_receive_data(Client *c, GVariant *data);
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
 static void clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h);
+static void clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h);
 static void clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h);
 
 static char winid[64];
@@ -373,6 +377,17 @@ setup(void)
 	if (signal(SIGHUP, sighup) == SIG_ERR)
 		die("Can't install SIGHUP handler");
 
+	{
+		struct sigaction sa;
+		memset(&sa, 0, sizeof(sa));
+		sigemptyset(&sa.sa_mask);
+		sa.sa_sigaction = crashhandler;
+		sa.sa_flags = SA_SIGINFO | SA_RESETHAND;
+		sigaction(SIGSEGV, &sa, NULL);
+		sigaction(SIGABRT, &sa, NULL);
+		sigaction(SIGBUS, &sa, NULL);
+	}
+
 	gtk_init(NULL, NULL);
 
 /* Force single web process for all pages */
@@ -478,6 +493,48 @@ sighup(int unused)
 
 	for (c = clients; c; c = c->next)
 		reload(c, &a);
+}
+
+static void
+crashhandler(int sig, siginfo_t *info, void *ctx)
+{
+	void *frames[64];
+	int nframes, fd;
+	char path[PATH_MAX];
+	char buf[128];
+	const char *home;
+	time_t t;
+	ssize_t wr __attribute__((unused));
+
+	(void)ctx;
+
+	home = getenv("HOME");
+	if (!home)
+		home = "/tmp";
+	snprintf(path, sizeof(path), "%s/.surf/crash.log", home);
+
+	fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0)
+		fd = STDERR_FILENO;
+
+	t = time(NULL);
+	snprintf(buf, sizeof(buf), "surf crash: signal %d at %s", sig, ctime(&t));
+	wr = write(fd, buf, strlen(buf));
+
+	if (info && (sig == SIGSEGV || sig == SIGBUS)) {
+		snprintf(buf, sizeof(buf), "fault addr: %p\n", info->si_addr);
+		wr = write(fd, buf, strlen(buf));
+	}
+
+	wr = write(fd, "backtrace:\n", 11);
+	nframes = backtrace(frames, 64);
+	backtrace_symbols_fd(frames, nframes, fd);
+
+	if (fd != STDERR_FILENO)
+		close(fd);
+
+	signal(sig, SIG_DFL);
+	raise(sig);
 }
 
 char *
@@ -840,7 +897,6 @@ tab_new(Client *c, const Arg *a)
 	c->mode = ModeNormal;
 
 	gtk_widget_show_all(GTK_WIDGET(v));
-	webkit_web_view_load_uri(v, "about:blank");
 
 	gtk_widget_set_can_focus(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
@@ -1133,17 +1189,14 @@ follow_hint(Client *c, const char *label)
 	} break;
 	case HintModeNewWindow: {
 		gchar *url_copy = g_strdup(target->url);
-		WebKitWebView *old_view = c->view;
+		int prev = tabs.active;
 
-		WebKitUserMessage *clear_msg = webkit_user_message_new("hints-clear", NULL);
-		webkit_web_view_send_message_to_page(old_view, clear_msg, NULL, NULL, NULL);
-
-		tab_init(c);
+		hints_cleanup(c); /* clears hints on old view, resets state */
 		tab_new(c, &(Arg){.i = 1});
-		hints_cleanup(c);
 		arg.v = url_copy;
 		loaduri(c, &arg);
 		g_free(url_copy);
+		tab_switch_to(c, prev);
 	} break;
 	case HintModeYank: {
 		gchar *url_copy = g_strdup(target->url);
@@ -2385,6 +2438,7 @@ static void
 decidenewwindow(WebKitPolicyDecision *d, Client *c)
 {
 	Arg arg;
+	int prev;
 	WebKitNavigationAction *a =
 		webkit_navigation_policy_decision_get_navigation_action(
 			WEBKIT_NAVIGATION_POLICY_DECISION(d));
@@ -2397,7 +2451,10 @@ decidenewwindow(WebKitPolicyDecision *d, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
 		arg.v = webkit_uri_request_get_uri(
 			webkit_navigation_action_get_request(a));
-		newwindow(c, &arg, 0);
+		prev = tabs.active;
+		tab_new(c, &(Arg){.i = 1});
+		loaduri(c, &arg);
+		tab_switch_to(c, prev);
 		break;
 	case WEBKIT_NAVIGATION_TYPE_OTHER:
 	default:
@@ -3252,6 +3309,19 @@ clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h)
 
 	arg.v = webkit_hit_test_result_get_link_uri(h);
 	newwindow(c, &arg, a->i);
+}
+
+static void
+clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h)
+{
+	int prev = tabs.active;
+	Arg arg;
+
+	(void)a;
+	arg.v = webkit_hit_test_result_get_link_uri(h);
+	tab_new(c, &(Arg){.i = 1});
+	loaduri(c, &arg);
+	tab_switch_to(c, prev);
 }
 
 static void
