@@ -29,7 +29,7 @@ find_hints(WebKitWebPage *page)
 	WebKitDOMDOMWindow *win;
 	WebKitDOMNodeList *links, *buttons, *inputs, *clickable;
 	GVariantBuilder builder;
-	glong scroll_x, scroll_y;
+	glong scroll_x, scroll_y, viewport_w, viewport_h;
 
 	doc = webkit_web_page_get_dom_document(page);
 	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(siiii)"));
@@ -42,9 +42,20 @@ find_hints(WebKitWebPage *page)
 	scroll_x = win ? webkit_dom_dom_window_get_page_x_offset(win) : 0;
 	scroll_y = win ? webkit_dom_dom_window_get_page_y_offset(win) : 0;
 
+	/* Viewport dimensions for visible-only filtering */
+	viewport_w = win ? webkit_dom_dom_window_get_inner_width(win) : G_MAXLONG;
+	viewport_h = win ? webkit_dom_dom_window_get_inner_height(win) : G_MAXLONG;
+
 	/* Clear old hint elements */
 	if (hint_elements)
 		g_hash_table_remove_all(hint_elements);
+
+/* Macro: skip element if its viewport-relative rect doesn't intersect the
+ * visible viewport.  vp_x/vp_y are the raw left/top from getBoundingClientRect
+ * (before adding scroll offsets); width/height already computed above. */
+#define IN_VIEWPORT(vp_x, vp_y, w, h) \
+	((vp_x) < (gfloat)viewport_w && (vp_x) + (w) > 0 && \
+	 (vp_y) < (gfloat)viewport_h && (vp_y) + (h) > 0)
 
 	/* Links and areas */
 	links = webkit_dom_document_query_selector_all(doc, "a[href], area[href]", NULL);
@@ -55,12 +66,14 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
-			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
+			gfloat vp_x = webkit_dom_client_rect_get_left(rect);
+			gfloat vp_y = webkit_dom_client_rect_get_top(rect);
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
+			gfloat x = vp_x + scroll_x;
+			gfloat y = vp_y + scroll_y;
 
-			if (width < 3 || height < 3) {
+			if (width < 3 || height < 3 || !IN_VIEWPORT(vp_x, vp_y, width, height)) {
 				g_object_unref(rect);
 				continue;
 			}
@@ -103,12 +116,14 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
-			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
+			gfloat vp_x = webkit_dom_client_rect_get_left(rect);
+			gfloat vp_y = webkit_dom_client_rect_get_top(rect);
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
+			gfloat x = vp_x + scroll_x;
+			gfloat y = vp_y + scroll_y;
 
-			if (width >= 3 && height >= 3) {
+			if (width >= 3 && height >= 3 && IN_VIEWPORT(vp_x, vp_y, width, height)) {
 				guint id = hint_id_counter++;
 				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
 									g_object_ref(elem));
@@ -137,12 +152,14 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
-			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
+			gfloat vp_x = webkit_dom_client_rect_get_left(rect);
+			gfloat vp_y = webkit_dom_client_rect_get_top(rect);
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
+			gfloat x = vp_x + scroll_x;
+			gfloat y = vp_y + scroll_y;
 
-			if (width >= 3 && height >= 3) {
+			if (width >= 3 && height >= 3 && IN_VIEWPORT(vp_x, vp_y, width, height)) {
 				guint id = hint_id_counter++;
 				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
 									g_object_ref(elem));
@@ -170,12 +187,14 @@ find_hints(WebKitWebPage *page)
 			WebKitDOMElement *elem = WEBKIT_DOM_ELEMENT(node);
 
 			WebKitDOMClientRect *rect = webkit_dom_element_get_bounding_client_rect(elem);
-			gfloat x = webkit_dom_client_rect_get_left(rect) + scroll_x;
-			gfloat y = webkit_dom_client_rect_get_top(rect) + scroll_y;
+			gfloat vp_x = webkit_dom_client_rect_get_left(rect);
+			gfloat vp_y = webkit_dom_client_rect_get_top(rect);
 			gfloat width = webkit_dom_client_rect_get_width(rect);
 			gfloat height = webkit_dom_client_rect_get_height(rect);
+			gfloat x = vp_x + scroll_x;
+			gfloat y = vp_y + scroll_y;
 
-			if (width >= 3 && height >= 3) {
+			if (width >= 3 && height >= 3 && IN_VIEWPORT(vp_x, vp_y, width, height)) {
 				guint id = hint_id_counter++;
 				g_hash_table_insert(hint_elements, GUINT_TO_POINTER(id),
 									g_object_ref(elem));
@@ -190,6 +209,8 @@ find_hints(WebKitWebPage *page)
 		}
 		g_object_unref(clickable);
 	}
+
+#undef IN_VIEWPORT
 
 	GVariant *hints = g_variant_builder_end(&builder);
 	WebKitUserMessage *msg = webkit_user_message_new("hints-data", hints);

@@ -2242,6 +2242,10 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 	GString *errmsg = g_string_new(NULL);
 	gchar *html, *pem;
 
+	/* Background tab: ignore TLS error - don't corrupt active tab state */
+	if (v != c->view)
+		return FALSE;
+
 	c->failedcert = g_object_ref(cert);
 	c->tlserr = err;
 	c->errorpage = 1;
@@ -2569,7 +2573,8 @@ decideresource(WebKitPolicyDecision *d, Client *c)
 static void
 insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e, Client *c)
 {
-	c->insecure = 1;
+	if (v == c->view)
+		c->insecure = 1;
 }
 
 static gchar *
@@ -3415,6 +3420,12 @@ find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	JSCValue *val;
 	GError *err = NULL;
 	char *text;
+
+	/* Same guard as screenshot_cb: the view may have been destroyed while
+	 * the JS evaluation was in flight.  evaluate_javascript_finish would
+	 * crash accessing the freed WebPageProxy at a small offset. */
+	if (!gtk_widget_get_realized(GTK_WIDGET(obj)))
+		return;
 
 	val = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(obj),
 													 res, &err);
