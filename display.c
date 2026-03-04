@@ -3,10 +3,10 @@
 // ============================================================
 
 #include "display.h"
-#include <stdio.h>
-#include <string.h>
 #include <gdk/gdk.h>
 #include <gdk/gdkwayland.h>
+#include <stdio.h>
+#include <string.h>
 
 int
 display_init(display_context_t *ctx)

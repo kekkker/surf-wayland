@@ -1,8 +1,8 @@
 #define MSGBUFSZ 8
 
+#include "types.h"
 #include <gtk/gtk.h>
 #include <webkit2/webkit2.h>
-#include "types.h"
 
 typedef enum {
 	ModeNormal,
@@ -35,7 +35,7 @@ typedef struct Client {
 	int tab_pinned;
 	Mode mode;
 	GtkWidget *vbox;
-    GtkWidget *tabbar;
+	GtkWidget *tabbar;
 	GtkWidget *statusbar;
 	GtkWidget *statentry;
 	char *title, *overtitle, *targeturi;
@@ -46,13 +46,3 @@ typedef struct Client {
 	int find_current_match;
 	struct Client *next;
 } Client;
-
-void hints_start(Client *c, const Arg *a);
-void hints_cleanup(Client *c);
-gboolean hints_keypress(Client *c, GdkEventKey *e);
-void tab_new(Client *c, const Arg *a);
-void tab_close(Client *c, const Arg *a);
-void tab_next(Client *c, const Arg *a);
-void tab_prev(Client *c, const Arg *a);
-void openbar_newtab(Client *c, const Arg *a);
-void tab_switch_to(Client *c, int index);

@@ -1,0 +1,39 @@
+---
+CompileFlags:
+  Add:
+    - -std=gnu11
+    - -DVERSION="2.1"
+    - -DGCR_API_SUBJECT_TO_CHANGE
+    - -DGCK_API_SUBJECT_TO_CHANGE
+    - -DWAYLAND_SUPPORT
+    - -DLIBPREFIX="/usr/local/lib"
+    - -DWEBEXTDIR="/usr/local/lib/surf"
+    - -D_DEFAULT_SOURCE
+    - -I/usr/include/gcr-3
+    - -I/usr/include/gck-1
+    - -I/usr/include/p11-kit-1
+    - -I/usr/include/webkitgtk-4.1
+    - -I/usr/include/gtk-3.0
+    - -I/usr/include/at-spi2-atk/2.0
+    - -I/usr/include/at-spi-2.0
+    - -I/usr/include/atk-1.0
+    - -I/usr/include/dbus-1.0
+    - -I/usr/lib64/dbus-1.0/include
+    - -I/usr/include/libsoup-3.0
+    - -I/usr/include/pango-1.0
+    - -I/usr/include/harfbuzz
+    - -I/usr/include/gdk-pixbuf-2.0
+    - -I/usr/include/cairo
+    - -I/usr/include/gio-unix-2.0
+    - -I/usr/lib64/libffi/include
+    - -I/usr/include/glib-2.0
+    - -I/usr/lib64/glib-2.0/include
+    - -I/usr/include/libmount
+    - -I/usr/include/blkid
+    - -I/usr/include/libpng16
+    - -I/usr/include/freetype2
+    - -I/usr/include/pixman-1
+    - -I/usr/include/fribidi
+
+Diagnostics:
+  UnusedIncludes: None

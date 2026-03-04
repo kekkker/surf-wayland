@@ -1,0 +1,15 @@
+---
+BasedOnStyle: LLVM
+IndentWidth: 4
+TabWidth: 4
+UseTab: Always
+BreakBeforeBraces: Linux
+BreakAfterReturnType: AllDefinitions
+ColumnLimit: 0
+PointerAlignment: Right
+AllowShortFunctionsOnASingleLine: None
+AllowShortIfStatementsOnASingleLine: Never
+IndentCaseLabels: false
+SpaceBeforeParens: ControlStatements
+SpacesInParens: Never
+AlignConsecutiveAssignments: None
