@@ -246,7 +246,7 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 			"background: #ffff00 !important;"
 			"color: #000000 !important;"
 			"font-family: monospace !important;"
-			"font-size: 11px !important;"
+			"font-size: 13px !important;"
 			"font-weight: bold !important;"
 			"line-height: 13px !important;"
 			"padding: 2px 4px !important;"

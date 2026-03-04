@@ -195,7 +195,7 @@ static Key keys[] = {
 	{MODKEY, GDK_KEY_b, scrollv, {.i = -50}},
 	{MODKEY, GDK_KEY_d, scrollv, {.i = +50}},
 	{MODKEY, GDK_KEY_u, scrollv, {.i = -50}},
-	{MODKEY, GDK_KEY_p, clipboard, {.i = 1}},
+	{MODKEY, GDK_KEY_p, screenshot, {0}},
 	{MODKEY, GDK_KEY_n, find, {.i = +1}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_n, find, {.i = -1}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_p, print, {0}},
@@ -230,6 +230,8 @@ static Key keys[] = {
 	{0, GDK_KEY_minus, zoom, {.i = -1}},
 	{GDK_SHIFT_MASK, GDK_KEY_plus, zoom, {.i = +1}},
 	{0, GDK_KEY_equal, zoom, {.i = 0}},
+	{0, GDK_KEY_v, find_select_enter, {0}},
+	{GDK_SHIFT_MASK, GDK_KEY_v, find_select_line, {0}},
 	{0, GDK_KEY_f, hints_start, {.i = HintModeLink}},
 	{GDK_SHIFT_MASK, GDK_KEY_f, hints_start, {.i = HintModeNewWindow}},
 	{0, GDK_KEY_y, hints_start, {.i = HintModeYank}},
@@ -246,7 +248,7 @@ static Key keys[] = {
 /* button definitions */
 static Button buttons[] = {
 	/* target       event mask      button  function        argument        stop event */
-	{OnLink, 0, 2, clicknewtab, {0}, 1},    /* middle click: background tab */
+	{OnLink, 0, 2, clicknewtab, {0}, 1},	  /* middle click: background tab */
 	{OnLink, MODKEY, 1, clicknewtab, {0}, 1}, /* ctrl+click: background tab */
 	{OnAny, 0, 8, clicknavigate, {.i = -1}, 1},
 	{OnAny, 0, 9, clicknavigate, {.i = +1}, 1},
@@ -256,6 +258,6 @@ static Button buttons[] = {
 /* Status bar colors */
 static const char *stat_bg_normal = "#000000";
 static const char *stat_fg_normal = "#ffffff";
-static const char *stat_font = "11px 'Terminus (TTF)'";
+static const char *stat_font = "13px 'Terminus (TTF)'";
 
 static const char *searchengine = "https://searx.syscat.org/?q=%s";

@@ -10,6 +10,7 @@ typedef enum {
 	ModeCommand,
 	ModeSearch,
 	ModeHint,
+	ModeSelect,
 } Mode;
 
 typedef enum {

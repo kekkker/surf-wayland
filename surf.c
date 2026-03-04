@@ -2,6 +2,8 @@
  *
  * To understand surf, start reading main().
  */
+#include <execinfo.h>
+#include <fcntl.h>
 #include <glib.h>
 #include <inttypes.h>
 #include <libgen.h>
@@ -12,8 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <execinfo.h>
-#include <fcntl.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -211,6 +211,7 @@ static gboolean filechooser(WebKitWebView *v, WebKitFileChooserRequest *r,
 static void pasteuri(GtkClipboard *clipboard, const char *text, gpointer d);
 static void reload(Client *c, const Arg *a);
 static void print(Client *c, const Arg *a);
+static void screenshot(Client *c, const Arg *a);
 static void showcert(Client *c, const Arg *a);
 static void clipboard(Client *c, const Arg *a);
 static void zoom(Client *c, const Arg *a);
@@ -234,6 +235,10 @@ static void baractivate(GtkEntry *entry, Client *c);
 static gboolean barkeypress(GtkWidget *w, GdkEvent *e, Client *c);
 static gboolean bar_update_search(gpointer data);
 static void find_highlight_update(Client *c, const char *needle);
+static void find_select_enter(Client *c, const Arg *a);
+static void find_select_line(Client *c, const Arg *a);
+static void find_select_exit(Client *c);
+static void find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data);
 
 /* Tab management */
 static void tab_init(Client *c);
@@ -1966,6 +1971,41 @@ winevent(GtkWidget *w, GdkEvent *e, Client *c)
 			return hints_keypress(c, &e->key);
 		}
 
+		if (c->mode == ModeSelect) {
+			switch (e->key.keyval) {
+			case GDK_KEY_Escape:
+				find_select_exit(c);
+				return TRUE;
+			case GDK_KEY_e:
+				find(c, &(Arg){.i = +1});
+				evalscript(c,
+						   "if(window._surfFindSelect)"
+						   "_surfFindSelect(%d);",
+						   c->find_current_match - 1);
+				return TRUE;
+			case GDK_KEY_V:
+				evalscript(c,
+						   "var s=window.getSelection();"
+						   "s.modify('move','backward','lineboundary');"
+						   "s.modify('extend','forward','lineboundary');");
+				return TRUE;
+			case GDK_KEY_w:
+				evalscript(c, "window.getSelection()"
+							  ".modify('extend','forward','word');");
+				return TRUE;
+			case GDK_KEY_b:
+				evalscript(c, "window.getSelection()"
+							  ".modify('extend','backward','word');");
+				return TRUE;
+			case GDK_KEY_y:
+				webkit_web_view_evaluate_javascript(
+					c->view, "window.getSelection().toString()",
+					-1, NULL, NULL, NULL, find_select_yank_cb, c);
+				return TRUE;
+			}
+			return TRUE; /* swallow other keys in select mode */
+		}
+
 		/* Normal mode: process keybinds */
 		for (i = 0; i < LENGTH(keys); ++i) {
 			if (gdk_keyval_to_lower(e->key.keyval) ==
@@ -2031,7 +2071,7 @@ showview(WebKitWebView *v, Client *c)
 		"  background-color: #1a1a1a;"
 		"  padding: 0px;"
 		"  font-family: 'Terminus (TTF)';"
-		"  font-size: 11px;"
+		"  font-size: 13px;"
 		"}"
 		"#tab-active {"
 		"  background-color: #4a4a4a;"
@@ -2904,6 +2944,64 @@ print(Client *c, const Arg *a)
 }
 
 static void
+screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
+{
+	cairo_surface_t *surf;
+	GError *err = NULL;
+	char path[PATH_MAX];
+	char *home;
+	struct tm *tm;
+	time_t t;
+
+	surf = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(obj),
+											   res, &err);
+	if (err) {
+		fprintf(stderr, "screenshot: %s\n", err->message);
+		g_error_free(err);
+		return;
+	}
+
+	home = getenv("HOME");
+	if (!home)
+		home = "/tmp";
+
+	t = time(NULL);
+	tm = localtime(&t);
+
+	/* Save to ~/Pictures/ if it exists, else ~/ */
+	snprintf(path, sizeof(path), "%s/Pictures", home);
+	if (access(path, W_OK) != 0)
+		snprintf(path, sizeof(path), "%s", home);
+
+	snprintf(path + strlen(path), sizeof(path) - strlen(path),
+			 "/surf-%04d%02d%02d-%02d%02d%02d.png",
+			 tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
+			 tm->tm_hour, tm->tm_min, tm->tm_sec);
+
+	cairo_surface_write_to_png(surf, path);
+	cairo_surface_destroy(surf);
+
+	/* Flash path in status bar via the client stored as user_data */
+	Client *c = data;
+	if (c && c->statentry) {
+		char msg[PATH_MAX + 16];
+		snprintf(msg, sizeof(msg), " [SCREENSHOT] %s", path);
+		gtk_entry_set_text(GTK_ENTRY(c->statentry), msg);
+		g_timeout_add_seconds(3, (GSourceFunc)updatebar, c);
+	}
+}
+
+static void
+screenshot(Client *c, const Arg *a)
+{
+	(void)a;
+	webkit_web_view_get_snapshot(c->view,
+								 WEBKIT_SNAPSHOT_REGION_FULL_DOCUMENT,
+								 WEBKIT_SNAPSHOT_OPTIONS_NONE,
+								 NULL, screenshot_cb, c);
+}
+
+static void
 showcert(Client *c, const Arg *a)
 {
 	GTlsCertificate *cert = c->failedcert ? c->failedcert : c->cert;
@@ -3105,6 +3203,9 @@ updatebar(Client *c)
 	case ModeSearch:
 		modestr = "SEARCH";
 		break;
+	case ModeSelect:
+		modestr = "SELECT";
+		break;
 	default:
 		modestr = "NORMAL";
 		break;
@@ -3193,8 +3294,11 @@ static void
 find_highlight_update(Client *c, const char *needle)
 {
 	if (!needle || !*needle) {
-		evalscript(c, "if(typeof CSS!=='undefined'&&CSS.highlights)"
-					  "CSS.highlights.delete('surf-find');");
+		evalscript(c,
+				   "window._surfFindRanges=[];"
+				   "if(typeof CSS!=='undefined'&&CSS.highlights){"
+				   "CSS.highlights.delete('surf-find');"
+				   "CSS.highlights.delete('surf-find-sel');}");
 		return;
 	}
 	gchar *esc = g_strescape(needle, NULL);
@@ -3204,11 +3308,14 @@ find_highlight_update(Client *c, const char *needle)
 		"if(!document.getElementById('_surf_find_css')){"
 		"var s=document.createElement('style');"
 		"s.id='_surf_find_css';"
-		"s.textContent='::highlight(surf-find){"
-		"background:#ff8c00;color:#000;outline:1px solid #c05000;}';"
+		"s.textContent="
+		"'::highlight(surf-find){background:#ff8c00;color:#000;}'"
+		"+'::highlight(surf-find-sel){background:#fff700;color:#000;"
+		"outline:2px solid #ff6600;}';"
 		"(document.head||document.documentElement).appendChild(s);}"
 		"if(typeof CSS==='undefined'||!CSS.highlights)return;"
 		"CSS.highlights.delete('surf-find');"
+		"CSS.highlights.delete('surf-find-sel');"
 		"var nd='%s',lo=nd.toLowerCase(),len=nd.length;"
 		"var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);"
 		"var rs=[],n,t,lt,i;"
@@ -3217,10 +3324,92 @@ find_highlight_update(Client *c, const char *needle)
 		"while((i=lt.indexOf(lo,i))!==-1){"
 		"var r=new Range();r.setStart(n,i);r.setEnd(n,i+len);"
 		"rs.push(r);i+=len;}}"
+		"window._surfFindRanges=rs;"
+		"window._surfFindSelect=function(idx){"
+		"var sel=window.getSelection();sel.removeAllRanges();"
+		"CSS.highlights.delete('surf-find-sel');"
+		"if(rs[idx]){"
+		"sel.addRange(rs[idx]);"
+		"CSS.highlights.set('surf-find-sel',new Highlight(rs[idx]));}"
+		"};"
 		"if(rs.length)CSS.highlights.set('surf-find',new Highlight(...rs));"
 		"})()",
 		esc);
 	g_free(esc);
+}
+
+static void
+find_select_exit(Client *c)
+{
+	evalscript(c,
+			   "window.getSelection().removeAllRanges();"
+			   "if(typeof CSS!=='undefined'&&CSS.highlights)"
+			   "CSS.highlights.delete('surf-find-sel');");
+	c->mode = ModeNormal;
+	updatebar(c);
+	updatebar_style(c);
+}
+
+static void
+find_select_enter(Client *c, const Arg *a)
+{
+	(void)a;
+	if (c->find_match_count <= 0)
+		return;
+	c->mode = ModeSelect;
+	evalscript(c, "if(window._surfFindSelect)_surfFindSelect(%d);",
+			   c->find_current_match - 1);
+	updatebar(c);
+	updatebar_style(c);
+}
+
+static void
+find_select_line(Client *c, const Arg *a)
+{
+	(void)a;
+	if (c->find_match_count <= 0)
+		return;
+	c->mode = ModeSelect;
+	evalscript(c,
+			   "if(window._surfFindSelect){"
+			   "_surfFindSelect(%d);"
+			   "var s=window.getSelection();"
+			   "s.modify('move','backward','lineboundary');"
+			   "s.modify('extend','forward','lineboundary');}",
+			   c->find_current_match - 1);
+	updatebar(c);
+	updatebar_style(c);
+}
+
+static void
+find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data)
+{
+	Client *c = data;
+	JSCValue *val;
+	GError *err = NULL;
+	char *text;
+
+	val = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(obj),
+													 res, &err);
+	if (err) {
+		g_error_free(err);
+		return;
+	}
+	if (!jsc_value_is_string(val)) {
+		g_object_unref(val);
+		return;
+	}
+	text = jsc_value_to_string(val);
+	g_object_unref(val);
+
+	if (text && *text) {
+		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
+							   text, -1);
+		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
+							   text, -1);
+	}
+	g_free(text);
+	find_select_exit(c);
 }
 
 static void
@@ -3999,7 +4188,7 @@ history_filter(Client *c, const char *text)
 										"}"
 										"#history-list row label {"
 										"  font-family: monospace;"
-										"  font-size: 11px;"
+										"  font-size: 13px;"
 										"  padding: 2px 6px;"
 										"  color: #cccccc;"
 										"}",
@@ -4241,6 +4430,10 @@ updatebar_style(Client *c)
 		break;
 	case ModeHint:
 		bg = "#5f5f00";
+		fg = "#ffffff";
+		break;
+	case ModeSelect:
+		bg = "#005f5f";
 		fg = "#ffffff";
 		break;
 	default: /* ModeNormal */
