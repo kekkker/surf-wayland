@@ -2109,6 +2109,12 @@ showview(WebKitWebView *v, Client *c)
 
 	c->statusbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
+	c->barlabel = gtk_label_new("");
+	gtk_widget_set_can_focus(c->barlabel, FALSE);
+	gtk_widget_set_name(c->barlabel, "surf-barlabel");
+	gtk_widget_set_no_show_all(c->barlabel, TRUE);
+	gtk_box_pack_start(GTK_BOX(c->statusbar), c->barlabel, FALSE, FALSE, 0);
+
 	c->statentry = gtk_entry_new();
 	gtk_widget_set_hexpand(c->statentry, TRUE);
 	gtk_widget_set_can_focus(c->statentry, FALSE);
@@ -2135,6 +2141,12 @@ showview(WebKitWebView *v, Client *c)
 		"  padding: 1px 6px;"
 		"  min-height: 18px;"
 		"}"
+		"#surf-barlabel {"
+		"  background-color: %s;"
+		"  color: %s;"
+		"  font: %s;"
+		"  padding: 1px 0 1px 6px;"
+		"}"
 		"#surf-statentry {"
 		"  background-color: %s;"
 		"  color: %s;"
@@ -2155,6 +2167,7 @@ showview(WebKitWebView *v, Client *c)
 		"  padding: 0 4px;"
 		"}",
 		stat_bg_normal,
+		stat_bg_normal, stat_fg_normal, stat_font,
 		stat_bg_normal, stat_fg_normal, stat_font,
 		stat_bg_normal, stat_fg_normal, stat_font);
 	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
@@ -3191,9 +3204,12 @@ opensearch(Client *c, const Arg *a)
 	c->find_match_count = 0;
 	c->find_current_match = 0;
 
+	gtk_label_set_text(GTK_LABEL(c->barlabel), " [SEARCH] ");
+	gtk_widget_show(c->barlabel);
+
 	gtk_widget_set_can_focus(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
-	gtk_entry_set_text(GTK_ENTRY(c->statentry), " [SEARCH] ");
+	gtk_entry_set_text(GTK_ENTRY(c->statentry), "");
 	gtk_widget_grab_focus(c->statentry);
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
 	updatebar_style(c);
@@ -3230,7 +3246,7 @@ updatebar(Client *c)
 		modestr = "HINT";
 		break;
 	case ModeCommand:
-		modestr = "COMMAND";
+		modestr = "TAB";
 		break;
 	case ModeSearch:
 		modestr = "SEARCH";
@@ -3265,17 +3281,17 @@ openbar(Client *c, const Arg *a)
 
 	history_load();
 
+	gtk_label_set_text(GTK_LABEL(c->barlabel), " [TAB] ");
+	gtk_widget_show(c->barlabel);
+
 	gtk_widget_set_can_focus(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
 	if (a->i) {
-		gchar *tmp;
 		uri = geturi(c);
-		tmp = g_strdup_printf(" [COMMAND] %s", uri);
-		gtk_entry_set_text(GTK_ENTRY(c->statentry), tmp);
-		g_free(tmp);
+		gtk_entry_set_text(GTK_ENTRY(c->statentry), uri);
 	} else {
-		gtk_entry_set_text(GTK_ENTRY(c->statentry), " [COMMAND] ");
+		gtk_entry_set_text(GTK_ENTRY(c->statentry), "");
 	}
 
 	gtk_widget_grab_focus(c->statentry);
@@ -3294,6 +3310,9 @@ closebar(Client *c)
 
 	history_hide(c);
 
+	gtk_widget_hide(c->barlabel);
+	gtk_label_set_text(GTK_LABEL(c->barlabel), "");
+
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_set_can_focus(c->statentry, FALSE);
 
@@ -3310,10 +3329,13 @@ openbar_newtab(Client *c, const Arg *a)
 
 	history_load();
 
+	gtk_label_set_text(GTK_LABEL(c->barlabel), " [NEW TAB] ");
+	gtk_widget_show(c->barlabel);
+
 	gtk_widget_set_can_focus(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
-	gtk_entry_set_text(GTK_ENTRY(c->statentry), " [NEW TAB] ");
+	gtk_entry_set_text(GTK_ENTRY(c->statentry), "");
 
 	gtk_widget_grab_focus(c->statentry);
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
@@ -3459,14 +3481,7 @@ baractivate(GtkEntry *entry, Client *c)
 	text = gtk_entry_get_text(entry);
 
 	if (c->mode == ModeSearch) {
-		/* Extract search term */
 		input = text;
-		if (g_str_has_prefix(text, " [SEARCH] "))
-			input = text + 10;
-		else if (g_str_has_prefix(text, " [SEARCH ")) {
-			char *bracket = strchr(text + 9, ']');
-			input = bracket ? bracket + 2 : text;
-		}
 
 		if (input && *input) {
 			/* Start the search (highlights matches) */
@@ -3488,10 +3503,6 @@ baractivate(GtkEntry *entry, Client *c)
 
 	/* Command mode */
 	input = text;
-	if (g_str_has_prefix(text, " [COMMAND] "))
-		input = text + 11;
-	else if (g_str_has_prefix(text, " [NEW TAB] "))
-		input = text + 11;
 
 	history_hide(c);
 
@@ -4154,12 +4165,6 @@ bar_update_filter(gpointer data)
 		return FALSE;
 
 	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
-
-	if (g_str_has_prefix(text, " [COMMAND] "))
-		text = text + 11;
-	else if (g_str_has_prefix(text, " [NEW TAB] "))
-		text = text + 11;
-
 	history_filter(c, text);
 
 	return FALSE;
@@ -4176,9 +4181,6 @@ history_filter(Client *c, const char *text)
 
 	if (!history_entries || !text)
 		return;
-
-	if (g_str_has_prefix(text, " [COMMAND] "))
-		text = text + 11;
 
 	if (!history_scroll) {
 		history_scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -4412,10 +4414,8 @@ history_select(Client *c, int direction)
 		if (label) {
 			const char *uri = gtk_widget_get_name(label);
 			if (uri && *uri) {
-				gchar *entry_text = g_strdup_printf(" [COMMAND] %s", uri);
-				gtk_entry_set_text(GTK_ENTRY(c->statentry), entry_text);
+				gtk_entry_set_text(GTK_ENTRY(c->statentry), uri);
 				gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
-				g_free(entry_text);
 			}
 		}
 	}
@@ -4497,6 +4497,9 @@ updatebar_style(Client *c)
 			gtk_widget_get_style_context(c->statusbar),
 			GTK_STYLE_PROVIDER(old_css));
 		gtk_style_context_remove_provider(
+			gtk_widget_get_style_context(c->barlabel),
+			GTK_STYLE_PROVIDER(old_css));
+		gtk_style_context_remove_provider(
 			gtk_widget_get_style_context(c->statentry),
 			GTK_STYLE_PROVIDER(old_css));
 	}
@@ -4504,6 +4507,12 @@ updatebar_style(Client *c)
 	css = gtk_css_provider_new();
 	gchar *cssstr = g_strdup_printf(
 		"#surf-statusbar { background-color: %s; }"
+		"#surf-barlabel {"
+		"  background-color: %s;"
+		"  color: %s;"
+		"  font: %s;"
+		"  padding: 1px 0 1px 6px;"
+		"}"
 		"#surf-statentry {"
 		"  background-color: %s;"
 		"  color: %s;"
@@ -4511,12 +4520,16 @@ updatebar_style(Client *c)
 		"  border: none; border-radius: 0;"
 		"  padding: 1px 6px; min-height: 18px;"
 		"}",
-		bg, bg, fg, stat_font);
+		bg, bg, fg, stat_font, bg, fg, stat_font);
 	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
 	g_free(cssstr);
 
 	gtk_style_context_add_provider(
 		gtk_widget_get_style_context(c->statusbar),
+		GTK_STYLE_PROVIDER(css),
+		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+	gtk_style_context_add_provider(
+		gtk_widget_get_style_context(c->barlabel),
 		GTK_STYLE_PROVIDER(css),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
 	gtk_style_context_add_provider(

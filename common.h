@@ -38,6 +38,7 @@ typedef struct Client {
 	GtkWidget *vbox;
 	GtkWidget *tabbar;
 	GtkWidget *statusbar;
+	GtkWidget *barlabel;
 	GtkWidget *statentry;
 	char *title, *overtitle, *targeturi;
 	GtkWidget *dlbar;
