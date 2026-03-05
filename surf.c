@@ -2790,7 +2790,7 @@ webprocessterminated(WebKitWebView *v, WebKitWebProcessTerminationReason r,
 {
 	fprintf(stderr, "web process terminated: %s\n",
 			r == WEBKIT_WEB_PROCESS_CRASHED ? "crashed" : "no memory");
-	closeview(v, c);
+	webkit_web_view_reload(v);
 }
 
 typedef struct {
