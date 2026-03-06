@@ -9,12 +9,15 @@ This is a fork of the suckless surf browser that reimplements many qutebrowser f
 
 ## Features
 
-- **Modal Interface**: Vi-style Normal/Insert/Command/Search/Hint modes (qutebrowser-inspired)
-- **Built-in Tab Management**: Process-based tabs with visual tab bar
-- **Hint-based Navigation**: Keyboard-driven link following (no mouse required)
+- **Modal Interface**: Vi-style Normal/Insert/Command/Search/Hint/Select modes (qutebrowser-inspired)
+- **Built-in Tab Management**: Process-based tabs with visual tab bar, tab move/reorder, closed tab history
+- **Hint-based Navigation**: Keyboard-driven link following (viewport-only, no label exhaustion)
 - **History & Completion**: Smart URL completion with fuzzy matching
 - **Userscript Support**: Compatible with Greasemonkey/Tampermonkey scripts
 - **Password Integration**: Built-in pass(1) integration for form filling
+- **Downloads**: Integrated download bar with nnn file picker for choosing destination
+- **Screenshots**: Full-page screenshots via `Ctrl+p`
+- **Highlighted Search**: CSS Highlight API shows all matches as you type
 - **Wayland Native**: Pure Wayland implementation (no X11 dependencies)
 
 ## Differences from Upstream surf
@@ -70,28 +73,32 @@ surf [URI]
 | Key | Action |
 |-----|--------|
 | `o` | Open URL prompt |
-| `O` | Open URL prompt (edit current) |
+| `e` | Edit current URL in prompt |
 | `t` | New tab |
 | `Shift+O` | New tab with URL prompt |
 | `d` | Close current tab |
+| `u` | Reopen last closed tab |
 | `Shift+J` | Next tab |
 | `Shift+K` | Previous tab |
 | `Shift+P` | Pin/unpin current tab |
+| `Ctrl+j` | Move tab right |
+| `Ctrl+k` | Move tab left |
 
 **Link Following:**
 | Key | Action |
 |-----|--------|
-| `f` | Follow link (hint mode) |
-| `Shift+F` | Follow link in new tab |
+| `f` | Follow link in current tab (hint mode) |
+| `Shift+F` | Follow link in new tab (hint mode) |
 | `y` | Yank link URL (hint mode) |
+| `Shift+Y` | Yank current page URL to clipboard |
 
 **Scrolling:**
 | Key | Action |
 |-----|--------|
 | `j` / `k` | Scroll down/up |
-| `u` | Half page up |
-| `Ctrl+d` | Half page down |
-| `gg` | Scroll to top |
+| `Space` | Page down |
+| `b` | Page up |
+| `g` | Scroll to top |
 | `Shift+G` | Scroll to bottom |
 
 **Page Control:**
@@ -100,21 +107,31 @@ surf [URI]
 | `h` | Back in history |
 | `l` | Forward in history |
 | `r` | Reload page |
-| `Shift+R` | Reload (bypass cache) |
+| `Ctrl+Shift+r` | Reload (bypass cache) |
 | `/` | Search in page |
 | `Esc` | Cancel/stop loading |
+
+**Zoom:**
+| Key | Action |
+|-----|--------|
+| `-` | Zoom out |
+| `+` | Zoom in |
+| `=` | Reset zoom |
 
 **Mode Switching:**
 | Key | Action |
 |-----|--------|
 | `i` | Enter insert mode |
+| `v` | Enter select mode (word at search match) |
+| `Shift+V` | Enter select mode (line at search match) |
 
 **Other:**
 | Key | Action |
 |-----|--------|
 | `p` | Password manager (pass) |
 | `Ctrl+o` | Toggle web inspector |
-| `Ctrl+Shift+J/K` | Zoom in/out |
+| `Ctrl+p` | Take full-page screenshot |
+| `Ctrl+s` | Clear download bar |
 
 #### Insert Mode
 
@@ -124,7 +141,7 @@ All keypresses go to web content (for typing in forms, etc.).
 
 Insert mode is automatically activated when clicking on text inputs.
 
-#### Command Mode (`o` / `O` / `Shift+O`)
+#### Command Mode (`o` / `e` / `Shift+O`)
 
 Type URL or search term in the command bar:
 - Press `Enter` to navigate
@@ -145,11 +162,23 @@ rust error handling  → https://duckduckgo.com/?q=rust+error+handling
 
 #### Search Mode (`/`)
 
-Type search term and results highlight as you type:
+Type search term and all matches highlight as you type (via CSS Highlight API):
 - `Ctrl+n` or bare `n` - Next match
 - `Ctrl+p` or `Shift+N` - Previous match
+- `v` - Enter Select mode at current match (word)
+- `Shift+V` - Enter Select mode at current match (line)
 - `Enter` - Accept and exit search
 - `Esc` - Cancel search
+
+#### Select Mode (`v` / `Shift+V` from Search)
+
+Text selection anchored at the current search match position:
+- `w` - Extend selection forward by word
+- `b` - Extend selection backward by word
+- `Shift+V` - Expand selection to full line
+- `e` - Jump to next search match
+- `y` - Yank (copy) selection to clipboard
+- `Esc` - Exit select mode
 
 #### Hint Mode (`f` / `Shift+F` / `y`)
 
@@ -167,6 +196,7 @@ Links, buttons, and form elements are labeled with keyboard hints (home row keys
 
 **Features:**
 - Works on links, buttons, inputs, and clickable elements
+- Only labels elements currently visible in the viewport (prevents label exhaustion on long pages)
 - Autocompletes as you type
 - Press `Esc` to cancel
 
@@ -260,6 +290,22 @@ user: <username>
 
 The script matches based on domain and supports multiple accounts per site.
 
+### Downloads
+
+When a download is triggered, surf opens a `foot` terminal running `nnn` to let you pick a destination directory. Navigate to the target directory in nnn and quit (`q`) — the download then proceeds there.
+
+A download bar appears below the tab bar showing filename, progress percentage, speed, and elapsed time. Press `Ctrl+s` to clear it after downloads complete.
+
+Configure the picker command in `config.h`:
+```c
+static const char *downloadpicker_cmd = "NNN_TMPFILE='{}' nnn -a";
+```
+Set to `""` to skip the picker and download to the default directory directly.
+
+### Screenshots
+
+Press `Ctrl+p` to capture a full-page screenshot. The file is saved to `/tmp/surf-screenshot-<timestamp>.png` and a desktop notification is shown with the path.
+
 ### Tab Management
 
 Tabs are displayed in a tab bar at the top of the window.
@@ -273,6 +319,10 @@ Tabs are displayed in a tab bar at the top of the window.
 - Left-click tab to switch
 - Middle-click to close tab
 - Keyboard: `Shift+J` / `Shift+K` to cycle
+- `Ctrl+j` / `Ctrl+k` to move (reorder) tabs
+
+**Closed Tab History:**
+- Press `u` to reopen the last closed tab (up to 10 tabs tracked)
 
 **Pinned Tabs:**
 - Press `Shift+P` to pin/unpin current tab
@@ -297,7 +347,7 @@ When in Command mode (`o`), start typing to filter history:
 - Matches against both URL and title
 - Supports multiple space-separated search terms (AND logic)
 - Shows up to 15 most recent matches
-- Navigate with `Tab` / `Shift+Tab` or `Ctrl+n` / `Ctrl+p`
+- Navigate with `Tab` / `Shift+Tab`, `Ctrl+n` / `Ctrl+p`, or arrow keys
 
 ### Configuration
 
@@ -376,5 +426,4 @@ MIT/X Consortium License (same as upstream surf). See LICENSE file.
 - Forked surf: https://github.com/DGC75/surf-wayland
 - Upstream surf: https://surf.suckless.org
 - qutebrowser: https://qutebrowser.org
-- suckless: https://suckless.org
 - suckless: https://suckless.org
