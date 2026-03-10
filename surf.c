@@ -2,6 +2,7 @@
  *
  * To understand surf, start reading main().
  */
+#include <errno.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <glib.h>
@@ -185,6 +186,7 @@ static gboolean decidedestination(WebKitDownload *d,
 								  gchar *suggested_filename, Client *c);
 static void dlprogress(WebKitDownload *d, GParamSpec *ps, gpointer unused);
 static void dlfinished(WebKitDownload *d, gpointer unused);
+static void dlfailed(WebKitDownload *d, GError *err, gpointer unused);
 static void dl_clear(Client *c, const Arg *a);
 
 typedef struct {
@@ -1127,6 +1129,9 @@ filter_hints(Client *c)
 {
 	GVariantBuilder builder;
 
+	if (!hintstate.hints)
+		return;
+
 	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(ssii)"));
 
 	for (guint i = 0; i < hintstate.hints->len; i++) {
@@ -1290,6 +1295,9 @@ hints_receive_data(Client *c, GVariant *data)
 	gint x, y, width, height;
 	int index = 0;
 	int total;
+
+	if (!hintstate.active)
+		return;
 
 	total = g_variant_n_children(data);
 
@@ -2674,100 +2682,61 @@ dl_data_free(DlData *dd)
 static gboolean
 decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 {
-	const char *dldir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
-	if (!dldir)
-		dldir = g_get_home_dir();
+	/* If user already confirmed a path, use it directly for this restarted download */
+	if (c->dl_pending_path) {
+		gchar *uri = g_filename_to_uri(c->dl_pending_path, NULL, NULL);
+		if (uri) { webkit_download_set_destination(d, uri); g_free(uri); }
 
-	gchar *dest = NULL;
+		static guint dl_counter = 0;
+		WebKitURIResponse *resp = webkit_download_get_response(d);
+		gint64 clen = resp ? webkit_uri_response_get_content_length(resp) : -1;
 
-	if (!downloadpicker_cmd || !*downloadpicker_cmd) {
-		gchar *path = g_build_filename(dldir, suggested_filename, NULL);
-		dest = g_filename_to_uri(path, NULL, NULL);
-		g_free(path);
-	} else {
-		/* Create NNN_TMPFILE and substitute {} in picker command */
-		gchar *nnn_tmp = g_strdup("/tmp/surf-dldir-XXXXXX");
-		int fd = mkstemp(nnn_tmp);
-		if (fd >= 0)
-			close(fd);
+		DlData *dd = g_new0(DlData, 1);
+		dd->index = ++dl_counter;
+		dd->name = g_path_get_basename(c->dl_pending_path);
+		dd->total = clen;
+		dd->done = FALSE;
 
-		gchar **parts = g_strsplit(downloadpicker_cmd, "{}", -1);
-		gchar *nnn_cmd = g_strjoinv(nnn_tmp, parts);
-		g_strfreev(parts);
+		GtkWidget *lbl = gtk_label_new(NULL);
+		gtk_widget_set_name(lbl, "surf-dllabel");
+		dd->label = lbl;
+		g_object_set_data_full(G_OBJECT(d), "dl-data", dd,
+							   (GDestroyNotify)dl_data_free);
+		gtk_box_pack_start(GTK_BOX(c->dlbar), lbl, FALSE, FALSE, 0);
+		dl_update_label(d);
+		gtk_widget_show_all(c->dlbar);
 
-		/* Run foot+nnn, blocking until the user quits */
-		pid_t pid = fork();
-		if (pid == 0) {
-			chdir(dldir);
-			execlp("foot", "foot", "sh", "-c", nnn_cmd, NULL);
-			exit(1);
-		}
-		g_free(nnn_cmd);
-		if (pid > 0)
-			waitpid(pid, NULL, 0); /* brief UI freeze while user picks dir */
+		g_signal_connect(d, "notify::estimated-progress",
+					 G_CALLBACK(dlprogress), NULL);
+		g_signal_connect(d, "finished", G_CALLBACK(dlfinished), NULL);
+		g_signal_connect(d, "failed", G_CALLBACK(dlfailed), NULL);
 
-		/* nnn writes "cd '/chosen/dir'" to NNN_TMPFILE on quit */
-		gchar *chosen_dir = NULL;
-		gchar *contents = NULL;
-		if (g_file_get_contents(nnn_tmp, &contents, NULL, NULL) && contents) {
-			g_strchomp(contents);
-			if (g_str_has_prefix(contents, "cd '") && strlen(contents) > 5) {
-				gchar *p = contents + 4;
-				gchar *q = strrchr(p, '\'');
-				if (q) {
-					*q = '\0';
-					chosen_dir = g_strdup(p);
-				}
-			}
-			g_free(contents);
-		}
-		g_unlink(nnn_tmp);
-		g_free(nnn_tmp);
-
-		if (!chosen_dir) {
-			webkit_download_cancel(d);
-			return TRUE;
-		}
-
-		gchar *path = g_build_filename(chosen_dir, suggested_filename, NULL);
-		dest = g_filename_to_uri(path, NULL, NULL);
-		g_free(chosen_dir);
-		g_free(path);
+		g_free(c->dl_pending_path);
+		c->dl_pending_path = NULL;
+		return TRUE;
 	}
 
-	webkit_download_set_destination(d, dest);
-	g_free(dest);
+	/* First time: cancel, prompt for path, restart after confirm */
+	WebKitURIRequest *req = webkit_download_get_request(d);
+	g_free(c->dl_pending_uri);
+	c->dl_pending_uri = g_strdup(webkit_uri_request_get_uri(req));
 
-	/* Build per-download tracking struct */
-	static guint dl_counter = 0;
-	WebKitURIResponse *resp = webkit_download_get_response(d);
-	gint64 clen = resp ? webkit_uri_response_get_content_length(resp) : -1;
+	const char *dldir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+	if (!dldir) dldir = g_get_home_dir();
+	gchar *default_dest = g_build_filename(dldir, suggested_filename, NULL);
 
-	DlData *dd = g_new0(DlData, 1);
-	dd->index = ++dl_counter;
-	dd->name = g_strdup(suggested_filename);
-	dd->total = clen;
-	dd->prev_time = 0.0;
-	dd->prev_recv = 0;
-	dd->speed = 0.0;
-	dd->done = FALSE;
+	c->mode = ModeCommand;
+	gtk_label_set_text(GTK_LABEL(c->barlabel), " [DOWNLOAD] ");
+	gtk_widget_show(c->barlabel);
+	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
+	gtk_entry_set_text(GTK_ENTRY(c->statentry), default_dest);
+	gtk_widget_grab_focus(c->statentry);
+	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+	updatebar_style(c);
+	g_free(default_dest);
 
-	/* Single label in the horizontal dlbar */
-	GtkWidget *lbl = gtk_label_new(NULL);
-	gtk_widget_set_name(lbl, "surf-dllabel");
-	dd->label = lbl;
-
-	g_object_set_data_full(G_OBJECT(d), "dl-data", dd,
-						   (GDestroyNotify)dl_data_free);
-
-	gtk_box_pack_start(GTK_BOX(c->dlbar), lbl, FALSE, FALSE, 0);
-	dl_update_label(d); /* set initial text before showing */
-	gtk_widget_show_all(c->dlbar);
-
-	g_signal_connect(d, "notify::estimated-progress",
-					 G_CALLBACK(dlprogress), NULL);
-	g_signal_connect(d, "finished", G_CALLBACK(dlfinished), NULL);
-	g_signal_connect(d, "failed", G_CALLBACK(dlfinished), NULL);
+	webkit_download_cancel(d);
 	return TRUE;
 }
 
@@ -2780,6 +2749,17 @@ dlprogress(WebKitDownload *d, GParamSpec *ps, gpointer unused)
 static void
 dlfinished(WebKitDownload *d, gpointer unused)
 {
+	DlData *dd = g_object_get_data(G_OBJECT(d), "dl-data");
+	if (!dd)
+		return;
+	dd->done = TRUE;
+	dl_update_label(d);
+}
+
+static void
+dlfailed(WebKitDownload *d, GError *err, gpointer unused)
+{
+	(void)err;
 	DlData *dd = g_object_get_data(G_OBJECT(d), "dl-data");
 	if (!dd)
 		return;
@@ -3501,6 +3481,23 @@ baractivate(GtkEntry *entry, Client *c)
 		return;
 	}
 
+	/* Download path confirmation */
+	if (c->dl_pending_uri) {
+		const char *path = gtk_entry_get_text(entry);
+		if (path && *path) {
+			gchar *dir = g_path_get_dirname(path);
+			g_mkdir_with_parents(dir, 0755);
+			g_free(dir);
+			c->dl_pending_path = g_strdup(path);
+			webkit_web_context_download_uri(c->context, c->dl_pending_uri);
+		}
+		g_free(c->dl_pending_uri);
+		c->dl_pending_uri = NULL;
+		closebar(c);
+		return;
+	}
+
+
 	/* Command mode */
 	input = text;
 
@@ -3538,6 +3535,10 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 			webkit_find_controller_search_finish(c->finder);
 			find_highlight_update(c, NULL);
 		}
+		if (c->dl_pending_uri) {
+			g_free(c->dl_pending_uri);
+			c->dl_pending_uri = NULL;
+		}
 		closebar(c);
 		return TRUE;
 	}
@@ -3546,6 +3547,10 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 		g_idle_add((GSourceFunc)bar_update_search, c);
 		return FALSE;
 	}
+
+	/* No history navigation in download path prompt */
+	if (c->dl_pending_uri)
+		return FALSE;
 
 	/* Arrow keys / Tab / Ctrl+n/p for history navigation.
 	 * Must return TRUE to consume Up/Down — otherwise GTK moves focus

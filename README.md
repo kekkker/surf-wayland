@@ -15,7 +15,7 @@ This is a fork of the suckless surf browser that reimplements many qutebrowser f
 - **History & Completion**: Smart URL completion with fuzzy matching
 - **Userscript Support**: Compatible with Greasemonkey/Tampermonkey scripts
 - **Password Integration**: Built-in pass(1) integration for form filling
-- **Downloads**: Integrated download bar with nnn file picker for choosing destination
+- **Downloads**: Integrated download bar with GTK save dialog for choosing destination
 - **Screenshots**: Full-page screenshots via `Ctrl+p`
 - **Highlighted Search**: CSS Highlight API shows all matches as you type
 - **Wayland Native**: Pure Wayland implementation (no X11 dependencies)
@@ -292,15 +292,9 @@ The script matches based on domain and supports multiple accounts per site.
 
 ### Downloads
 
-When a download is triggered, surf opens a `foot` terminal running `nnn` to let you pick a destination directory. Navigate to the target directory in nnn and quit (`q`) — the download then proceeds there.
+When a download is triggered, a GTK save dialog opens so you can choose the destination file and rename it if needed. The dialog starts in your Downloads directory with the suggested filename pre-filled.
 
 A download bar appears below the tab bar showing filename, progress percentage, speed, and elapsed time. Press `Ctrl+s` to clear it after downloads complete.
-
-Configure the picker command in `config.h`:
-```c
-static const char *downloadpicker_cmd = "NNN_TMPFILE='{}' nnn -a";
-```
-Set to `""` to skip the picker and download to the default directory directly.
 
 ### Screenshots
 

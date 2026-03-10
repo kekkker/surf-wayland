@@ -13,14 +13,6 @@ static const char *filepicker_cmd[] = {
 	"NNN_PLUG='p:preview-tui' NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' nnn -a -p '{}'",
 	NULL};
 
-/* Shell command run inside foot for download directory picking.
- * {} is replaced with the NNN_TMPFILE path.
- * Navigate to dest dir in nnn, press q — curl then runs in the same terminal.
- * Set to "" to skip the picker and download directly. */
-static const char *downloadpicker_cmd =
-	"NNN_PLUG='p:preview-tui' "
-	"NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' "
-	"NNN_TMPFILE='{}' nnn -a";
 
 static Parameter defconfig[ParameterLast] = {
 	[AccessMicrophone] = {

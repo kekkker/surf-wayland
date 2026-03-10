@@ -42,6 +42,8 @@ typedef struct Client {
 	GtkWidget *statentry;
 	char *title, *overtitle, *targeturi;
 	GtkWidget *dlbar;
+	gchar *dl_pending_uri;  /* download URI saved while prompting for save path */
+	gchar *dl_pending_path; /* confirmed save path, consumed by next decidedestination */
 	const char *needle;
 	int newtab_pending;
 	int find_match_count;

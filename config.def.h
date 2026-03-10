@@ -15,10 +15,6 @@ static const char *filepicker_cmd[] = {
 	"nnn -p '{}'",
 	NULL};
 
-/* Shell command run inside foot for download directory picking.
- * {} is replaced with the NNN_TMPFILE path. Press ^G in nnn to confirm dir.
- * NULL or "" = skip picker, download directly. */
-static const char *downloadpicker_cmd = "NNN_TMPFILE='{}' nnn";
 
 /* Display backend configuration */
 static int display_backend = 0; /* 0=auto, 1=X11, 2=Wayland */
