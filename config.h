@@ -202,7 +202,7 @@ static Key keys[] = {
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_t, toggle, {.i = StrictTLS}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_m, toggle, {.i = Style}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_d, toggle, {.i = DarkMode}},
-	{MODKEY, GDK_KEY_F1, showxid, {0}},
+	{MODKEY, GDK_KEY_F1, showinstanceid, {0}},
 
 	/* --- Normal-mode bare keys --- */
 	{0, GDK_KEY_Escape, stop, {0}},

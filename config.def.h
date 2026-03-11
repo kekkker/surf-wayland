@@ -15,10 +15,6 @@ static const char *filepicker_cmd[] = {
 	"nnn -p '{}'",
 	NULL};
 
-
-/* Display backend configuration */
-static int display_backend = 0; /* 0=auto, 1=X11, 2=Wayland */
-
 /* Webkit default features */
 /* Highest priority value will be used.
  * Default parameters are priority 0
@@ -156,7 +152,7 @@ static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
 				"&& xprop -id $1 -f "s                                  \
 				" 8u -set "s                                            \
 				" \"$prop\"",                                           \
-				"surf-setprop", winid, NULL                             \
+				"surf-setprop", instanceidbuf, NULL                     \
 		}                                                               \
 	}
 
@@ -271,7 +267,7 @@ static Key keys[] = {
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_t, toggle, {.i = StrictTLS}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_m, toggle, {.i = Style}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_d, toggle, {.i = DarkMode}},
-	{MODKEY, GDK_KEY_F1, showxid, {0}},
+	{MODKEY, GDK_KEY_F1, showinstanceid, {0}},
 };
 
 /* button definitions */

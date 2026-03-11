@@ -144,7 +144,7 @@ static const char *getstyle(const char *uri);
 static void setstyle(Client *c, const char *file);
 static void runscript(Client *c);
 static void evalscript(Client *c, const char *jsstr, ...);
-static void updatewinid(Client *c);
+static void updateinstanceid(Client *c);
 static void handleplumb(Client *c, const char *uri);
 static void newwindow(Client *c, const Arg *a, int noembed);
 static void spawn(Client *c, const Arg *a);
@@ -227,7 +227,7 @@ static void togglecookiepolicy(Client *c, const Arg *a);
 static void toggleinspector(Client *c, const Arg *a);
 static void find(Client *c, const Arg *a);
 static void opensearch(Client *c, const Arg *a);
-static void showxid(Client *c, const Arg *a);
+static void showinstanceid(Client *c, const Arg *a);
 static void toggleinsert(Client *c, const Arg *a);
 static void openbar(Client *c, const Arg *a);
 static void closebar(Client *c);
@@ -264,11 +264,11 @@ static void clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h);
 static void clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h);
 static void clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h);
 
-static char winid[64];
+static char instanceidbuf[64];
 static char togglestats[11];
 static char pagestats[2];
 static display_context_t display_ctx;
-static int showxidflag = 0;
+static int showinstanceidflag = 0;
 static int cookiepolicy;
 Client *clients;
 
@@ -1628,9 +1628,9 @@ evalscript(Client *c, const char *jsstr, ...)
 }
 
 static void
-updatewinid(Client *c)
+updateinstanceid(Client *c)
 {
-	snprintf(winid, LENGTH(winid), "%s", c->instance_id);
+	snprintf(instanceidbuf, LENGTH(instanceidbuf), "%s", c->instance_id);
 }
 
 static void
@@ -1677,7 +1677,7 @@ newwindow(Client *c, const Arg *a, int noembed)
 		cmd[i++] = "-u";
 		cmd[i++] = fulluseragent;
 	}
-	if (showxidflag)
+	if (showinstanceidflag)
 		cmd[i++] = "-w";
 	cmd[i++] = curconfig[Certificate].val.i ? "-X" : "-x";
 	cmd[i++] = "--";
@@ -1748,7 +1748,7 @@ cleanup(void)
 }
 
 static void
-showxid(Client *c, const Arg *arg)
+showinstanceid(Client *c, const Arg *arg)
 {
 	puts(c->instance_id);
 }
@@ -2017,7 +2017,7 @@ winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 		if (gdk_keyval_to_lower(keyval) == keys[i].keyval &&
 			CLEANMASK(state) == keys[i].mod &&
 			keys[i].func) {
-			updatewinid(c);
+			updateinstanceid(c);
 			keys[i].func(c, &(keys[i].arg));
 			return TRUE;
 		}
@@ -2203,10 +2203,10 @@ showview(WebKitWebView *v, Client *c)
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
 	generate_instance_id(c);
-	updatewinid(c);
-	if (showxidflag) {
+	updateinstanceid(c);
+	if (showinstanceidflag) {
 		gdk_display_sync(gtk_widget_get_display(c->win));
-		puts(winid);
+		puts(instanceidbuf);
 		fflush(stdout);
 	}
 
@@ -4665,7 +4665,7 @@ main(int argc, char *argv[])
 	case 'v':
 		die("surf-" VERSION ", see LICENSE for © details\n");
 	case 'w':
-		showxidflag = 1;
+			showinstanceidflag = 1;
 		break;
 	case 'x':
 		defconfig[Certificate].val.i = 0;
