@@ -135,7 +135,7 @@ static void loaduri(Client *c, const Arg *a);
 static const char *geturi(Client *c);
 static void updatetitle(Client *c);
 static WebKitCookieAcceptPolicy cookiepolicy_get(void);
-static char cookiepolicy_set(const WebKitCookieAcceptPolicy p);
+static char cookiepolicy_set(const WebKitCookieAcceptPolicy p) __attribute__((unused));
 static void seturiparameters(Client *c, const char *uri, ParamName *params);
 static void setparameter(Client *c, int refresh, ParamName p, const Arg *a);
 static const char *getcert(const char *uri);
@@ -218,7 +218,7 @@ static void showcert(Client *c, const Arg *a);
 static void clipboard(Client *c, const Arg *a);
 static void zoom(Client *c, const Arg *a);
 static void scrollv(Client *c, const Arg *a);
-static void scrollh(Client *c, const Arg *a);
+static void scrollh(Client *c, const Arg *a) __attribute__((unused));
 static void navigate(Client *c, const Arg *a);
 static void stop(Client *c, const Arg *a);
 static void toggle(Client *c, const Arg *a);
@@ -260,13 +260,13 @@ static void hints_receive_data(Client *c, GVariant *data);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
-static void clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h);
+static void clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h) __attribute__((unused));
 static void clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h);
 static void clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h);
 
 static char instanceidbuf[64];
-static char togglestats[11];
-static char pagestats[2];
+static char togglestats[11] __attribute__((unused));
+static char pagestats[2] __attribute__((unused));
 static display_context_t display_ctx;
 static int showinstanceidflag = 0;
 static int cookiepolicy;
@@ -293,7 +293,7 @@ static void history_filter(Client *c, const char *text);
 static void history_select(Client *c, int direction);
 static void history_hide(Client *c);
 static void history_attach(Client *c);
-static gboolean bar_update_filter(gpointer data);
+static gboolean bar_update_filter(gpointer data) __attribute__((unused));
 static GtkWidget *history_list = NULL;
 static GtkWidget *history_scroll = NULL;
 static int history_selected = -1;
@@ -1390,14 +1390,16 @@ seturiparameters(Client *c, const char *uri, ParamName *params)
 	curconfig = uriconfig ? uriconfig : defconfig;
 
 	for (i = 0; (p = params[i]) != ParameterLast; ++i) {
+		if (p != Certificate && p != CookiePolicies && p != Style &&
+		    !(defconfig[p].prio < curconfig[p].prio ||
+		      defconfig[p].prio < modparams[p]))
+			continue;
+
 		switch (p) {
-		default:
-			if (!(defconfig[p].prio < curconfig[p].prio ||
-				  defconfig[p].prio < modparams[p]))
-				continue;
 		case Certificate:
 		case CookiePolicies:
 		case Style:
+		default:
 			setparameter(c, 0, p, &curconfig[p].val);
 		}
 	}
@@ -1909,6 +1911,8 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_OTHER:
 		if (webkit_navigation_action_is_user_gesture(a))
 			return NULL;
+		n = newclient(c);
+		break;
 	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED:
 	case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED:
 	case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD:
@@ -4640,14 +4644,15 @@ main(int argc, char *argv[])
 		defconfig[StrictTLS].val.i = 1;
 		defconfig[StrictTLS].prio = 2;
 		break;
-	case 'u':
-		fulluseragent = EARGF(usage());
-		break;
-	case 'v':
-		die("surf-" VERSION ", see LICENSE for © details\n");
-	case 'w':
-		showinstanceidflag = 1;
-		break;
+		case 'u':
+			fulluseragent = EARGF(usage());
+			break;
+		case 'v':
+			die("surf-" VERSION ", see LICENSE for © details\n");
+			return 0;
+		case 'w':
+			showinstanceidflag = 1;
+			break;
 	case 'x':
 		defconfig[Certificate].val.i = 0;
 		defconfig[Certificate].prio = 2;
