@@ -79,13 +79,26 @@ static const char clear_hints_js[] =
 "  if (c) c.parentNode.removeChild(c);"
 "})()";
 
+static JSCContext *
+web_page_get_main_js_context(WebKitWebPage *page)
+{
+	WebKitFrame *frame;
+
+	/* WebKitGTK 6 still routes extension-side JS execution through WebKitFrame. */
+	G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+	frame = webkit_web_page_get_main_frame(page);
+	G_GNUC_END_IGNORE_DEPRECATIONS
+
+	if (!frame)
+		return NULL;
+
+	return webkit_frame_get_js_context(frame);
+}
+
 static void
 jsc_eval(WebKitWebPage *page, const char *js)
 {
-	WebKitFrame *frame = webkit_web_page_get_main_frame(page);
-	if (!frame)
-		return;
-	JSCContext *jsc = webkit_frame_get_js_context(frame);
+	JSCContext *jsc = web_page_get_main_js_context(page);
 	if (!jsc)
 		return;
 	JSCValue *val = jsc_context_evaluate(jsc, js, -1);
@@ -97,16 +110,12 @@ jsc_eval(WebKitWebPage *page, const char *js)
 static void
 find_hints(WebKitWebPage *page)
 {
-	WebKitFrame *frame;
 	JSCContext *jsc;
 	JSCValue *result, *len_val, *item, *url_v, *x_v, *y_v, *w_v, *h_v;
 	GVariantBuilder builder;
 	gint32 len, i;
 
-	frame = webkit_web_page_get_main_frame(page);
-	if (!frame)
-		return;
-	jsc = webkit_frame_get_js_context(frame);
+	jsc = web_page_get_main_js_context(page);
 	if (!jsc)
 		return;
 

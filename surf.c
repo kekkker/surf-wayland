@@ -292,6 +292,7 @@ static void history_load(void);
 static void history_filter(Client *c, const char *text);
 static void history_select(Client *c, int direction);
 static void history_hide(Client *c);
+static void history_attach(Client *c);
 static gboolean bar_update_filter(gpointer data);
 static GtkWidget *history_list = NULL;
 static GtkWidget *history_scroll = NULL;
@@ -823,7 +824,7 @@ tab_switch_to(Client *c, int index)
 	/* Hide current */
 	if (tabs.active >= 0 && tabs.active < tabs.count &&
 		tabs.views[tabs.active] != NULL) {
-		gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
+		gtk_widget_set_visible(GTK_WIDGET(tabs.views[tabs.active]), FALSE);
 	}
 
 	/* Show new */
@@ -835,7 +836,7 @@ tab_switch_to(Client *c, int index)
 	c->settings = webkit_web_view_get_settings(c->view);
 	c->context = webkit_web_view_get_context(c->view);
 
-	gtk_widget_show(GTK_WIDGET(c->view));
+	gtk_widget_set_visible(GTK_WIDGET(c->view), TRUE);
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
 	c->mode = ModeNormal;
@@ -863,9 +864,9 @@ tab_new(Client *c, const Arg *a)
 	gtk_widget_set_vexpand(GTK_WIDGET(v), TRUE);
 	gtk_widget_set_hexpand(GTK_WIDGET(v), TRUE);
 	gtk_box_insert_child_after(GTK_BOX(c->vbox), GTK_WIDGET(v),
-	                           gtk_widget_get_prev_sibling(c->statusbar));
+							   gtk_widget_get_prev_sibling(c->statusbar));
 
-	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
+	gtk_widget_set_visible(GTK_WIDGET(tabs.views[tabs.active]), FALSE);
 
 	int insert_at = tabs.active + 1;
 	tabs.count++;
@@ -895,7 +896,7 @@ tab_new(Client *c, const Arg *a)
 	c->progress = 100;
 	c->mode = ModeNormal;
 
-	gtk_widget_show(GTK_WIDGET(v));
+	gtk_widget_set_visible(GTK_WIDGET(v), TRUE);
 
 	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
@@ -923,7 +924,7 @@ tab_close(Client *c, const Arg *a)
 	WebKitWebView *dead = tabs.views[idx];
 
 	webkit_web_view_stop_loading(dead);
-	gtk_widget_hide(GTK_WIDGET(dead));
+	gtk_widget_set_visible(GTK_WIDGET(dead), FALSE);
 
 	for (int i = idx; i < tabs.count - 1; i++) {
 		tabs.views[i] = tabs.views[i + 1];
@@ -1439,7 +1440,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		webkit_settings_set_default_charset(c->settings, a->v);
 		return;
 	case DNSPrefetch:
-		webkit_settings_set_enable_dns_prefetching(c->settings, a->i);
+		g_object_set(c->settings, "enable-dns-prefetching", (gboolean)a->i, NULL);
 		return;
 	case FileURLsCrossAccess:
 		webkit_settings_set_allow_file_access_from_file_urls(
@@ -1587,6 +1588,8 @@ setstyle(Client *c, const char *file)
 	gchar *style;
 
 	if (!g_file_get_contents(file, &style, NULL, NULL)) {
+		if (!g_file_test(file, G_FILE_TEST_EXISTS))
+			return;
 		fprintf(stderr, "Could not read style file: %s\n", file);
 		return;
 	}
@@ -1644,7 +1647,6 @@ static void
 newwindow(Client *c, const Arg *a, int noembed)
 {
 	int i = 0;
-	char tmp[64];
 	const char *cmd[29], *uri;
 	const Arg arg = {.v = cmd};
 
@@ -1770,9 +1772,9 @@ newview(Client *c, WebKitWebView *rv)
 
 	if (rv) {
 		v = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
-		                                 "related-view", rv,
-		                                 "user-content-manager", shared_content_manager,
-		                                 NULL));
+										 "related-view", rv,
+										 "user-content-manager", shared_content_manager,
+										 NULL));
 		context = webkit_web_view_get_context(v);
 		settings = webkit_web_view_get_settings(v);
 	} else {
@@ -1804,16 +1806,16 @@ newview(Client *c, WebKitWebView *rv)
 
 		context = webkit_web_context_new();
 		g_signal_connect(G_OBJECT(context), "initialize-web-process-extensions",
-		                 G_CALLBACK(initwebextensions), c);
+						 G_CALLBACK(initwebextensions), c);
 		webkit_web_context_set_spell_checking_languages(context,
-		                                                curconfig[SpellLanguages].val.v);
+														curconfig[SpellLanguages].val.v);
 		webkit_web_context_set_spell_checking_enabled(context,
-		                                              curconfig[SpellChecking].val.i);
+													  curconfig[SpellChecking].val.i);
 		webkit_web_context_set_preferred_languages(context,
-		                                           curconfig[PreferredLanguages].val.v);
+												   curconfig[PreferredLanguages].val.v);
 		webkit_web_context_set_cache_model(context,
-		    curconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER
-		                               : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
+										   curconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER
+																	  : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
 
 		if (curconfig[Ephemeral].val.i) {
 			netsession = webkit_network_session_new_ephemeral();
@@ -1822,62 +1824,62 @@ newview(Client *c, WebKitWebView *rv)
 		}
 
 		webkit_network_session_set_tls_errors_policy(netsession,
-		    curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL
-		                               : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
+													 curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL
+																				: WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 
 		cookiemanager = webkit_network_session_get_cookie_manager(netsession);
 		if (!curconfig[Ephemeral].val.i)
 			webkit_cookie_manager_set_persistent_storage(cookiemanager,
-			    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+														 cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
 		webkit_cookie_manager_set_accept_policy(cookiemanager, cookiepolicy_get());
 
 		g_signal_connect(G_OBJECT(netsession), "download-started",
-		                 G_CALLBACK(downloadstarted), c);
+						 G_CALLBACK(downloadstarted), c);
 
 		v = g_object_new(WEBKIT_TYPE_WEB_VIEW,
-		                 "settings", settings,
-		                 "user-content-manager", shared_content_manager,
-		                 "web-context", context,
-		                 "network-session", netsession,
-		                 NULL);
+						 "settings", settings,
+						 "user-content-manager", shared_content_manager,
+						 "web-context", context,
+						 "network-session", netsession,
+						 NULL);
 		g_object_unref(netsession);
 		g_object_unref(context);
 	}
 
 	g_signal_connect(G_OBJECT(v), "notify::estimated-load-progress",
-	                 G_CALLBACK(progresschanged), c);
+					 G_CALLBACK(progresschanged), c);
 	g_signal_connect(G_OBJECT(v), "notify::title",
-	                 G_CALLBACK(titlechanged), c);
+					 G_CALLBACK(titlechanged), c);
 	g_signal_connect(G_OBJECT(v), "close",
-	                 G_CALLBACK(closeview), c);
+					 G_CALLBACK(closeview), c);
 	g_signal_connect(G_OBJECT(v), "create",
-	                 G_CALLBACK(createview), c);
+					 G_CALLBACK(createview), c);
 	g_signal_connect(G_OBJECT(v), "decide-policy",
-	                 G_CALLBACK(decidepolicy), c);
+					 G_CALLBACK(decidepolicy), c);
 	g_signal_connect(G_OBJECT(v), "insecure-content-detected",
-	                 G_CALLBACK(insecurecontent), c);
+					 G_CALLBACK(insecurecontent), c);
 	g_signal_connect(G_OBJECT(v), "load-failed-with-tls-errors",
-	                 G_CALLBACK(loadfailedtls), c);
+					 G_CALLBACK(loadfailedtls), c);
 	g_signal_connect(G_OBJECT(v), "load-changed",
-	                 G_CALLBACK(loadchanged), c);
+					 G_CALLBACK(loadchanged), c);
 	g_signal_connect(G_OBJECT(v), "mouse-target-changed",
-	                 G_CALLBACK(mousetargetchanged), c);
+					 G_CALLBACK(mousetargetchanged), c);
 	g_signal_connect(G_OBJECT(v), "permission-request",
-	                 G_CALLBACK(permissionrequested), c);
+					 G_CALLBACK(permissionrequested), c);
 	g_signal_connect(G_OBJECT(v), "ready-to-show",
-	                 G_CALLBACK(showview), c);
+					 G_CALLBACK(showview), c);
 	g_signal_connect(G_OBJECT(v), "user-message-received",
-	                 G_CALLBACK(viewusrmsgrcv), c);
+					 G_CALLBACK(viewusrmsgrcv), c);
 	g_signal_connect(G_OBJECT(v), "web-process-terminated",
-	                 G_CALLBACK(webprocessterminated), c);
+					 G_CALLBACK(webprocessterminated), c);
 	g_signal_connect(G_OBJECT(v), "run-file-chooser",
-	                 G_CALLBACK(filechooser), c);
+					 G_CALLBACK(filechooser), c);
 
 	/* Button release for mouse gesture/hint mode handling */
 	click = gtk_gesture_click_new();
 	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
 	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
-	                                           GTK_PHASE_BUBBLE);
+											   GTK_PHASE_BUBBLE);
 	g_signal_connect(click, "released", G_CALLBACK(buttonreleased), c);
 	gtk_widget_add_controller(GTK_WIDGET(v), GTK_EVENT_CONTROLLER(click));
 
@@ -1955,7 +1957,7 @@ buttonreleased(GtkGestureClick *gesture, int n_press, double x, double y, Client
 
 static gboolean
 winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
-             GdkModifierType state, Client *c)
+			 GdkModifierType state, Client *c)
 {
 	int i;
 
@@ -2107,13 +2109,9 @@ showview(WebKitWebView *v, Client *c)
 		"  background-color: #353535;"
 		"  color: #aaaaaa;"
 		"}");
-	gtk_css_provider_load_from_data(tabcss, tabcssstr, -1);
+	gtk_css_provider_load_from_string(tabcss, tabcssstr);
 	g_free(tabcssstr);
 
-	gtk_style_context_add_provider(
-		gtk_widget_get_style_context(c->tabbar),
-		GTK_STYLE_PROVIDER(tabcss),
-		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	gtk_style_context_add_provider_for_display(
 		gdk_display_get_default(),
 		GTK_STYLE_PROVIDER(tabcss),
@@ -2125,7 +2123,7 @@ showview(WebKitWebView *v, Client *c)
 	c->barlabel = gtk_label_new("");
 	gtk_widget_set_focusable(c->barlabel, FALSE);
 	gtk_widget_set_name(c->barlabel, "surf-barlabel");
-	gtk_widget_hide(c->barlabel);
+	gtk_widget_set_visible(c->barlabel, FALSE);
 	gtk_box_append(GTK_BOX(c->statusbar), c->barlabel);
 
 	c->statentry = gtk_entry_new();
@@ -2138,7 +2136,7 @@ showview(WebKitWebView *v, Client *c)
 					 G_CALLBACK(bar_on_changed), c);
 	barkey = gtk_event_controller_key_new();
 	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(barkey),
-	                                           GTK_PHASE_CAPTURE);
+											   GTK_PHASE_CAPTURE);
 	g_signal_connect(barkey, "key-pressed", G_CALLBACK(barkeypress), c);
 	gtk_widget_add_controller(c->statentry, barkey);
 	gtk_box_append(GTK_BOX(c->statusbar), c->statentry);
@@ -2182,7 +2180,7 @@ showview(WebKitWebView *v, Client *c)
 		stat_bg_normal, stat_fg_normal, stat_font,
 		stat_bg_normal, stat_fg_normal, stat_font,
 		stat_bg_normal, stat_fg_normal, stat_font);
-	gtk_css_provider_load_from_data(css, cssstr, -1);
+	gtk_css_provider_load_from_string(css, cssstr);
 	g_free(cssstr);
 
 	gtk_widget_set_name(c->statusbar, "surf-statusbar");
@@ -2195,7 +2193,7 @@ showview(WebKitWebView *v, Client *c)
 
 	gtk_window_set_child(GTK_WINDOW(c->win), c->vbox);
 
-	gtk_widget_hide(c->dlbar); /* hidden until first download */
+	gtk_widget_set_visible(c->dlbar, FALSE); /* hidden until first download */
 	gtk_window_present(GTK_WINDOW(c->win));
 
 	tab_init(c);	  /* Make sure tab system is initialized */
@@ -2237,7 +2235,7 @@ createwindow(Client *c)
 
 	ctrl = gtk_event_controller_key_new();
 	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(ctrl),
-	                                           GTK_PHASE_CAPTURE);
+											   GTK_PHASE_CAPTURE);
 	g_signal_connect(ctrl, "key-pressed", G_CALLBACK(winevent_key), c);
 	gtk_widget_add_controller(w, ctrl);
 
@@ -2699,10 +2697,10 @@ decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 							   (GDestroyNotify)dl_data_free);
 		gtk_box_append(GTK_BOX(c->dlbar), lbl);
 		dl_update_label(d);
-		gtk_widget_show(c->dlbar);
+		gtk_widget_set_visible(c->dlbar, TRUE);
 
 		g_signal_connect(d, "notify::estimated-progress",
-					 G_CALLBACK(dlprogress), NULL);
+						 G_CALLBACK(dlprogress), NULL);
 		g_signal_connect(d, "finished", G_CALLBACK(dlfinished), NULL);
 		g_signal_connect(d, "failed", G_CALLBACK(dlfailed), NULL);
 
@@ -2717,12 +2715,13 @@ decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 	c->dl_pending_uri = g_strdup(webkit_uri_request_get_uri(req));
 
 	const char *dldir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
-	if (!dldir) dldir = g_get_home_dir();
+	if (!dldir)
+		dldir = g_get_home_dir();
 	gchar *default_dest = g_build_filename(dldir, suggested_filename, NULL);
 
 	c->mode = ModeCommand;
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [DOWNLOAD] ");
-	gtk_widget_show(c->barlabel);
+	gtk_widget_set_visible(c->barlabel, TRUE);
 	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 	gtk_editable_set_text(GTK_EDITABLE(c->statentry), default_dest);
@@ -2768,7 +2767,7 @@ dl_clear(Client *c, const Arg *a)
 	GtkWidget *child;
 	while ((child = gtk_widget_get_first_child(c->dlbar)))
 		gtk_box_remove(GTK_BOX(c->dlbar), child);
-	gtk_widget_hide(c->dlbar);
+	gtk_widget_set_visible(c->dlbar, FALSE);
 }
 
 static void
@@ -3182,7 +3181,7 @@ opensearch(Client *c, const Arg *a)
 	c->find_current_match = 0;
 
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [SEARCH] ");
-	gtk_widget_show(c->barlabel);
+	gtk_widget_set_visible(c->barlabel, TRUE);
 
 	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
@@ -3266,7 +3265,7 @@ openbar(Client *c, const Arg *a)
 	history_load();
 
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [TAB] ");
-	gtk_widget_show(c->barlabel);
+	gtk_widget_set_visible(c->barlabel, TRUE);
 
 	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
@@ -3294,7 +3293,7 @@ closebar(Client *c)
 
 	history_hide(c);
 
-	gtk_widget_hide(c->barlabel);
+	gtk_widget_set_visible(c->barlabel, FALSE);
 	gtk_label_set_text(GTK_LABEL(c->barlabel), "");
 
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
@@ -3314,7 +3313,7 @@ openbar_newtab(Client *c, const Arg *a)
 	history_load();
 
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [NEW TAB] ");
-	gtk_widget_show(c->barlabel);
+	gtk_widget_set_visible(c->barlabel, TRUE);
 
 	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
@@ -3496,7 +3495,6 @@ baractivate(GtkEntry *entry, Client *c)
 		return;
 	}
 
-
 	/* Command mode */
 	input = text;
 
@@ -3528,7 +3526,7 @@ baractivate(GtkEntry *entry, Client *c)
 
 static gboolean
 barkeypress(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
-            GdkModifierType state, Client *c)
+			GdkModifierType state, Client *c)
 {
 	if (keyval == GDK_KEY_Escape) {
 		if (c->mode == ModeSearch) {
@@ -4147,11 +4145,30 @@ static void
 history_hide(Client *c)
 {
 	if (history_scroll) {
-		gtk_box_remove(GTK_BOX(c->vbox), history_scroll);
-		history_scroll = NULL;
-		history_list = NULL;
+		gtk_widget_set_visible(history_scroll, FALSE);
 	}
 	history_selected = -1;
+}
+
+static void
+history_attach(Client *c)
+{
+	GtkWidget *parent, *before_sb;
+
+	if (!history_scroll)
+		return;
+
+	parent = gtk_widget_get_parent(history_scroll);
+	if (parent == c->vbox)
+		return;
+
+	if (parent && GTK_IS_BOX(parent))
+		gtk_box_remove(GTK_BOX(parent), history_scroll);
+
+	before_sb = gtk_widget_get_first_child(c->vbox);
+	while (before_sb && gtk_widget_get_next_sibling(before_sb) != c->statusbar)
+		before_sb = gtk_widget_get_next_sibling(before_sb);
+	gtk_box_insert_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
 }
 
 static gboolean
@@ -4194,61 +4211,53 @@ history_filter(Client *c, const char *text)
 		gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(history_scroll),
 									  history_list);
 
-		/* Insert before statusbar */
-		GtkWidget *before_sb = gtk_widget_get_first_child(c->vbox);
-		while (before_sb && gtk_widget_get_next_sibling(before_sb) != c->statusbar)
-			before_sb = gtk_widget_get_next_sibling(before_sb);
-		gtk_box_insert_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
-
 		css = gtk_css_provider_new();
-		gtk_css_provider_load_from_data(css,
-										"#history-scroll {"
-										"  background-color: #1a1a1a;"
-										"}"
-										"#history-list {"
-										"  background-color: #1a1a1a;"
-										"}"
-										"#history-list row {"
-										"  background-color: #1a1a1a;"
-										"  color: #cccccc;"
-										"  padding: 0;"
-										"  outline: none;"
-										"  border: none;"
-										"  box-shadow: none;"
-										"}"
-										"#history-list row:focus {"
-										"  background-color: #1a1a1a;"
-										"  outline: none;"
-										"  box-shadow: none;"
-										"}"
-										"#history-list row:hover {"
-										"  background-color: #1a1a1a;"
-										"}"
-										"#history-list row.hl {"
-										"  background-color: #333333;"
-										"}"
-										"#history-list row label {"
-										"  font-family: monospace;"
-										"  font-size: 13px;"
-										"  padding: 2px 6px;"
-										"  color: #cccccc;"
-										"}",
-										-1);
+		gtk_css_provider_load_from_string(css,
+										  "#history-scroll {"
+										  "  background-color: #1a1a1a;"
+										  "}"
+										  "#history-list {"
+										  "  background-color: #1a1a1a;"
+										  "}"
+										  "#history-list row {"
+										  "  background-color: #1a1a1a;"
+										  "  color: #cccccc;"
+										  "  padding: 0;"
+										  "  outline: none;"
+										  "  border: none;"
+										  "  box-shadow: none;"
+										  "}"
+										  "#history-list row:focus {"
+										  "  background-color: #1a1a1a;"
+										  "  outline: none;"
+										  "  box-shadow: none;"
+										  "}"
+										  "#history-list row:hover {"
+										  "  background-color: #1a1a1a;"
+										  "}"
+										  "#history-list row.hl {"
+										  "  background-color: #333333;"
+										  "}"
+										  "#history-list row label {"
+										  "  font-family: monospace;"
+										  "  font-size: 13px;"
+										  "  padding: 2px 6px;"
+										  "  color: #cccccc;"
+										  "}");
 
 		gtk_widget_set_name(history_scroll, "history-scroll");
 		gtk_widget_set_name(history_list, "history-list");
 
-		GtkStyleContext *sc;
-		sc = gtk_widget_get_style_context(history_scroll);
-		gtk_style_context_add_provider(sc, GTK_STYLE_PROVIDER(css),
-									   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
-		sc = gtk_widget_get_style_context(history_list);
-		gtk_style_context_add_provider(sc, GTK_STYLE_PROVIDER(css),
-									   GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
+		gtk_style_context_add_provider_for_display(
+			gdk_display_get_default(),
+			GTK_STYLE_PROVIDER(css),
+			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 
 		g_object_set_data_full(G_OBJECT(history_list), "css",
 							   css, g_object_unref);
 	}
+
+	history_attach(c);
 
 	/* Clear existing rows */
 	{
@@ -4326,16 +4335,7 @@ history_filter(Client *c, const char *text)
 
 		GtkListBoxRow *row = gtk_list_box_get_row_at_index(
 			GTK_LIST_BOX(history_list), count);
-		if (row) {
-			GtkCssProvider *row_css = g_object_get_data(
-				G_OBJECT(history_list), "css");
-			if (row_css) {
-				gtk_style_context_add_provider(
-					gtk_widget_get_style_context(GTK_WIDGET(row)),
-					GTK_STYLE_PROVIDER(row_css),
-					GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
-			}
-		}
+		(void)row;
 
 		count++;
 	}
@@ -4349,9 +4349,9 @@ history_filter(Client *c, const char *text)
 		if (popup_height > 360)
 			popup_height = 360;
 		gtk_widget_set_size_request(history_scroll, -1, popup_height);
-		gtk_widget_show(history_scroll);
+		gtk_widget_set_visible(history_scroll, TRUE);
 	} else if (history_scroll) {
-		gtk_widget_hide(history_scroll);
+		gtk_widget_set_visible(history_scroll, FALSE);
 	}
 }
 
@@ -4359,13 +4359,10 @@ static void
 history_select(Client *c, int direction)
 {
 	GtkListBoxRow *row;
-	GtkCssProvider *row_css;
 	int n;
 
 	if (!history_list)
 		return;
-
-	row_css = g_object_get_data(G_OBJECT(history_list), "css");
 
 	n = 0;
 	while (gtk_list_box_get_row_at_index(GTK_LIST_BOX(history_list), n))
@@ -4379,8 +4376,7 @@ history_select(Client *c, int direction)
 		row = gtk_list_box_get_row_at_index(
 			GTK_LIST_BOX(history_list), history_selected);
 		if (row)
-			gtk_style_context_remove_class(
-				gtk_widget_get_style_context(GTK_WIDGET(row)), "hl");
+			gtk_widget_remove_css_class(GTK_WIDGET(row), "hl");
 	}
 
 	if (history_selected < 0) {
@@ -4399,19 +4395,18 @@ history_select(Client *c, int direction)
 	row = gtk_list_box_get_row_at_index(
 		GTK_LIST_BOX(history_list), history_selected);
 	if (row) {
-		gtk_style_context_add_class(
-			gtk_widget_get_style_context(GTK_WIDGET(row)), "hl");
+		gtk_widget_add_css_class(GTK_WIDGET(row), "hl");
 
 		GtkWidget *label = gtk_list_box_row_get_child(row);
 		if (label) {
 			const char *uri = gtk_widget_get_name(label);
 			if (uri && *uri) {
 				g_signal_handlers_block_by_func(c->statentry,
-				                                bar_on_changed, c);
+												bar_on_changed, c);
 				gtk_editable_set_text(GTK_EDITABLE(c->statentry), uri);
 				gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
 				g_signal_handlers_unblock_by_func(c->statentry,
-				                                  bar_on_changed, c);
+												  bar_on_changed, c);
 			}
 		}
 	}
@@ -4489,14 +4484,8 @@ updatebar_style(Client *c)
 	/* Remove old provider before adding new one to prevent accumulation */
 	old_css = g_object_get_data(G_OBJECT(c->statusbar), "bar-css");
 	if (old_css) {
-		gtk_style_context_remove_provider(
-			gtk_widget_get_style_context(c->statusbar),
-			GTK_STYLE_PROVIDER(old_css));
-		gtk_style_context_remove_provider(
-			gtk_widget_get_style_context(c->barlabel),
-			GTK_STYLE_PROVIDER(old_css));
-		gtk_style_context_remove_provider(
-			gtk_widget_get_style_context(c->statentry),
+		gtk_style_context_remove_provider_for_display(
+			gdk_display_get_default(),
 			GTK_STYLE_PROVIDER(old_css));
 	}
 
@@ -4517,19 +4506,11 @@ updatebar_style(Client *c)
 		"  padding: 1px 6px; min-height: 18px;"
 		"}",
 		bg, bg, fg, stat_font, bg, fg, stat_font);
-	gtk_css_provider_load_from_data(css, cssstr, -1);
+	gtk_css_provider_load_from_string(css, cssstr);
 	g_free(cssstr);
 
-	gtk_style_context_add_provider(
-		gtk_widget_get_style_context(c->statusbar),
-		GTK_STYLE_PROVIDER(css),
-		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
-	gtk_style_context_add_provider(
-		gtk_widget_get_style_context(c->barlabel),
-		GTK_STYLE_PROVIDER(css),
-		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
-	gtk_style_context_add_provider(
-		gtk_widget_get_style_context(c->statentry),
+	gtk_style_context_add_provider_for_display(
+		gdk_display_get_default(),
 		GTK_STYLE_PROVIDER(css),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
 
@@ -4665,7 +4646,7 @@ main(int argc, char *argv[])
 	case 'v':
 		die("surf-" VERSION ", see LICENSE for © details\n");
 	case 'w':
-			showinstanceidflag = 1;
+		showinstanceidflag = 1;
 		break;
 	case 'x':
 		defconfig[Certificate].val.i = 0;
