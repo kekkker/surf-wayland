@@ -4163,16 +4163,17 @@ history_attach(Client *c)
 		return;
 
 	parent = gtk_widget_get_parent(history_scroll);
-	if (parent == c->vbox)
-		return;
-
-	if (parent && GTK_IS_BOX(parent))
+	if (parent && parent != c->vbox && GTK_IS_BOX(parent))
 		gtk_box_remove(GTK_BOX(parent), history_scroll);
 
 	before_sb = gtk_widget_get_first_child(c->vbox);
 	while (before_sb && gtk_widget_get_next_sibling(before_sb) != c->statusbar)
 		before_sb = gtk_widget_get_next_sibling(before_sb);
-	gtk_box_insert_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
+
+	if (parent == c->vbox)
+		gtk_box_reorder_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
+	else
+		gtk_box_insert_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
 }
 
 static gboolean
