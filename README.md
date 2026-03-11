@@ -1,7 +1,7 @@
 # surf - simple webkit-based browser
 ![surf Logo](surf.png)
 
-surf is a simple Web browser based on WebKit/GTK+ with a modal, keyboard-driven interface inspired by qutebrowser and vim.
+surf is a simple Web browser based on GTK4 and WebKitGTK 6.0, with a modal, keyboard-driven interface inspired by qutebrowser and vim.
 
 ## About This Fork
 
@@ -39,22 +39,35 @@ If you want the original minimalist surf, use the upstream version. This fork is
 ## Requirements
 
 To build surf you need:
-- GTK+ 3 and WebKit2GTK 4.1 header files
-- GDK Wayland backend (`gdk-wayland-3.0`)
-- C compiler (gcc or clang)
+- C compiler (`cc`, `gcc`, or `clang`)
+- `pkg-config`
+- GTK4 development files (`gtk4`)
+- WebKitGTK 6.0 development files (`webkitgtk-6.0`)
+- WebKitGTK 6.0 web extension development files (`webkitgtk-web-process-extension-6.0`)
+- GLib/GIO development files (`gio-2.0`)
 
-Optional dependencies:
-- `pass` - for password manager integration
-- `bemenu` or `dmenu` - for password selection UI
+This fork is Wayland-only at runtime. It expects a Wayland-capable GTK4 environment.
+
+Optional runtime dependencies:
+- `pass` - password manager integration
+- `bemenu` - account picker used by `userscripts/surf-pass`
+- `foot` and `nnn` - external file picker configured in `config.def.h`
+- `notify-send` - screenshot saved notification
 
 ## Installation
 
-Edit `config.mk` to match your local setup (surf is installed into the `/usr/local` namespace by default).
+Edit `config.mk` to match your local setup. By default, surf installs into `/usr/local` and the WebKit web extension is installed into `/usr/local/lib/surf`.
 
-Build and install (as root if necessary):
+Build:
 
 ```bash
-make clean install
+make clean all
+```
+
+Install (as root if necessary):
+
+```bash
+make install
 ```
 
 ## Usage
@@ -275,7 +288,7 @@ user: <username>
 **Usage:**
 
 1. Press `p` in Normal mode on a login page
-2. If multiple accounts exist, select one from bemenu
+2. If multiple accounts exist, select one from `bemenu`
 3. Username and password are auto-filled
 
 **Example pass structure:**
@@ -406,7 +419,7 @@ This is a personal fork focused on my workflow. Bug reports and patches welcome,
 **Development:**
 ```bash
 git clone <your-fork>
-cd surf
+cd surf-wayland
 make clean && make
 ./surf
 ```

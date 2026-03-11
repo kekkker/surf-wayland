@@ -40,18 +40,6 @@ clean:
 	rm -f surf $(OBJ)
 	rm -f $(WLIB) $(WOBJ)
 
-distclean: clean
-	rm -f config.h surf-$(VERSION).tar.gz
-
-dist: distclean
-	mkdir -p surf-$(VERSION)
-	cp -R LICENSE Makefile config.mk config.def.h README \
-	    surf-open.sh arg.h TODO.md surf.png \
-	    surf.1 common.h display.h types.h $(SRC) $(WSRC) surf-$(VERSION)
-	tar -cf surf-$(VERSION).tar surf-$(VERSION)
-	gzip surf-$(VERSION).tar
-	rm -rf surf-$(VERSION)
-
 install: all
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
 	cp -f surf $(DESTDIR)$(PREFIX)/bin
@@ -73,4 +61,4 @@ uninstall:
 	done
 	- rmdir $(DESTDIR)$(LIBDIR)
 
-.PHONY: all options distclean clean dist install uninstall
+.PHONY: all options clean install uninstall
