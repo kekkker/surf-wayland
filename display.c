@@ -4,7 +4,6 @@
 
 #include "display.h"
 #include <gdk/gdk.h>
-#include <gdk/gdkwayland.h>
 #include <stdio.h>
 #include <string.h>
 

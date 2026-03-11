@@ -2,7 +2,7 @@
 
 #include "types.h"
 #include <gtk/gtk.h>
-#include <webkit2/webkit2.h>
+#include <webkit/webkit.h>
 
 typedef enum {
 	ModeNormal,

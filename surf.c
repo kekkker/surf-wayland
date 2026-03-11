@@ -23,15 +23,12 @@
 #include <time.h>
 #include <unistd.h>
 
-#include <JavaScriptCore/JavaScript.h>
-#include <gcr/gcr.h>
 #include <gdk/gdk.h>
 #include <gdk/gdkkeysyms.h>
-#include <gdk/gdkwayland.h>
 #include <gio/gunixfdlist.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
-#include <webkit2/webkit2.h>
+#include <webkit/webkit.h>
 
 #include "arg.h"
 #include "common.h"
@@ -159,8 +156,11 @@ static WebKitWebView *newview(Client *c, WebKitWebView *rv);
 static void initwebextensions(WebKitWebContext *wc, Client *c);
 static GtkWidget *createview(WebKitWebView *v, WebKitNavigationAction *a,
 							 Client *c);
-static gboolean buttonreleased(GtkWidget *w, GdkEvent *e, Client *c);
-static gboolean winevent(GtkWidget *w, GdkEvent *e, Client *c);
+static void buttonreleased(GtkGestureClick *gesture, int n_press, double x, double y, Client *c);
+static gboolean winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode, GdkModifierType state, Client *c);
+static void winevent_enter(GtkEventControllerMotion *ctrl, double x, double y, Client *c);
+static void winevent_leave(GtkEventControllerMotion *ctrl, Client *c);
+static void winevent_fullscreen(GObject *win, GParamSpec *pspec, Client *c);
 static void showview(WebKitWebView *v, Client *c);
 static GtkWidget *createwindow(Client *c);
 static gboolean loadfailedtls(WebKitWebView *v, gchar *uri,
@@ -180,7 +180,7 @@ static void decidenewwindow(WebKitPolicyDecision *d, Client *c);
 static void decideresource(WebKitPolicyDecision *d, Client *c);
 static void insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e,
 							Client *c);
-static void downloadstarted(WebKitWebContext *wc, WebKitDownload *d,
+static void downloadstarted(WebKitNetworkSession *ns, WebKitDownload *d,
 							Client *c);
 static gboolean decidedestination(WebKitDownload *d,
 								  gchar *suggested_filename, Client *c);
@@ -210,7 +210,7 @@ static gboolean filechooser(WebKitWebView *v, WebKitFileChooserRequest *r,
 							Client *c);
 
 /* Hotkeys */
-static void pasteuri(GtkClipboard *clipboard, const char *text, gpointer d);
+static void pasteuri(GObject *clipboard, GAsyncResult *result, gpointer d);
 static void reload(Client *c, const Arg *a);
 static void print(Client *c, const Arg *a);
 static void screenshot(Client *c, const Arg *a);
@@ -234,7 +234,8 @@ static void closebar(Client *c);
 static void updatebar(Client *c);
 static void updatebar_style(Client *c);
 static void baractivate(GtkEntry *entry, Client *c);
-static gboolean barkeypress(GtkWidget *w, GdkEvent *e, Client *c);
+static gboolean barkeypress(GtkEventControllerKey *ctrl, guint keyval, guint keycode, GdkModifierType state, Client *c);
+static void bar_on_changed(GtkEditable *editable, Client *c);
 static gboolean bar_update_search(gpointer data);
 static void find_highlight_update(Client *c, const char *needle);
 static void find_select_enter(Client *c, const Arg *a);
@@ -254,7 +255,7 @@ static void openbar_newtab(Client *c, const Arg *a);
 /* Hints */
 static void hints_start(Client *c, const Arg *a);
 static void hints_cleanup(Client *c);
-static gboolean hints_keypress(Client *c, GdkEventKey *e);
+static gboolean hints_keypress(Client *c, guint keyval, GdkModifierType state);
 static void hints_receive_data(Client *c, GVariant *data);
 
 /* Buttons */
@@ -272,6 +273,7 @@ static int cookiepolicy;
 Client *clients;
 
 /* Userscript support */
+static GMainLoop *mainloop;
 static char *surf_fifo;
 static GIOChannel *fifo_chan;
 static void setup_fifo(Client *c);
@@ -310,7 +312,6 @@ typedef struct {
 	long timestamp;
 } HistoryEntry;
 
-static GdkDevice *gdkkb;
 static char *stylefile;
 static const char *useragent;
 static Parameter *curconfig;
@@ -396,7 +397,7 @@ setup(void)
 		sigaction(SIGBUS, &sa, NULL);
 	}
 
-	gtk_init(NULL, NULL);
+	gtk_init();
 
 	gdpy = gdk_display_get_default();
 	if (!gdpy)
@@ -417,7 +418,7 @@ setup(void)
 	else
 		cachedir = buildpath(cachedir);
 
-	gdkkb = gdk_seat_get_keyboard(gdk_display_get_default_seat(gdpy));
+	mainloop = g_main_loop_new(NULL, FALSE);
 
 	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, spair) < 0) {
 		fputs("Unable to create sockets\n", stderr);
@@ -740,45 +741,38 @@ tab_init(Client *c)
 	tab_pins = g_malloc0(sizeof(gboolean));
 }
 
-static gboolean
-tabbar_click(GtkWidget *w, GdkEventButton *e, Client *c)
+static void
+tabbar_click(GtkGestureClick *gesture, int n_press, double x, double y, Client *c)
 {
-	int idx;
+	GtkWidget *w = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+	int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "tab-index"));
+	guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
 
-	idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(w), "tab-index"));
-
-	if (e->button == 2) {
+	if (button == 2) {
 		tab_switch_to(c, idx);
 		tab_close(c, &(Arg){0});
-		return TRUE;
-	}
-
-	if (e->button == 1) {
+	} else if (button == 1) {
 		tab_switch_to(c, idx);
-		return TRUE;
 	}
-
-	return FALSE;
 }
 
 static void
 update_tabbar(Client *c)
 {
-	GList *children, *iter;
+	GtkWidget *child;
 	int i;
 
 	if (!c->tabbar)
 		return;
 
-	children = gtk_container_get_children(GTK_CONTAINER(c->tabbar));
-	for (iter = children; iter; iter = iter->next)
-		gtk_widget_destroy(GTK_WIDGET(iter->data));
-	g_list_free(children);
+	while ((child = gtk_widget_get_first_child(c->tabbar)))
+		gtk_box_remove(GTK_BOX(c->tabbar), child);
 
 	for (i = 0; i < tabs.count; i++) {
 		const char *title = webkit_web_view_get_title(tabs.views[i]);
 		const char *uri = webkit_web_view_get_uri(tabs.views[i]);
 		GtkWidget *label, *box;
+		GtkGesture *gesture;
 		gchar *text;
 
 		if (!title || !*title)
@@ -802,16 +796,17 @@ update_tabbar(Client *c)
 		gtk_widget_set_margin_start(label, 8);
 		gtk_widget_set_margin_end(label, 8);
 
-		box = gtk_event_box_new();
+		box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 		gtk_widget_set_size_request(box, 150, -1);
-		gtk_container_add(GTK_CONTAINER(box), label);
+		gtk_box_append(GTK_BOX(box), label);
 		g_object_set_data(G_OBJECT(box), "tab-index", GINT_TO_POINTER(i));
-		g_signal_connect(box, "button-press-event", G_CALLBACK(tabbar_click), c);
+		gesture = gtk_gesture_click_new();
+		gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 0);
+		g_signal_connect(gesture, "pressed", G_CALLBACK(tabbar_click), c);
+		gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(gesture));
 		gtk_widget_set_name(box, i == tabs.active ? "tab-active" : "tab-inactive");
-		gtk_box_pack_start(GTK_BOX(c->tabbar), box, TRUE, TRUE, 2);
+		gtk_box_append(GTK_BOX(c->tabbar), box);
 	}
-
-	gtk_widget_show_all(c->tabbar);
 }
 
 static void
@@ -842,7 +837,7 @@ tab_switch_to(Client *c, int index)
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
 	c->mode = ModeNormal;
-	gtk_widget_set_can_focus(c->statentry, FALSE);
+	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 
 	g_free(c->title);
@@ -863,8 +858,10 @@ tab_new(Client *c, const Arg *a)
 
 	v = newview(c, c->view);
 
-	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(v), TRUE, TRUE, 0);
-	gtk_box_reorder_child(GTK_BOX(c->vbox), GTK_WIDGET(v), 2);
+	gtk_widget_set_vexpand(GTK_WIDGET(v), TRUE);
+	gtk_widget_set_hexpand(GTK_WIDGET(v), TRUE);
+	gtk_box_insert_child_after(GTK_BOX(c->vbox), GTK_WIDGET(v),
+	                           gtk_widget_get_prev_sibling(c->statusbar));
 
 	gtk_widget_hide(GTK_WIDGET(tabs.views[tabs.active]));
 
@@ -896,9 +893,9 @@ tab_new(Client *c, const Arg *a)
 	c->progress = 100;
 	c->mode = ModeNormal;
 
-	gtk_widget_show_all(GTK_WIDGET(v));
+	gtk_widget_show(GTK_WIDGET(v));
 
-	gtk_widget_set_can_focus(c->statentry, FALSE);
+	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_grab_focus(GTK_WIDGET(v));
 	updatetitle(c);
@@ -953,7 +950,7 @@ tab_close(Client *c, const Arg *a)
 		closed_tab_stack[closed_tab_top++] = g_strdup(dead_uri);
 	}
 
-	gtk_widget_destroy(GTK_WIDGET(dead));
+	gtk_box_remove(GTK_BOX(c->vbox), GTK_WIDGET(dead));
 	update_tabbar(c);
 }
 
@@ -1203,11 +1200,10 @@ follow_hint(Client *c, const char *label)
 	} break;
 	case HintModeYank: {
 		gchar *url_copy = g_strdup(target->url);
+		GdkDisplay *dpy = gdk_display_get_default();
 
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
-							   url_copy, -1);
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
-							   url_copy, -1);
+		gdk_clipboard_set_text(gdk_display_get_clipboard(dpy), url_copy);
+		gdk_clipboard_set_text(gdk_display_get_primary_clipboard(dpy), url_copy);
 
 		hints_cleanup(c);
 		g_free(url_copy);
@@ -1216,7 +1212,7 @@ follow_hint(Client *c, const char *label)
 }
 
 static gboolean
-hints_keypress(Client *c, GdkEventKey *e)
+hints_keypress(Client *c, guint keyval, GdkModifierType state)
 {
 	char key;
 	char *newinput;
@@ -1225,12 +1221,12 @@ hints_keypress(Client *c, GdkEventKey *e)
 	if (!hintstate.active || hintstate.pageid != c->pageid)
 		return FALSE;
 
-	if (e->keyval == GDK_KEY_Escape) {
+	if (keyval == GDK_KEY_Escape) {
 		hints_cleanup(c);
 		return TRUE;
 	}
 
-	if (e->keyval == GDK_KEY_BackSpace) {
+	if (keyval == GDK_KEY_BackSpace) {
 		int len = strlen(hintstate.input);
 		if (len > 0) {
 			hintstate.input[len - 1] = '\0';
@@ -1241,7 +1237,7 @@ hints_keypress(Client *c, GdkEventKey *e)
 		return TRUE;
 	}
 
-	key = gdk_keyval_to_lower(e->keyval);
+	key = gdk_keyval_to_lower(keyval);
 	if (!strchr(hintkeys, key))
 		return TRUE;
 
@@ -1426,7 +1422,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		return;
 	case CookiePolicies:
 		webkit_cookie_manager_set_accept_policy(
-			webkit_web_context_get_cookie_manager(c->context),
+			webkit_network_session_get_cookie_manager(webkit_web_view_get_network_session(c->view)),
 			cookiepolicy_get());
 		refresh = 0;
 		break;
@@ -1498,8 +1494,9 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case SpellLanguages:
 		return;
 	case StrictTLS:
-		webkit_website_data_manager_set_tls_errors_policy(
-			webkit_web_view_get_website_data_manager(c->view), a->i ? WEBKIT_TLS_ERRORS_POLICY_FAIL : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
+		webkit_network_session_set_tls_errors_policy(
+			webkit_web_view_get_network_session(c->view),
+			a->i ? WEBKIT_TLS_ERRORS_POLICY_FAIL : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 		break;
 	case Style:
 		webkit_user_content_manager_remove_all_style_sheets(
@@ -1557,8 +1554,8 @@ setcert(Client *c, const char *uri)
 		uri += sizeof("https://") - 1;
 		slash = strchr(uri, '/');
 		host = slash ? g_strndup(uri, slash - uri) : g_strdup(uri);
-		webkit_web_context_allow_tls_certificate_for_host(c->context,
-														  cert, host);
+		webkit_network_session_allow_tls_certificate_for_host(
+			webkit_web_view_get_network_session(c->view), cert, host);
 		g_free(host);
 	}
 
@@ -1759,11 +1756,14 @@ newview(Client *c, WebKitWebView *rv)
 	WebKitWebView *v;
 	WebKitSettings *settings;
 	WebKitWebContext *context;
+	WebKitNetworkSession *netsession;
 	WebKitCookieManager *cookiemanager;
 	WebKitUserContentManager *contentmanager;
+	GtkGesture *click;
 
 	if (rv) {
-		v = WEBKIT_WEB_VIEW(webkit_web_view_new_with_related_view(rv));
+		v = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
+		                                 "related-view", rv, NULL));
 		context = webkit_web_view_get_context(v);
 		settings = webkit_web_view_get_settings(v);
 	} else {
@@ -1796,83 +1796,90 @@ newview(Client *c, WebKitWebView *rv)
 		contentmanager = webkit_user_content_manager_new();
 		inject_userscripts_early(contentmanager, "");
 
+		context = webkit_web_context_new();
+		g_signal_connect(G_OBJECT(context), "initialize-web-process-extensions",
+		                 G_CALLBACK(initwebextensions), c);
+		webkit_web_context_set_spell_checking_languages(context,
+		                                                curconfig[SpellLanguages].val.v);
+		webkit_web_context_set_spell_checking_enabled(context,
+		                                              curconfig[SpellChecking].val.i);
+		webkit_web_context_set_preferred_languages(context,
+		                                           curconfig[PreferredLanguages].val.v);
+		webkit_web_context_set_cache_model(context,
+		    curconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER
+		                               : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
+
 		if (curconfig[Ephemeral].val.i) {
-			context = webkit_web_context_new_ephemeral();
+			netsession = webkit_network_session_new_ephemeral();
 		} else {
-			context = webkit_web_context_new_with_website_data_manager(
-				webkit_website_data_manager_new(
-					"base-cache-directory", cachedir,
-					"base-data-directory", cachedir,
-					NULL));
+			netsession = webkit_network_session_new(cachedir, cachedir);
 		}
 
-		cookiemanager = webkit_web_context_get_cookie_manager(context);
+		webkit_network_session_set_tls_errors_policy(netsession,
+		    curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL
+		                               : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 
-		webkit_website_data_manager_set_tls_errors_policy(
-			webkit_web_context_get_website_data_manager(context),
-			curconfig[StrictTLS].val.i ? WEBKIT_TLS_ERRORS_POLICY_FAIL : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
-		webkit_web_context_set_cache_model(context,
-										   curconfig[DiskCache].val.i ? WEBKIT_CACHE_MODEL_WEB_BROWSER : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
-
+		cookiemanager = webkit_network_session_get_cookie_manager(netsession);
 		if (!curconfig[Ephemeral].val.i)
 			webkit_cookie_manager_set_persistent_storage(cookiemanager,
-														 cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
-		webkit_cookie_manager_set_accept_policy(cookiemanager,
-												cookiepolicy_get());
-		webkit_web_context_set_preferred_languages(context,
-												   curconfig[PreferredLanguages].val.v);
-		webkit_web_context_set_spell_checking_languages(context,
-														curconfig[SpellLanguages].val.v);
-		webkit_web_context_set_spell_checking_enabled(context,
-													  curconfig[SpellChecking].val.i);
+			    cookiefile, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+		webkit_cookie_manager_set_accept_policy(cookiemanager, cookiepolicy_get());
 
-		g_signal_connect(G_OBJECT(context), "download-started",
-						 G_CALLBACK(downloadstarted), c);
-		g_signal_connect(G_OBJECT(context), "initialize-web-extensions",
-						 G_CALLBACK(initwebextensions), c);
+		g_signal_connect(G_OBJECT(netsession), "download-started",
+		                 G_CALLBACK(downloadstarted), c);
 
 		v = g_object_new(WEBKIT_TYPE_WEB_VIEW,
-						 "settings", settings,
-						 "user-content-manager", contentmanager,
-						 "web-context", context,
-						 NULL);
+		                 "settings", settings,
+		                 "user-content-manager", contentmanager,
+		                 "web-context", context,
+		                 "network-session", netsession,
+		                 NULL);
+		g_object_unref(netsession);
+		g_object_unref(context);
+		g_object_unref(contentmanager);
 	}
 
 	g_signal_connect(G_OBJECT(v), "notify::estimated-load-progress",
-					 G_CALLBACK(progresschanged), c);
+	                 G_CALLBACK(progresschanged), c);
 	g_signal_connect(G_OBJECT(v), "notify::title",
-					 G_CALLBACK(titlechanged), c);
-	g_signal_connect(G_OBJECT(v), "button-release-event",
-					 G_CALLBACK(buttonreleased), c);
+	                 G_CALLBACK(titlechanged), c);
 	g_signal_connect(G_OBJECT(v), "close",
-					 G_CALLBACK(closeview), c);
+	                 G_CALLBACK(closeview), c);
 	g_signal_connect(G_OBJECT(v), "create",
-					 G_CALLBACK(createview), c);
+	                 G_CALLBACK(createview), c);
 	g_signal_connect(G_OBJECT(v), "decide-policy",
-					 G_CALLBACK(decidepolicy), c);
+	                 G_CALLBACK(decidepolicy), c);
 	g_signal_connect(G_OBJECT(v), "insecure-content-detected",
-					 G_CALLBACK(insecurecontent), c);
+	                 G_CALLBACK(insecurecontent), c);
 	g_signal_connect(G_OBJECT(v), "load-failed-with-tls-errors",
-					 G_CALLBACK(loadfailedtls), c);
+	                 G_CALLBACK(loadfailedtls), c);
 	g_signal_connect(G_OBJECT(v), "load-changed",
-					 G_CALLBACK(loadchanged), c);
+	                 G_CALLBACK(loadchanged), c);
 	g_signal_connect(G_OBJECT(v), "mouse-target-changed",
-					 G_CALLBACK(mousetargetchanged), c);
+	                 G_CALLBACK(mousetargetchanged), c);
 	g_signal_connect(G_OBJECT(v), "permission-request",
-					 G_CALLBACK(permissionrequested), c);
+	                 G_CALLBACK(permissionrequested), c);
 	g_signal_connect(G_OBJECT(v), "ready-to-show",
-					 G_CALLBACK(showview), c);
+	                 G_CALLBACK(showview), c);
 	g_signal_connect(G_OBJECT(v), "user-message-received",
-					 G_CALLBACK(viewusrmsgrcv), c);
+	                 G_CALLBACK(viewusrmsgrcv), c);
 	g_signal_connect(G_OBJECT(v), "web-process-terminated",
-					 G_CALLBACK(webprocessterminated), c);
+	                 G_CALLBACK(webprocessterminated), c);
 	g_signal_connect(G_OBJECT(v), "run-file-chooser",
-					 G_CALLBACK(filechooser), c);
+	                 G_CALLBACK(filechooser), c);
+
+	/* Button release for mouse gesture/hint mode handling */
+	click = gtk_gesture_click_new();
+	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
+	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click),
+	                                           GTK_PHASE_BUBBLE);
+	g_signal_connect(click, "released", G_CALLBACK(buttonreleased), c);
+	gtk_widget_add_controller(GTK_WIDGET(v), GTK_EVENT_CONTROLLER(click));
 
 	c->find_match_count = 0;
 	c->find_current_match = 0;
 
-	c->context = context;
+	c->context = webkit_web_view_get_context(v);
 	c->settings = settings;
 
 	setparameter(c, 0, DarkMode, &curconfig[DarkMode].val);
@@ -1883,7 +1890,7 @@ newview(Client *c, WebKitWebView *rv)
 static void
 initwebextensions(WebKitWebContext *wc, Client *c)
 {
-	webkit_web_context_set_web_extensions_directory(wc, WEBEXTDIR);
+	webkit_web_context_set_web_process_extensions_directory(wc, WEBEXTDIR);
 }
 
 GtkWidget *
@@ -1909,14 +1916,16 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 	return GTK_WIDGET(n->view);
 }
 
-static gboolean
-buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
+static void
+buttonreleased(GtkGestureClick *gesture, int n_press, double x, double y, Client *c)
 {
 	WebKitHitTestResultContext element;
+	guint button;
+	GdkModifierType state;
 	int i;
 
 	if (!c->mousepos)
-		return FALSE;
+		return;
 
 	element = webkit_hit_test_result_get_context(c->mousepos);
 
@@ -1925,122 +1934,118 @@ buttonreleased(GtkWidget *w, GdkEvent *e, Client *c)
 		updatetitle(c);
 	}
 
+	button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+	state = gtk_event_controller_get_current_event_state(GTK_EVENT_CONTROLLER(gesture));
+
 	for (i = 0; i < LENGTH(buttons); ++i) {
 		if (element & buttons[i].target &&
-			e->button.button == buttons[i].button &&
-			CLEANMASK(e->button.state) == CLEANMASK(buttons[i].mask) &&
+			button == buttons[i].button &&
+			CLEANMASK(state) == CLEANMASK(buttons[i].mask) &&
 			buttons[i].func) {
 			buttons[i].func(c, &buttons[i].arg, c->mousepos);
-			return buttons[i].stopevent;
+			return;
 		}
 	}
-
-	return FALSE;
 }
 
 static gboolean
-winevent(GtkWidget *w, GdkEvent *e, Client *c)
+winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
+             GdkModifierType state, Client *c)
 {
 	int i;
 
-	switch (e->type) {
-	case GDK_ENTER_NOTIFY:
-		c->overtitle = c->targeturi;
-		updatetitle(c);
-		break;
-	case GDK_KEY_PRESS:
-		if (curconfig[KioskMode].val.i)
-			break;
+	if (curconfig[KioskMode].val.i)
+		return FALSE;
 
-		/* Command/Search mode: keys go to the bar entry */
-		if (c->mode == ModeCommand || c->mode == ModeSearch)
-			return FALSE;
+	if (c->mode == ModeCommand || c->mode == ModeSearch)
+		return FALSE;
 
-		/* Insert mode: pass everything except Escape */
-		if (c->mode == ModeInsert) {
-			if (e->key.keyval == GDK_KEY_Escape) {
-				c->mode = ModeNormal;
-				gtk_widget_grab_focus(GTK_WIDGET(c->view));
-				updatetitle(c);
-				return TRUE;
-			}
-			return FALSE;
+	if (c->mode == ModeInsert) {
+		if (keyval == GDK_KEY_Escape) {
+			c->mode = ModeNormal;
+			gtk_widget_grab_focus(GTK_WIDGET(c->view));
+			updatetitle(c);
+			return TRUE;
 		}
-
-		if (c->mode == ModeHint) {
-			return hints_keypress(c, &e->key);
-		}
-
-		if (c->mode == ModeSelect) {
-			switch (e->key.keyval) {
-			case GDK_KEY_Escape:
-				find_select_exit(c);
-				return TRUE;
-			case GDK_KEY_e:
-				find(c, &(Arg){.i = +1});
-				evalscript(c,
-						   "if(window._surfFindSelect)"
-						   "_surfFindSelect(%d);",
-						   c->find_current_match - 1);
-				return TRUE;
-			case GDK_KEY_V:
-				evalscript(c,
-						   "var s=window.getSelection();"
-						   "s.modify('move','backward','lineboundary');"
-						   "s.modify('extend','forward','lineboundary');");
-				return TRUE;
-			case GDK_KEY_w:
-				evalscript(c, "window.getSelection()"
-							  ".modify('extend','forward','word');");
-				return TRUE;
-			case GDK_KEY_b:
-				evalscript(c, "window.getSelection()"
-							  ".modify('extend','backward','word');");
-				return TRUE;
-			case GDK_KEY_y:
-				webkit_web_view_evaluate_javascript(
-					c->view, "window.getSelection().toString()",
-					-1, NULL, NULL, NULL, find_select_yank_cb, c);
-				return TRUE;
-			}
-			return TRUE; /* swallow other keys in select mode */
-		}
-
-		/* Normal mode: process keybinds */
-		for (i = 0; i < LENGTH(keys); ++i) {
-			if (gdk_keyval_to_lower(e->key.keyval) ==
-					keys[i].keyval &&
-				CLEANMASK(e->key.state) == keys[i].mod &&
-				keys[i].func) {
-				updatewinid(c);
-				keys[i].func(c, &(keys[i].arg));
-				return TRUE;
-			}
-		}
-		break;
-	case GDK_LEAVE_NOTIFY:
-		c->overtitle = NULL;
-		updatetitle(c);
-		break;
-	case GDK_WINDOW_STATE:
-		if (e->window_state.changed_mask ==
-			GDK_WINDOW_STATE_FULLSCREEN)
-			c->fullscreen = e->window_state.new_window_state &
-							GDK_WINDOW_STATE_FULLSCREEN;
-		break;
-	default:
-		break;
+		return FALSE;
 	}
 
+	if (c->mode == ModeHint)
+		return hints_keypress(c, keyval, state);
+
+	if (c->mode == ModeSelect) {
+		switch (keyval) {
+		case GDK_KEY_Escape:
+			find_select_exit(c);
+			return TRUE;
+		case GDK_KEY_e:
+			find(c, &(Arg){.i = +1});
+			evalscript(c,
+					   "if(window._surfFindSelect)"
+					   "_surfFindSelect(%d);",
+					   c->find_current_match - 1);
+			return TRUE;
+		case GDK_KEY_V:
+			evalscript(c,
+					   "var s=window.getSelection();"
+					   "s.modify('move','backward','lineboundary');"
+					   "s.modify('extend','forward','lineboundary');");
+			return TRUE;
+		case GDK_KEY_w:
+			evalscript(c, "window.getSelection()"
+						  ".modify('extend','forward','word');");
+			return TRUE;
+		case GDK_KEY_b:
+			evalscript(c, "window.getSelection()"
+						  ".modify('extend','backward','word');");
+			return TRUE;
+		case GDK_KEY_y:
+			webkit_web_view_evaluate_javascript(
+				c->view, "window.getSelection().toString()",
+				-1, NULL, NULL, NULL, find_select_yank_cb, c);
+			return TRUE;
+		}
+		return TRUE;
+	}
+
+	for (i = 0; i < LENGTH(keys); ++i) {
+		if (gdk_keyval_to_lower(keyval) == keys[i].keyval &&
+			CLEANMASK(state) == keys[i].mod &&
+			keys[i].func) {
+			updatewinid(c);
+			keys[i].func(c, &(keys[i].arg));
+			return TRUE;
+		}
+	}
 	return FALSE;
+}
+
+static void
+winevent_enter(GtkEventControllerMotion *ctrl, double x, double y, Client *c)
+{
+	c->overtitle = c->targeturi;
+	updatetitle(c);
+}
+
+static void
+winevent_leave(GtkEventControllerMotion *ctrl, Client *c)
+{
+	c->overtitle = NULL;
+	updatetitle(c);
+}
+
+static void
+winevent_fullscreen(GObject *win, GParamSpec *pspec, Client *c)
+{
+	c->fullscreen = gtk_window_is_fullscreen(GTK_WINDOW(win));
 }
 
 static void
 showview(WebKitWebView *v, Client *c)
 {
 	GdkRGBA bgcolor = {0};
-	GdkWindow *gwin;
 	GtkCssProvider *css;
+	GtkEventController *barkey;
 	char *cssstr;
 
 	c->finder = webkit_web_view_get_find_controller(c->view);
@@ -2058,13 +2063,19 @@ showview(WebKitWebView *v, Client *c)
 	/* Tab bar at TOP */
 	c->tabbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 2);
 	gtk_widget_set_name(c->tabbar, "tabbar");
-	gtk_box_pack_start(GTK_BOX(c->vbox), c->tabbar, FALSE, FALSE, 0);
+	gtk_box_append(GTK_BOX(c->vbox), c->tabbar);
 
-	/* Then the webview */
-	gtk_box_pack_start(GTK_BOX(c->vbox), GTK_WIDGET(c->view),
-					   TRUE, TRUE, 0);
+	/* Download bar: below tabbar, hidden until a download starts */
+	c->dlbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+	gtk_widget_set_name(c->dlbar, "surf-dlbar");
+	gtk_box_append(GTK_BOX(c->vbox), c->dlbar);
 
-	/* Tab bar styling - add this RIGHT AFTER creating c->tabbar */
+	/* Webview expands to fill remaining space */
+	gtk_widget_set_vexpand(GTK_WIDGET(c->view), TRUE);
+	gtk_widget_set_hexpand(GTK_WIDGET(c->view), TRUE);
+	gtk_box_append(GTK_BOX(c->vbox), GTK_WIDGET(c->view));
+
+	/* Tab bar styling */
 	GtkCssProvider *tabcss = gtk_css_provider_new();
 	gchar *tabcssstr = g_strdup_printf(
 		"#tabbar {"
@@ -2091,18 +2102,15 @@ showview(WebKitWebView *v, Client *c)
 		"  background-color: #353535;"
 		"  color: #aaaaaa;"
 		"}");
-	gtk_css_provider_load_from_data(tabcss, tabcssstr, -1, NULL);
+	gtk_css_provider_load_from_data(tabcss, tabcssstr, -1);
 	g_free(tabcssstr);
 
-	/* Apply to the tabbar itself */
 	gtk_style_context_add_provider(
 		gtk_widget_get_style_context(c->tabbar),
 		GTK_STYLE_PROVIDER(tabcss),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-
-	/* Apply globally so child widgets inherit it */
-	gtk_style_context_add_provider_for_screen(
-		gdk_screen_get_default(),
+	gtk_style_context_add_provider_for_display(
+		gdk_display_get_default(),
 		GTK_STYLE_PROVIDER(tabcss),
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref(tabcss);
@@ -2110,29 +2118,28 @@ showview(WebKitWebView *v, Client *c)
 	c->statusbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
 	c->barlabel = gtk_label_new("");
-	gtk_widget_set_can_focus(c->barlabel, FALSE);
+	gtk_widget_set_focusable(c->barlabel, FALSE);
 	gtk_widget_set_name(c->barlabel, "surf-barlabel");
-	gtk_widget_set_no_show_all(c->barlabel, TRUE);
-	gtk_box_pack_start(GTK_BOX(c->statusbar), c->barlabel, FALSE, FALSE, 0);
+	gtk_widget_hide(c->barlabel);
+	gtk_box_append(GTK_BOX(c->statusbar), c->barlabel);
 
 	c->statentry = gtk_entry_new();
 	gtk_widget_set_hexpand(c->statentry, TRUE);
-	gtk_widget_set_can_focus(c->statentry, FALSE);
+	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
-	gtk_entry_set_has_frame(GTK_ENTRY(c->statentry), FALSE);
 	g_signal_connect(G_OBJECT(c->statentry), "activate",
 					 G_CALLBACK(baractivate), c);
-	g_signal_connect(G_OBJECT(c->statentry), "key-press-event",
-					 G_CALLBACK(barkeypress), c);
-	gtk_box_pack_start(GTK_BOX(c->statusbar), c->statentry, TRUE, TRUE, 0);
+	g_signal_connect(G_OBJECT(c->statentry), "changed",
+					 G_CALLBACK(bar_on_changed), c);
+	barkey = gtk_event_controller_key_new();
+	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(barkey),
+	                                           GTK_PHASE_CAPTURE);
+	g_signal_connect(barkey, "key-pressed", G_CALLBACK(barkeypress), c);
+	gtk_widget_add_controller(c->statentry, barkey);
+	gtk_box_append(GTK_BOX(c->statusbar), c->statentry);
 
-	gtk_box_pack_end(GTK_BOX(c->vbox), c->statusbar, FALSE, FALSE, 0);
-
-	/* Download bar: below tabbar, same width, hidden until a download starts */
-	c->dlbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
-	gtk_widget_set_name(c->dlbar, "surf-dlbar");
-	gtk_box_pack_start(GTK_BOX(c->vbox), c->dlbar, FALSE, FALSE, 0);
-	gtk_box_reorder_child(GTK_BOX(c->vbox), c->dlbar, 1);
+	/* Status bar at BOTTOM */
+	gtk_box_append(GTK_BOX(c->vbox), c->statusbar);
 
 	css = gtk_css_provider_new();
 	cssstr = g_strdup_printf(
@@ -2170,21 +2177,21 @@ showview(WebKitWebView *v, Client *c)
 		stat_bg_normal, stat_fg_normal, stat_font,
 		stat_bg_normal, stat_fg_normal, stat_font,
 		stat_bg_normal, stat_fg_normal, stat_font);
-	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
+	gtk_css_provider_load_from_data(css, cssstr, -1);
 	g_free(cssstr);
 
 	gtk_widget_set_name(c->statusbar, "surf-statusbar");
 	gtk_widget_set_name(c->statentry, "surf-statentry");
 
-	gtk_style_context_add_provider_for_screen(
-		gdk_screen_get_default(),
+	gtk_style_context_add_provider_for_display(
+		gdk_display_get_default(),
 		GTK_STYLE_PROVIDER(css), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref(css);
 
-	gtk_container_add(GTK_CONTAINER(c->win), c->vbox);
+	gtk_window_set_child(GTK_WINDOW(c->win), c->vbox);
 
-	gtk_widget_show_all(c->win);
 	gtk_widget_hide(c->dlbar); /* hidden until first download */
+	gtk_window_present(GTK_WINDOW(c->win));
 
 	tab_init(c);	  /* Make sure tab system is initialized */
 	update_tabbar(c); /* Draw the tabs */
@@ -2201,11 +2208,6 @@ showview(WebKitWebView *v, Client *c)
 	if (curconfig[HideBackground].val.i)
 		webkit_web_view_set_background_color(c->view, &bgcolor);
 
-	if (!curconfig[KioskMode].val.i) {
-		gwin = gtk_widget_get_window(GTK_WIDGET(c->win));
-		gdk_window_set_events(gwin, GDK_ALL_EVENTS_MASK);
-	}
-
 	if (curconfig[RunInFullscreen].val.i)
 		togglefullscreen(c, NULL);
 
@@ -2219,31 +2221,28 @@ showview(WebKitWebView *v, Client *c)
 GtkWidget *
 createwindow(Client *c)
 {
-	char *wmstr;
 	GtkWidget *w;
+	GtkEventController *ctrl;
 
-	w = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-
-	wmstr = g_path_get_basename(argv0);
-	gtk_window_set_wmclass(GTK_WINDOW(w), wmstr, "Surf");
-	g_free(wmstr);
-
-	wmstr = g_strdup_printf("%s[%" PRIu64 "]", "Surf", c->pageid);
-	gtk_window_set_role(GTK_WINDOW(w), wmstr);
-	g_free(wmstr);
-
+	w = gtk_window_new();
 	gtk_window_set_default_size(GTK_WINDOW(w), winsize[0], winsize[1]);
 
 	g_signal_connect(G_OBJECT(w), "destroy",
 					 G_CALLBACK(destroywin), c);
-	g_signal_connect(G_OBJECT(w), "enter-notify-event",
-					 G_CALLBACK(winevent), c);
-	g_signal_connect(G_OBJECT(w), "key-press-event",
-					 G_CALLBACK(winevent), c);
-	g_signal_connect(G_OBJECT(w), "leave-notify-event",
-					 G_CALLBACK(winevent), c);
-	g_signal_connect(G_OBJECT(w), "window-state-event",
-					 G_CALLBACK(winevent), c);
+
+	ctrl = gtk_event_controller_key_new();
+	gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(ctrl),
+	                                           GTK_PHASE_CAPTURE);
+	g_signal_connect(ctrl, "key-pressed", G_CALLBACK(winevent_key), c);
+	gtk_widget_add_controller(w, ctrl);
+
+	ctrl = gtk_event_controller_motion_new();
+	g_signal_connect(ctrl, "enter", G_CALLBACK(winevent_enter), c);
+	g_signal_connect(ctrl, "leave", G_CALLBACK(winevent_leave), c);
+	gtk_widget_add_controller(w, ctrl);
+
+	g_signal_connect(G_OBJECT(w), "notify::fullscreened",
+					 G_CALLBACK(winevent_fullscreen), c);
 
 	return w;
 }
@@ -2658,7 +2657,7 @@ dl_update_label(WebKitDownload *d)
 }
 
 static void
-downloadstarted(WebKitWebContext *wc, WebKitDownload *d, Client *c)
+downloadstarted(WebKitNetworkSession *ns, WebKitDownload *d, Client *c)
 {
 	g_signal_connect(G_OBJECT(d), "decide-destination",
 					 G_CALLBACK(decidedestination), c);
@@ -2676,8 +2675,7 @@ decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 {
 	/* If user already confirmed a path, use it directly for this restarted download */
 	if (c->dl_pending_path) {
-		gchar *uri = g_filename_to_uri(c->dl_pending_path, NULL, NULL);
-		if (uri) { webkit_download_set_destination(d, uri); g_free(uri); }
+		webkit_download_set_destination(d, c->dl_pending_path);
 
 		static guint dl_counter = 0;
 		WebKitURIResponse *resp = webkit_download_get_response(d);
@@ -2694,9 +2692,9 @@ decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 		dd->label = lbl;
 		g_object_set_data_full(G_OBJECT(d), "dl-data", dd,
 							   (GDestroyNotify)dl_data_free);
-		gtk_box_pack_start(GTK_BOX(c->dlbar), lbl, FALSE, FALSE, 0);
+		gtk_box_append(GTK_BOX(c->dlbar), lbl);
 		dl_update_label(d);
-		gtk_widget_show_all(c->dlbar);
+		gtk_widget_show(c->dlbar);
 
 		g_signal_connect(d, "notify::estimated-progress",
 					 G_CALLBACK(dlprogress), NULL);
@@ -2720,9 +2718,9 @@ decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 	c->mode = ModeCommand;
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [DOWNLOAD] ");
 	gtk_widget_show(c->barlabel);
-	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
-	gtk_entry_set_text(GTK_ENTRY(c->statentry), default_dest);
+	gtk_editable_set_text(GTK_EDITABLE(c->statentry), default_dest);
 	gtk_widget_grab_focus(c->statentry);
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
 	updatebar_style(c);
@@ -2762,10 +2760,9 @@ dlfailed(WebKitDownload *d, GError *err, gpointer unused)
 static void
 dl_clear(Client *c, const Arg *a)
 {
-	GList *rows = gtk_container_get_children(GTK_CONTAINER(c->dlbar));
-	for (GList *l = rows; l; l = l->next)
-		gtk_widget_destroy(GTK_WIDGET(l->data));
-	g_list_free(rows);
+	GtkWidget *child;
+	while ((child = gtk_widget_get_first_child(c->dlbar)))
+		gtk_box_remove(GTK_BOX(c->dlbar), child);
 	gtk_widget_hide(c->dlbar);
 }
 
@@ -2917,7 +2914,7 @@ closeview(WebKitWebView *v, Client *c)
 			}
 		}
 	}
-	gtk_widget_destroy(c->win);
+	gtk_window_destroy(GTK_WINDOW(c->win));
 }
 
 static void
@@ -2925,15 +2922,19 @@ destroywin(GtkWidget *w, Client *c)
 {
 	destroyclient(c);
 	if (!clients)
-		gtk_main_quit();
+		g_main_loop_quit(mainloop);
 }
 
 static void
-pasteuri(GtkClipboard *clipboard, const char *text, gpointer d)
+pasteuri(GObject *clipboard, GAsyncResult *result, gpointer d)
 {
+	char *text = gdk_clipboard_read_text_finish(GDK_CLIPBOARD(clipboard),
+												result, NULL);
 	Arg a = {.v = text};
-	if (text)
+	if (text) {
 		loaduri((Client *)d, &a);
+		g_free(text);
+	}
 }
 
 static void
@@ -2955,24 +2956,18 @@ print(Client *c, const Arg *a)
 static void
 screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 {
-	cairo_surface_t *surf;
+	GdkTexture *texture;
 	GError *err = NULL;
 	char path[PATH_MAX];
 	char *home;
 	struct tm *tm;
 	time_t t;
 
-	/* The view may have been destroyed (tab closed / web process crashed)
-	 * while the snapshot was in flight.  After gtk_widget_destroy() the
-	 * GObject is still alive (GTask holds a ref) but the WebKit internals
-	 * are torn down; calling get_snapshot_finish on it crashes inside
-	 * WebKit.  gtk_widget_get_realized() is FALSE after destroy — safe
-	 * to check here since we are on the single GLib main thread. */
 	if (!gtk_widget_get_realized(GTK_WIDGET(obj)))
 		return;
 
-	surf = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(obj),
-											   res, &err);
+	texture = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(obj),
+												  res, &err);
 	if (err) {
 		fprintf(stderr, "screenshot: %s\n", err->message);
 		g_error_free(err);
@@ -2986,7 +2981,6 @@ screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	t = time(NULL);
 	tm = localtime(&t);
 
-	/* Save to ~/Pictures/ if it exists, else ~/ */
 	snprintf(path, sizeof(path), "%s/Pictures", home);
 	if (access(path, W_OK) != 0)
 		snprintf(path, sizeof(path), "%s", home);
@@ -2996,13 +2990,14 @@ screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 			 tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday,
 			 tm->tm_hour, tm->tm_min, tm->tm_sec);
 
-	cairo_surface_write_to_png(surf, path);
-	cairo_surface_destroy(surf);
+	if (!gdk_texture_save_to_png(texture, path))
+		fprintf(stderr, "screenshot: failed to save %s\n", path);
+	else
+		fprintf(stderr, "screenshot: %s\n", path);
+	g_object_unref(texture);
 
 	(void)data;
-	fprintf(stderr, "screenshot: %s\n", path);
 
-	/* Desktop notification — no pointer to Client needed */
 	char *argv[] = {"notify-send", "-t", "4000", "Screenshot saved", path, NULL};
 	g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
 				  NULL, NULL, NULL, NULL);
@@ -3022,41 +3017,46 @@ static void
 showcert(Client *c, const Arg *a)
 {
 	GTlsCertificate *cert = c->failedcert ? c->failedcert : c->cert;
-	GcrCertificate *gcrt;
-	GByteArray *crt;
-	GtkWidget *win;
-	GcrCertificateWidget *wcert;
+	GtkWidget *win, *scroll, *view;
+	GtkTextBuffer *buf;
+	gchar *pem = NULL;
 
 	if (!cert)
 		return;
 
-	g_object_get(cert, "certificate", &crt, NULL);
-	gcrt = gcr_simple_certificate_new(crt->data, crt->len);
-	g_byte_array_unref(crt);
+	g_object_get(cert, "certificate-pem", &pem, NULL);
+	if (!pem)
+		return;
 
-	win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-	wcert = gcr_certificate_widget_new(gcrt);
-	g_object_unref(gcrt);
+	win = gtk_window_new();
+	gtk_window_set_default_size(GTK_WINDOW(win), 600, 400);
+	gtk_window_set_title(GTK_WINDOW(win), "Certificate");
 
-	gtk_container_add(GTK_CONTAINER(win), GTK_WIDGET(wcert));
-	gtk_widget_show_all(win);
+	scroll = gtk_scrolled_window_new();
+	view = gtk_text_view_new();
+	gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
+	gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
+	buf = gtk_text_view_get_buffer(GTK_TEXT_VIEW(view));
+	gtk_text_buffer_set_text(buf, pem, -1);
+	g_free(pem);
+
+	gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), view);
+	gtk_window_set_child(GTK_WINDOW(win), scroll);
+	gtk_window_present(GTK_WINDOW(win));
 }
 
 static void
 clipboard(Client *c, const Arg *a)
 {
+	GdkDisplay *dpy = gdk_display_get_default();
+
 	if (a->i) {
-		gtk_clipboard_request_text(gtk_clipboard_get(
-									   GDK_SELECTION_PRIMARY),
-								   pasteuri, c);
+		gdk_clipboard_read_text_async(gdk_display_get_primary_clipboard(dpy),
+									  NULL, pasteuri, c);
 	} else {
 		const char *uri = c->targeturi ? c->targeturi : geturi(c);
-
-		/* Copy to both PRIMARY and CLIPBOARD */
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
-							   uri, -1);
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
-							   uri, -1);
+		gdk_clipboard_set_text(gdk_display_get_clipboard(dpy), uri);
+		gdk_clipboard_set_text(gdk_display_get_primary_clipboard(dpy), uri);
 	}
 }
 
@@ -3179,13 +3179,20 @@ opensearch(Client *c, const Arg *a)
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [SEARCH] ");
 	gtk_widget_show(c->barlabel);
 
-	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
-	gtk_entry_set_text(GTK_ENTRY(c->statentry), "");
+	gtk_editable_set_text(GTK_EDITABLE(c->statentry), "");
 	gtk_widget_grab_focus(c->statentry);
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
 	updatebar_style(c);
 	updatetitle(c);
+}
+
+static void
+bar_on_changed(GtkEditable *editable, Client *c)
+{
+	if (c->mode == ModeCommand)
+		history_filter(c, gtk_editable_get_text(editable));
 }
 
 static gboolean
@@ -3240,7 +3247,7 @@ updatebar(Client *c)
 	else
 		text = g_strdup_printf(" [%s] %s", modestr, uri);
 
-	gtk_entry_set_text(GTK_ENTRY(c->statentry), text);
+	gtk_editable_set_text(GTK_EDITABLE(c->statentry), text);
 	g_free(text);
 }
 
@@ -3256,14 +3263,14 @@ openbar(Client *c, const Arg *a)
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [TAB] ");
 	gtk_widget_show(c->barlabel);
 
-	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
 	if (a->i) {
 		uri = geturi(c);
-		gtk_entry_set_text(GTK_ENTRY(c->statentry), uri);
+		gtk_editable_set_text(GTK_EDITABLE(c->statentry), uri);
 	} else {
-		gtk_entry_set_text(GTK_ENTRY(c->statentry), "");
+		gtk_editable_set_text(GTK_EDITABLE(c->statentry), "");
 	}
 
 	gtk_widget_grab_focus(c->statentry);
@@ -3286,7 +3293,7 @@ closebar(Client *c)
 	gtk_label_set_text(GTK_LABEL(c->barlabel), "");
 
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
-	gtk_widget_set_can_focus(c->statentry, FALSE);
+	gtk_widget_set_focusable(c->statentry, FALSE);
 
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 	updatetitle(c);
@@ -3304,10 +3311,10 @@ openbar_newtab(Client *c, const Arg *a)
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [NEW TAB] ");
 	gtk_widget_show(c->barlabel);
 
-	gtk_widget_set_can_focus(c->statentry, TRUE);
+	gtk_widget_set_focusable(c->statentry, TRUE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), TRUE);
 
-	gtk_entry_set_text(GTK_ENTRY(c->statentry), "");
+	gtk_editable_set_text(GTK_EDITABLE(c->statentry), "");
 
 	gtk_widget_grab_focus(c->statentry);
 	gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
@@ -3436,10 +3443,9 @@ find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	g_object_unref(val);
 
 	if (text && *text) {
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_CLIPBOARD),
-							   text, -1);
-		gtk_clipboard_set_text(gtk_clipboard_get(GDK_SELECTION_PRIMARY),
-							   text, -1);
+		GdkDisplay *dpy = gdk_display_get_default();
+		gdk_clipboard_set_text(gdk_display_get_clipboard(dpy), text);
+		gdk_clipboard_set_text(gdk_display_get_primary_clipboard(dpy), text);
 	}
 	g_free(text);
 	find_select_exit(c);
@@ -3450,20 +3456,16 @@ baractivate(GtkEntry *entry, Client *c)
 {
 	const char *text, *input;
 
-	text = gtk_entry_get_text(entry);
+	text = gtk_editable_get_text(GTK_EDITABLE(entry));
 
 	if (c->mode == ModeSearch) {
 		input = text;
 
 		if (input && *input) {
-			/* Start the search (highlights matches) */
 			webkit_find_controller_search(c->finder, input,
 										  findopts, G_MAXUINT);
-
-			/* Count matches (triggers counted-matches signal) */
 			webkit_find_controller_count_matches(c->finder, input,
 												 findopts, G_MAXUINT);
-
 			find_highlight_update(c, input);
 			c->find_current_match = 1;
 		}
@@ -3475,13 +3477,13 @@ baractivate(GtkEntry *entry, Client *c)
 
 	/* Download path confirmation */
 	if (c->dl_pending_uri) {
-		const char *path = gtk_entry_get_text(entry);
+		const char *path = gtk_editable_get_text(GTK_EDITABLE(entry));
 		if (path && *path) {
 			gchar *dir = g_path_get_dirname(path);
 			g_mkdir_with_parents(dir, 0755);
 			g_free(dir);
 			c->dl_pending_path = g_strdup(path);
-			webkit_web_context_download_uri(c->context, c->dl_pending_uri);
+			webkit_web_view_download_uri(c->view, c->dl_pending_uri);
 		}
 		g_free(c->dl_pending_uri);
 		c->dl_pending_uri = NULL;
@@ -3520,9 +3522,10 @@ baractivate(GtkEntry *entry, Client *c)
 }
 
 static gboolean
-barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
+barkeypress(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
+            GdkModifierType state, Client *c)
 {
-	if (e->key.keyval == GDK_KEY_Escape) {
+	if (keyval == GDK_KEY_Escape) {
 		if (c->mode == ModeSearch) {
 			webkit_find_controller_search_finish(c->finder);
 			find_highlight_update(c, NULL);
@@ -3540,38 +3543,32 @@ barkeypress(GtkWidget *w, GdkEvent *e, Client *c)
 		return FALSE;
 	}
 
-	/* No history navigation in download path prompt */
 	if (c->dl_pending_uri)
 		return FALSE;
 
-	/* Arrow keys / Tab / Ctrl+n/p for history navigation.
-	 * Must return TRUE to consume Up/Down — otherwise GTK moves focus
-	 * from the entry to the history_scroll widget, making the bar dead. */
-	if (e->key.keyval == GDK_KEY_Up) {
+	if (keyval == GDK_KEY_Up) {
 		history_select(c, -1);
 		return TRUE;
 	}
-	if (e->key.keyval == GDK_KEY_Down) {
+	if (keyval == GDK_KEY_Down) {
 		history_select(c, +1);
 		return TRUE;
 	}
-	if (e->key.keyval == GDK_KEY_Tab) {
-		if (e->key.state & GDK_SHIFT_MASK)
+	if (keyval == GDK_KEY_Tab) {
+		if (state & GDK_SHIFT_MASK)
 			history_select(c, -1);
 		else
 			history_select(c, +1);
 		return TRUE;
 	}
-	if ((e->key.state & GDK_CONTROL_MASK) && e->key.keyval == GDK_KEY_n) {
+	if ((state & GDK_CONTROL_MASK) && keyval == GDK_KEY_n) {
 		history_select(c, +1);
 		return TRUE;
 	}
-	if ((e->key.state & GDK_CONTROL_MASK) && e->key.keyval == GDK_KEY_p) {
+	if ((state & GDK_CONTROL_MASK) && keyval == GDK_KEY_p) {
 		history_select(c, -1);
 		return TRUE;
 	}
-
-	g_idle_add((GSourceFunc)bar_update_filter, c);
 
 	return FALSE;
 }
@@ -4128,7 +4125,7 @@ history_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data)
 	GtkWidget *label;
 	const char *text;
 
-	label = gtk_bin_get_child(GTK_BIN(row));
+	label = gtk_list_box_row_get_child(row);
 	if (!label)
 		return;
 
@@ -4145,7 +4142,7 @@ static void
 history_hide(Client *c)
 {
 	if (history_scroll) {
-		gtk_widget_destroy(history_scroll);
+		gtk_box_remove(GTK_BOX(c->vbox), history_scroll);
 		history_scroll = NULL;
 		history_list = NULL;
 	}
@@ -4161,7 +4158,7 @@ bar_update_filter(gpointer data)
 	if (c->mode != ModeCommand)
 		return FALSE;
 
-	text = gtk_entry_get_text(GTK_ENTRY(c->statentry));
+	text = gtk_editable_get_text(GTK_EDITABLE(c->statentry));
 	history_filter(c, text);
 
 	return FALSE;
@@ -4173,14 +4170,13 @@ history_filter(Client *c, const char *text)
 	int count = 0;
 	const int max_results = 15;
 	GHashTable *seen;
-	GList *children, *iter;
 	GtkCssProvider *css;
 
 	if (!history_entries || !text)
 		return;
 
 	if (!history_scroll) {
-		history_scroll = gtk_scrolled_window_new(NULL, NULL);
+		history_scroll = gtk_scrolled_window_new();
 		gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(history_scroll),
 									   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 
@@ -4190,21 +4186,14 @@ history_filter(Client *c, const char *text)
 		gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(history_list), TRUE);
 		g_signal_connect(history_list, "row-activated",
 						 G_CALLBACK(history_row_activated), c);
-		gtk_container_add(GTK_CONTAINER(history_scroll), history_list);
+		gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(history_scroll),
+									  history_list);
 
-		GList *kids = gtk_container_get_children(GTK_CONTAINER(c->vbox));
-		int statusbar_pos = 0;
-		int idx = 0;
-		for (GList *l = kids; l; l = l->next, idx++) {
-			if (l->data == c->statusbar) {
-				statusbar_pos = idx;
-				break;
-			}
-		}
-		g_list_free(kids);
-
-		gtk_box_pack_start(GTK_BOX(c->vbox), history_scroll, FALSE, FALSE, 0);
-		gtk_box_reorder_child(GTK_BOX(c->vbox), history_scroll, statusbar_pos);
+		/* Insert before statusbar */
+		GtkWidget *before_sb = gtk_widget_get_first_child(c->vbox);
+		while (before_sb && gtk_widget_get_next_sibling(before_sb) != c->statusbar)
+			before_sb = gtk_widget_get_next_sibling(before_sb);
+		gtk_box_insert_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
 
 		css = gtk_css_provider_new();
 		gtk_css_provider_load_from_data(css,
@@ -4239,7 +4228,7 @@ history_filter(Client *c, const char *text)
 										"  padding: 2px 6px;"
 										"  color: #cccccc;"
 										"}",
-										-1, NULL);
+										-1);
 
 		gtk_widget_set_name(history_scroll, "history-scroll");
 		gtk_widget_set_name(history_list, "history-list");
@@ -4257,10 +4246,11 @@ history_filter(Client *c, const char *text)
 	}
 
 	/* Clear existing rows */
-	children = gtk_container_get_children(GTK_CONTAINER(history_list));
-	for (iter = children; iter; iter = iter->next)
-		gtk_widget_destroy(GTK_WIDGET(iter->data));
-	g_list_free(children);
+	{
+		GtkWidget *row;
+		while ((row = gtk_widget_get_first_child(history_list)))
+			gtk_list_box_remove(GTK_LIST_BOX(history_list), row);
+	}
 
 	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
@@ -4354,7 +4344,7 @@ history_filter(Client *c, const char *text)
 		if (popup_height > 360)
 			popup_height = 360;
 		gtk_widget_set_size_request(history_scroll, -1, popup_height);
-		gtk_widget_show_all(history_scroll);
+		gtk_widget_show(history_scroll);
 	} else if (history_scroll) {
 		gtk_widget_hide(history_scroll);
 	}
@@ -4407,12 +4397,16 @@ history_select(Client *c, int direction)
 		gtk_style_context_add_class(
 			gtk_widget_get_style_context(GTK_WIDGET(row)), "hl");
 
-		GtkWidget *label = gtk_bin_get_child(GTK_BIN(row));
+		GtkWidget *label = gtk_list_box_row_get_child(row);
 		if (label) {
 			const char *uri = gtk_widget_get_name(label);
 			if (uri && *uri) {
-				gtk_entry_set_text(GTK_ENTRY(c->statentry), uri);
+				g_signal_handlers_block_by_func(c->statentry,
+				                                bar_on_changed, c);
+				gtk_editable_set_text(GTK_EDITABLE(c->statentry), uri);
 				gtk_editable_set_position(GTK_EDITABLE(c->statentry), -1);
+				g_signal_handlers_unblock_by_func(c->statentry,
+				                                  bar_on_changed, c);
 			}
 		}
 	}
@@ -4518,7 +4512,7 @@ updatebar_style(Client *c)
 		"  padding: 1px 6px; min-height: 18px;"
 		"}",
 		bg, bg, fg, stat_font, bg, fg, stat_font);
-	gtk_css_provider_load_from_data(css, cssstr, -1, NULL);
+	gtk_css_provider_load_from_data(css, cssstr, -1);
 	g_free(cssstr);
 
 	gtk_style_context_add_provider(
@@ -4696,8 +4690,9 @@ main(int argc, char *argv[])
 	loaduri(c, &arg);
 	updatetitle(c);
 
-	gtk_main();
+	g_main_loop_run(mainloop);
 	cleanup();
+	g_main_loop_unref(mainloop);
 
 	return 0;
 }
