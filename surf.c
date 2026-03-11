@@ -276,6 +276,7 @@ Client *clients;
 static GMainLoop *mainloop;
 static char *surf_fifo;
 static GIOChannel *fifo_chan;
+static WebKitUserContentManager *shared_content_manager;
 static void setup_fifo(Client *c);
 static void spawnuserscript(Client *c, const Arg *a);
 static void inject_userscripts_early(WebKitUserContentManager *cm, const char *uri);
@@ -790,6 +791,7 @@ update_tabbar(Client *c)
 		label = gtk_label_new(text);
 		gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
 		gtk_label_set_single_line_mode(GTK_LABEL(label), TRUE);
+		gtk_widget_set_hexpand(label, TRUE);
 		g_free(text);
 
 		gtk_label_set_xalign(GTK_LABEL(label), 0.0);
@@ -797,7 +799,7 @@ update_tabbar(Client *c)
 		gtk_widget_set_margin_end(label, 8);
 
 		box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-		gtk_widget_set_size_request(box, 150, -1);
+		gtk_widget_set_hexpand(box, TRUE);
 		gtk_box_append(GTK_BOX(box), label);
 		g_object_set_data(G_OBJECT(box), "tab-index", GINT_TO_POINTER(i));
 		gesture = gtk_gesture_click_new();
@@ -1742,6 +1744,7 @@ cleanup(void)
 	g_free(historyfile);
 	if (pin_timer)
 		g_source_remove(pin_timer);
+	g_clear_object(&shared_content_manager);
 }
 
 static void
@@ -1758,12 +1761,18 @@ newview(Client *c, WebKitWebView *rv)
 	WebKitWebContext *context;
 	WebKitNetworkSession *netsession;
 	WebKitCookieManager *cookiemanager;
-	WebKitUserContentManager *contentmanager;
 	GtkGesture *click;
+
+	if (!shared_content_manager) {
+		shared_content_manager = webkit_user_content_manager_new();
+		inject_userscripts_early(shared_content_manager, "");
+	}
 
 	if (rv) {
 		v = WEBKIT_WEB_VIEW(g_object_new(WEBKIT_TYPE_WEB_VIEW,
-		                                 "related-view", rv, NULL));
+		                                 "related-view", rv,
+		                                 "user-content-manager", shared_content_manager,
+		                                 NULL));
 		context = webkit_web_view_get_context(v);
 		settings = webkit_web_view_get_settings(v);
 	} else {
@@ -1792,9 +1801,6 @@ newview(Client *c, WebKitWebView *rv)
 				settings, "Surf", VERSION);
 		}
 		useragent = webkit_settings_get_user_agent(settings);
-
-		contentmanager = webkit_user_content_manager_new();
-		inject_userscripts_early(contentmanager, "");
 
 		context = webkit_web_context_new();
 		g_signal_connect(G_OBJECT(context), "initialize-web-process-extensions",
@@ -1830,13 +1836,12 @@ newview(Client *c, WebKitWebView *rv)
 
 		v = g_object_new(WEBKIT_TYPE_WEB_VIEW,
 		                 "settings", settings,
-		                 "user-content-manager", contentmanager,
+		                 "user-content-manager", shared_content_manager,
 		                 "web-context", context,
 		                 "network-session", netsession,
 		                 NULL);
 		g_object_unref(netsession);
 		g_object_unref(context);
-		g_object_unref(contentmanager);
 	}
 
 	g_signal_connect(G_OBJECT(v), "notify::estimated-load-progress",
