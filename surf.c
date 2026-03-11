@@ -398,14 +398,6 @@ setup(void)
 
 	gtk_init(NULL, NULL);
 
-/* Force single web process for all pages */
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-	webkit_web_context_set_process_model(
-		webkit_web_context_get_default(),
-		WEBKIT_PROCESS_MODEL_SHARED_SECONDARY_PROCESS);
-#pragma GCC diagnostic pop
-
 	gdpy = gdk_display_get_default();
 	if (!gdpy)
 		die("Failed to get GDK display");

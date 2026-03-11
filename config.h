@@ -106,7 +106,7 @@ static Parameter defconfig[ParameterLast] = {
 		{.i = 1},
 	},
 	[WebGL] = {
-		{.i = 0},
+		{.i = 1},
 	},
 	[ZoomLevel] = {
 		{.f = 1.0},
