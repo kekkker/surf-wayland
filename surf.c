@@ -37,6 +37,7 @@
 
 #define LENGTH(x) (sizeof(x) / sizeof(x[0]))
 #define CLEANMASK(mask) (mask & (MODKEY | GDK_SHIFT_MASK))
+#define INSPECTOR_OPEN_DATA_KEY "surf-inspector-open"
 
 enum {
 	OnDoc = WEBKIT_HIT_TEST_RESULT_CONTEXT_DOCUMENT,
@@ -161,6 +162,8 @@ static gboolean winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint ke
 static void winevent_enter(GtkEventControllerMotion *ctrl, double x, double y, Client *c);
 static void winevent_leave(GtkEventControllerMotion *ctrl, Client *c);
 static void winevent_fullscreen(GObject *win, GParamSpec *pspec, Client *c);
+static void inspectorclosed(WebKitWebInspector *inspector, Client *c);
+static gboolean inspectoropenwindow(WebKitWebInspector *inspector, Client *c);
 static void showview(WebKitWebView *v, Client *c);
 static GtkWidget *createwindow(Client *c);
 static gboolean loadfailedtls(WebKitWebView *v, gchar *uri,
@@ -1765,6 +1768,7 @@ newview(Client *c, WebKitWebView *rv)
 	WebKitWebContext *context;
 	WebKitNetworkSession *netsession;
 	WebKitCookieManager *cookiemanager;
+	WebKitWebInspector *inspector;
 	GtkGesture *click;
 
 	if (!shared_content_manager) {
@@ -1877,6 +1881,11 @@ newview(Client *c, WebKitWebView *rv)
 	g_signal_connect(G_OBJECT(v), "run-file-chooser",
 					 G_CALLBACK(filechooser), c);
 
+	inspector = webkit_web_view_get_inspector(v);
+	g_object_set_data(G_OBJECT(inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(0));
+	g_signal_connect(inspector, "closed", G_CALLBACK(inspectorclosed), c);
+	g_signal_connect(inspector, "open-window", G_CALLBACK(inspectoropenwindow), c);
+
 	/* Button release for mouse gesture/hint mode handling */
 	click = gtk_gesture_click_new();
 	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
@@ -1894,6 +1903,19 @@ newview(Client *c, WebKitWebView *rv)
 	setparameter(c, 0, DarkMode, &curconfig[DarkMode].val);
 
 	return v;
+}
+
+static void
+inspectorclosed(WebKitWebInspector *inspector, Client *c)
+{
+	g_object_set_data(G_OBJECT(inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(0));
+}
+
+static gboolean
+inspectoropenwindow(WebKitWebInspector *inspector, Client *c)
+{
+	g_object_set_data(G_OBJECT(inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(1));
+	return FALSE;
 }
 
 static void
@@ -3146,10 +3168,12 @@ togglecookiepolicy(Client *c, const Arg *a)
 static void
 toggleinspector(Client *c, const Arg *a)
 {
-	if (webkit_web_inspector_is_attached(c->inspector))
+	if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(c->inspector), INSPECTOR_OPEN_DATA_KEY))) {
 		webkit_web_inspector_close(c->inspector);
-	else if (curconfig[Inspector].val.i)
+	} else if (curconfig[Inspector].val.i) {
+		g_object_set_data(G_OBJECT(c->inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(1));
 		webkit_web_inspector_show(c->inspector);
+	}
 }
 
 static void
