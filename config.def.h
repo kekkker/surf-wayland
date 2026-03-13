@@ -262,6 +262,7 @@ static Key keys[] = {
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_c, toggle, {.i = CaretBrowsing}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_g, toggle, {.i = Geolocation}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_s, toggle, {.i = JavaScript}},
+	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_u, reloaduserscripts, {0}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_i, toggle, {.i = LoadImages}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_b, toggle, {.i = ScrollBars}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_t, toggle, {.i = StrictTLS}},

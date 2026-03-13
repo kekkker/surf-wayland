@@ -223,6 +223,7 @@ static void zoom(Client *c, const Arg *a);
 static void scrollv(Client *c, const Arg *a);
 static void scrollh(Client *c, const Arg *a) __attribute__((unused));
 static void navigate(Client *c, const Arg *a);
+static void reloaduserscripts(Client *c, const Arg *a);
 static void stop(Client *c, const Arg *a);
 static void toggle(Client *c, const Arg *a);
 static void togglefullscreen(Client *c, const Arg *a);
@@ -3165,6 +3166,26 @@ navigate(Client *c, const Arg *a)
 		webkit_web_view_go_back(c->view);
 	else if (a->i > 0)
 		webkit_web_view_go_forward(c->view);
+}
+
+static void
+reloaduserscripts(Client *c, const Arg *a)
+{
+	(void)c;
+	(void)a;
+
+	if (!shared_content_manager)
+		return;
+
+	webkit_user_content_manager_remove_all_scripts(shared_content_manager);
+	inject_userscripts_early(shared_content_manager, "");
+
+	for (Client *it = clients; it; it = it->next) {
+		for (int i = 0; i < it->tabs_count; i++) {
+			if (it->tabs_views[i])
+				webkit_web_view_reload(it->tabs_views[i]);
+		}
+	}
 }
 
 static void

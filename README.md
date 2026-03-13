@@ -145,6 +145,7 @@ surf [URI]
 | `Ctrl+o` | Toggle web inspector |
 | `Ctrl+p` | Take full-page screenshot |
 | `Ctrl+s` | Clear download bar |
+| `Ctrl+Shift+u` | Reload userscripts and reload all tabs |
 
 #### Insert Mode
 
