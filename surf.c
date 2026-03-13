@@ -282,6 +282,7 @@ static GIOChannel *fifo_chan;
 static WebKitUserContentManager *shared_content_manager;
 static void setup_fifo(Client *c);
 static void spawnuserscript(Client *c, const Arg *a);
+static void add_global_stylesheets(WebKitUserContentManager *cm);
 static void inject_userscripts_early(WebKitUserContentManager *cm, const char *uri);
 
 static void findcountchanged(WebKitFindController *f, guint count, Client *c);
@@ -1506,12 +1507,14 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 			webkit_web_view_get_network_session(c->view),
 			a->i ? WEBKIT_TLS_ERRORS_POLICY_FAIL : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 		break;
-	case Style:
-		webkit_user_content_manager_remove_all_style_sheets(
-			webkit_web_view_get_user_content_manager(c->view));
-		if (a->i)
-			setstyle(c, getstyle(geturi(c)));
-		refresh = 0;
+		case Style:
+			webkit_user_content_manager_remove_all_style_sheets(
+				webkit_web_view_get_user_content_manager(c->view));
+			add_global_stylesheets(
+				webkit_web_view_get_user_content_manager(c->view));
+			if (a->i)
+				setstyle(c, getstyle(geturi(c)));
+			refresh = 0;
 		break;
 	case WebGL:
 		webkit_settings_set_enable_webgl(c->settings, a->i);
@@ -1540,6 +1543,24 @@ getcert(const char *uri)
 	}
 
 	return NULL;
+}
+
+static void
+add_global_stylesheets(WebKitUserContentManager *cm)
+{
+	static const char scroll_override_css[] =
+		"html { scroll-behavior: auto !important; }\n"
+		"body { scroll-behavior: auto !important; }\n"
+		"* { scroll-behavior: auto !important; }\n";
+	WebKitUserStyleSheet *stylesheet;
+
+	stylesheet = webkit_user_style_sheet_new(
+		scroll_override_css,
+		WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+		WEBKIT_USER_STYLE_LEVEL_USER,
+		NULL, NULL);
+	webkit_user_content_manager_add_style_sheet(cm, stylesheet);
+	webkit_user_style_sheet_unref(stylesheet);
 }
 
 static void
@@ -1773,6 +1794,7 @@ newview(Client *c, WebKitWebView *rv)
 
 	if (!shared_content_manager) {
 		shared_content_manager = webkit_user_content_manager_new();
+		add_global_stylesheets(shared_content_manager);
 		inject_userscripts_early(shared_content_manager, "");
 	}
 
