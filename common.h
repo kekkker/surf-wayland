@@ -56,5 +56,7 @@ typedef struct Client {
 	int tabs_active;
 	char *closed_tab_stack[CLOSED_TAB_MAX];
 	int closed_tab_top;
+	char *surf_fifo;
+	GIOChannel *fifo_chan;
 	struct Client *next;
 } Client;

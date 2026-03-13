@@ -277,9 +277,8 @@ Client *clients;
 
 /* Userscript support */
 static GMainLoop *mainloop;
-static char *surf_fifo;
-static GIOChannel *fifo_chan;
 static WebKitUserContentManager *shared_content_manager;
+static Client *find_client_for_view(WebKitWebView *v, Client *hint);
 static void setup_fifo(Client *c);
 static void spawnuserscript(Client *c, const Arg *a);
 static void add_global_stylesheets(WebKitUserContentManager *cm);
@@ -475,7 +474,6 @@ setup(void)
 				uriparams[i].config[j] = defconfig[j];
 		}
 	}
-	setup_fifo(NULL);
 	pin_timer = g_timeout_add_seconds(5, pin_keepalive, NULL);
 }
 
@@ -1734,6 +1732,12 @@ destroyclient(Client *c)
 	g_free(c->tab_pins);
 	for (int i = 0; i < c->closed_tab_top; i++)
 		g_free(c->closed_tab_stack[i]);
+	if (c->fifo_chan)
+		g_io_channel_unref(c->fifo_chan);
+	if (c->surf_fifo) {
+		unlink(c->surf_fifo);
+		g_free(c->surf_fifo);
+	}
 
 	for (p = clients; p && p->next != c; p = p->next)
 		;
@@ -1757,14 +1761,36 @@ cleanup(void)
 	g_free(stylefile);
 	g_free(cachedir);
 	display_cleanup(&display_ctx);
-	if (surf_fifo) {
-		unlink(surf_fifo);
-		g_free(surf_fifo);
-	}
 	g_free(historyfile);
 	if (pin_timer)
 		g_source_remove(pin_timer);
 	g_clear_object(&shared_content_manager);
+}
+
+static Client *
+find_client_for_view(WebKitWebView *v, Client *hint)
+{
+	if (hint) {
+		if (hint->view == v)
+			return hint;
+		for (int i = 0; i < hint->tabs_count; i++) {
+			if (hint->tabs_views[i] == v)
+				return hint;
+		}
+	}
+
+	for (Client *c = clients; c; c = c->next) {
+		if (c == hint)
+			continue;
+		if (c->view == v)
+			return c;
+		for (int i = 0; i < c->tabs_count; i++) {
+			if (c->tabs_views[i] == v)
+				return c;
+		}
+	}
+
+	return NULL;
 }
 
 static void
@@ -2241,6 +2267,7 @@ showview(WebKitWebView *v, Client *c)
 	gtk_widget_grab_focus(GTK_WIDGET(c->view));
 
 	generate_instance_id(c);
+	setup_fifo(c);
 	updateinstanceid(c);
 	if (showinstanceidflag) {
 		gdk_display_sync(gtk_widget_get_display(c->win));
@@ -2423,23 +2450,15 @@ titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 }
 
 static gboolean
-viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer unused)
+viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer data)
 {
 	const char *name;
 	WebKitUserMessage *r;
 	Client *c;
+	Client *hint = data;
 
 	name = webkit_user_message_get_name(m);
-
-	/* Find the client for this view */
-	for (c = clients; c; c = c->next) {
-		if (c->view == v)
-			break;
-	}
-
-	/* If no direct match, use first client (sub-process messages) */
-	if (!c)
-		c = clients;
+	c = find_client_for_view(v, hint);
 
 	if (!c)
 		return TRUE;
@@ -3668,12 +3687,11 @@ clickexternplayer(Client *c, const Arg *a, WebKitHitTestResult *h)
 static gboolean
 fifo_read(GIOChannel *chan, GIOCondition cond, gpointer data)
 {
-	Client *c;
+	Client *c = data;
 	gchar *line = NULL;
 	gsize len;
 	GError *err = NULL;
 
-	c = clients;
 	if (!c)
 		return TRUE;
 
@@ -3731,18 +3749,18 @@ spawnuserscript(Client *c, const Arg *a)
 	const char *uri = geturi(c);
 	const char *title = c->title ? c->title : "";
 
-	if (!surf_fifo) {
+	if (!c->surf_fifo) {
 		fprintf(stderr, "spawnuserscript: no fifo\n");
 		return;
 	}
 
 	if (fork() == 0) {
-		setenv("SURF_FIFO", surf_fifo, 1);
+		setenv("SURF_FIFO", c->surf_fifo, 1);
 		setenv("SURF_URL", uri, 1);
 		setenv("SURF_TITLE", title, 1);
 		setenv("SURF_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
 
-		setenv("QUTE_FIFO", surf_fifo, 1);
+		setenv("QUTE_FIFO", c->surf_fifo, 1);
 		setenv("QUTE_URL", uri, 1);
 		setenv("QUTE_TITLE", title, 1);
 		setenv("QUTE_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
@@ -3870,37 +3888,39 @@ setup_fifo(Client *c)
 	int fd;
 	const char *runtime_dir;
 
-	if (surf_fifo)
+	if (!c || c->surf_fifo)
 		return;
 
 	runtime_dir = getenv("XDG_RUNTIME_DIR");
 	if (!runtime_dir || !*runtime_dir)
 		runtime_dir = "/tmp";
 
-	surf_fifo = g_strdup_printf("%s/surf-fifo-%ld", runtime_dir, (long)getpid());
+	c->surf_fifo = g_strdup_printf("%s/surf-fifo-%ld-%s",
+								   runtime_dir, (long)getpid(), c->instance_id);
 
-	unlink(surf_fifo);
-	if (mkfifo(surf_fifo, 0600) != 0) {
-		fprintf(stderr, "failed to create fifo: %s\n", surf_fifo);
-		g_free(surf_fifo);
-		surf_fifo = NULL;
+	unlink(c->surf_fifo);
+	if (mkfifo(c->surf_fifo, 0600) != 0) {
+		fprintf(stderr, "failed to create fifo: %s\n", c->surf_fifo);
+		g_free(c->surf_fifo);
+		c->surf_fifo = NULL;
 		return;
 	}
 
-	fd = open(surf_fifo, O_RDWR | O_NONBLOCK);
+	fd = open(c->surf_fifo, O_RDWR | O_NONBLOCK);
 	if (fd < 0) {
-		fprintf(stderr, "failed to open fifo: %s\n", surf_fifo);
-		g_free(surf_fifo);
-		surf_fifo = NULL;
+		fprintf(stderr, "failed to open fifo: %s\n", c->surf_fifo);
+		unlink(c->surf_fifo);
+		g_free(c->surf_fifo);
+		c->surf_fifo = NULL;
 		return;
 	}
 
-	fifo_chan = g_io_channel_unix_new(fd);
-	g_io_channel_set_encoding(fifo_chan, NULL, NULL);
-	g_io_channel_set_flags(fifo_chan,
-						   g_io_channel_get_flags(fifo_chan) | G_IO_FLAG_NONBLOCK, NULL);
-	g_io_channel_set_close_on_unref(fifo_chan, TRUE);
-	g_io_add_watch(fifo_chan, G_IO_IN, fifo_read, c);
+	c->fifo_chan = g_io_channel_unix_new(fd);
+	g_io_channel_set_encoding(c->fifo_chan, NULL, NULL);
+	g_io_channel_set_flags(c->fifo_chan,
+						   g_io_channel_get_flags(c->fifo_chan) | G_IO_FLAG_NONBLOCK, NULL);
+	g_io_channel_set_close_on_unref(c->fifo_chan, TRUE);
+	g_io_add_watch(c->fifo_chan, G_IO_IN, fifo_read, c);
 }
 
 static void
