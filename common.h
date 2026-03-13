@@ -4,6 +4,8 @@
 #include <gtk/gtk.h>
 #include <webkit/webkit.h>
 
+#define CLOSED_TAB_MAX 20
+
 typedef enum {
 	ModeNormal,
 	ModeInsert,
@@ -48,5 +50,11 @@ typedef struct Client {
 	int newtab_pending;
 	int find_match_count;
 	int find_current_match;
+	WebKitWebView **tabs_views;
+	gboolean *tab_pins;
+	int tabs_count;
+	int tabs_active;
+	char *closed_tab_stack[CLOSED_TAB_MAX];
+	int closed_tab_top;
 	struct Client *next;
 } Client;

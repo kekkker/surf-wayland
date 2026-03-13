@@ -302,12 +302,8 @@ static GtkWidget *history_list = NULL;
 static GtkWidget *history_scroll = NULL;
 static int history_selected = -1;
 static void tab_pin(Client *c, const Arg *a);
-static gboolean *tab_pins = NULL;
 static void tab_reopen(Client *c, const Arg *a);
 static void tab_move(Client *c, const Arg *a);
-#define CLOSED_TAB_MAX 20
-static char *closed_tab_stack[CLOSED_TAB_MAX];
-static int closed_tab_top = 0;
 
 static guint pin_timer = 0;
 static gboolean pin_keepalive(gpointer data);
@@ -724,27 +720,17 @@ geturi(Client *c)
 	return uri;
 }
 
-/* Tab/buffer management */
-typedef struct {
-	WebKitWebView **views;
-	int count;
-	int active;
-} TabState;
-
-static TabState tabs = {NULL, 0, -1};
-
 static void
 tab_init(Client *c)
 {
-	if (tabs.count > 0)
+	if (c->tabs_count > 0)
 		return;
 
-	tabs.count = 1;
-	tabs.views = g_malloc(sizeof(WebKitWebView *));
-	tabs.views[0] = c->view;
-	tabs.active = 0;
-
-	tab_pins = g_malloc0(sizeof(gboolean));
+	c->tabs_count = 1;
+	c->tabs_views = g_malloc(sizeof(WebKitWebView *));
+	c->tabs_views[0] = c->view;
+	c->tabs_active = 0;
+	c->tab_pins = g_malloc0(sizeof(gboolean));
 }
 
 static void
@@ -774,9 +760,9 @@ update_tabbar(Client *c)
 	while ((child = gtk_widget_get_first_child(c->tabbar)))
 		gtk_box_remove(GTK_BOX(c->tabbar), child);
 
-	for (i = 0; i < tabs.count; i++) {
-		const char *title = webkit_web_view_get_title(tabs.views[i]);
-		const char *uri = webkit_web_view_get_uri(tabs.views[i]);
+	for (i = 0; i < c->tabs_count; i++) {
+		const char *title = webkit_web_view_get_title(c->tabs_views[i]);
+		const char *uri = webkit_web_view_get_uri(c->tabs_views[i]);
 		GtkWidget *label, *box;
 		GtkGesture *gesture;
 		gchar *text;
@@ -786,7 +772,7 @@ update_tabbar(Client *c)
 
 		gchar *valid_title = g_utf8_make_valid(title, -1);
 
-		if (tab_pins && tab_pins[i]) {
+		if (c->tab_pins && c->tab_pins[i]) {
 			text = g_strdup_printf("[P] %s", valid_title);
 			g_free(valid_title);
 		} else {
@@ -811,7 +797,7 @@ update_tabbar(Client *c)
 		gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(gesture), 0);
 		g_signal_connect(gesture, "pressed", G_CALLBACK(tabbar_click), c);
 		gtk_widget_add_controller(box, GTK_EVENT_CONTROLLER(gesture));
-		gtk_widget_set_name(box, i == tabs.active ? "tab-active" : "tab-inactive");
+		gtk_widget_set_name(box, i == c->tabs_active ? "tab-active" : "tab-inactive");
 		gtk_box_append(GTK_BOX(c->tabbar), box);
 	}
 }
@@ -819,21 +805,21 @@ update_tabbar(Client *c)
 static void
 tab_switch_to(Client *c, int index)
 {
-	if (index < 0 || index >= tabs.count || index == tabs.active)
+	if (index < 0 || index >= c->tabs_count || index == c->tabs_active)
 		return;
 
-	if (tabs.views[index] == NULL)
+	if (c->tabs_views[index] == NULL)
 		return;
 
 	/* Hide current */
-	if (tabs.active >= 0 && tabs.active < tabs.count &&
-		tabs.views[tabs.active] != NULL) {
-		gtk_widget_set_visible(GTK_WIDGET(tabs.views[tabs.active]), FALSE);
+	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count &&
+		c->tabs_views[c->tabs_active] != NULL) {
+		gtk_widget_set_visible(GTK_WIDGET(c->tabs_views[c->tabs_active]), FALSE);
 	}
 
 	/* Show new */
-	tabs.active = index;
-	c->view = tabs.views[index];
+	c->tabs_active = index;
+	c->view = c->tabs_views[index];
 	c->pageid = webkit_web_view_get_page_id(c->view);
 	c->finder = webkit_web_view_get_find_controller(c->view);
 	c->inspector = webkit_web_view_get_inspector(c->view);
@@ -870,20 +856,20 @@ tab_new(Client *c, const Arg *a)
 	gtk_box_insert_child_after(GTK_BOX(c->vbox), GTK_WIDGET(v),
 							   gtk_widget_get_prev_sibling(c->statusbar));
 
-	gtk_widget_set_visible(GTK_WIDGET(tabs.views[tabs.active]), FALSE);
+	gtk_widget_set_visible(GTK_WIDGET(c->tabs_views[c->tabs_active]), FALSE);
 
-	int insert_at = tabs.active + 1;
-	tabs.count++;
-	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
-	tab_pins = g_realloc(tab_pins, tabs.count * sizeof(gboolean));
-	memmove(&tabs.views[insert_at + 1], &tabs.views[insert_at],
-			(tabs.count - 1 - insert_at) * sizeof(WebKitWebView *));
-	memmove(&tab_pins[insert_at + 1], &tab_pins[insert_at],
-			(tabs.count - 1 - insert_at) * sizeof(gboolean));
-	tabs.views[insert_at] = v;
-	tab_pins[insert_at] = FALSE;
+	int insert_at = c->tabs_active + 1;
+	c->tabs_count++;
+	c->tabs_views = g_realloc(c->tabs_views, c->tabs_count * sizeof(WebKitWebView *));
+	c->tab_pins = g_realloc(c->tab_pins, c->tabs_count * sizeof(gboolean));
+	memmove(&c->tabs_views[insert_at + 1], &c->tabs_views[insert_at],
+			(c->tabs_count - 1 - insert_at) * sizeof(WebKitWebView *));
+	memmove(&c->tab_pins[insert_at + 1], &c->tab_pins[insert_at],
+			(c->tabs_count - 1 - insert_at) * sizeof(gboolean));
+	c->tabs_views[insert_at] = v;
+	c->tab_pins[insert_at] = FALSE;
 
-	tabs.active = insert_at;
+	c->tabs_active = insert_at;
 
 	c->view = v;
 	c->pageid = webkit_web_view_get_page_id(v);
@@ -919,28 +905,28 @@ tab_close(Client *c, const Arg *a)
 {
 	int idx;
 
-	if (tabs.count <= 1) {
+	if (c->tabs_count <= 1) {
 		return;
 	}
 
-	idx = tabs.active;
+	idx = c->tabs_active;
 
-	WebKitWebView *dead = tabs.views[idx];
+	WebKitWebView *dead = c->tabs_views[idx];
 
 	webkit_web_view_stop_loading(dead);
 	gtk_widget_set_visible(GTK_WIDGET(dead), FALSE);
 
-	for (int i = idx; i < tabs.count - 1; i++) {
-		tabs.views[i] = tabs.views[i + 1];
-		if (tab_pins)
-			tab_pins[i] = tab_pins[i + 1];
+	for (int i = idx; i < c->tabs_count - 1; i++) {
+		c->tabs_views[i] = c->tabs_views[i + 1];
+		if (c->tab_pins)
+			c->tab_pins[i] = c->tab_pins[i + 1];
 	}
-	tabs.count--;
-	tabs.views = g_realloc(tabs.views, tabs.count * sizeof(WebKitWebView *));
-	tab_pins = g_realloc(tab_pins, tabs.count * sizeof(gboolean));
+	c->tabs_count--;
+	c->tabs_views = g_realloc(c->tabs_views, c->tabs_count * sizeof(WebKitWebView *));
+	c->tab_pins = g_realloc(c->tab_pins, c->tabs_count * sizeof(gboolean));
 
-	int new_idx = idx < tabs.count ? idx : tabs.count - 1;
-	tabs.active = -1;
+	int new_idx = idx < c->tabs_count ? idx : c->tabs_count - 1;
+	c->tabs_active = -1;
 	tab_switch_to(c, new_idx);
 
 	g_signal_handlers_disconnect_matched(dead,
@@ -948,13 +934,13 @@ tab_close(Client *c, const Arg *a)
 
 	const char *dead_uri = webkit_web_view_get_uri(dead);
 	if (dead_uri && strcmp(dead_uri, "about:blank") != 0) {
-		if (closed_tab_top == CLOSED_TAB_MAX) {
-			g_free(closed_tab_stack[0]);
-			memmove(closed_tab_stack, closed_tab_stack + 1,
+		if (c->closed_tab_top == CLOSED_TAB_MAX) {
+			g_free(c->closed_tab_stack[0]);
+			memmove(c->closed_tab_stack, c->closed_tab_stack + 1,
 					(CLOSED_TAB_MAX - 1) * sizeof(char *));
-			closed_tab_top--;
+			c->closed_tab_top--;
 		}
-		closed_tab_stack[closed_tab_top++] = g_strdup(dead_uri);
+		c->closed_tab_stack[c->closed_tab_top++] = g_strdup(dead_uri);
 	}
 
 	gtk_box_remove(GTK_BOX(c->vbox), GTK_WIDGET(dead));
@@ -964,21 +950,22 @@ tab_close(Client *c, const Arg *a)
 static void
 tab_reopen(Client *c, const Arg *a)
 {
-	if (closed_tab_top == 0)
+	if (c->closed_tab_top == 0)
 		return;
-	char *uri = closed_tab_stack[--closed_tab_top];
+	char *uri = c->closed_tab_stack[--c->closed_tab_top];
 	tab_new(c, &(Arg){.i = 1});
 	loaduri(c, &(Arg){.v = uri});
 	g_free(uri);
+	c->closed_tab_stack[c->closed_tab_top] = NULL;
 }
 
 static void
 tab_next(Client *c, const Arg *a)
 {
 	tab_init(c);
-	if (tabs.count <= 1)
+	if (c->tabs_count <= 1)
 		return;
-	int next = (tabs.active + 1) % tabs.count;
+	int next = (c->tabs_active + 1) % c->tabs_count;
 	tab_switch_to(c, next);
 }
 
@@ -986,30 +973,30 @@ static void
 tab_prev(Client *c, const Arg *a)
 {
 	tab_init(c);
-	if (tabs.count <= 1)
+	if (c->tabs_count <= 1)
 		return;
-	int prev = (tabs.active - 1 + tabs.count) % tabs.count;
+	int prev = (c->tabs_active - 1 + c->tabs_count) % c->tabs_count;
 	tab_switch_to(c, prev);
 }
 
 static void
 tab_move(Client *c, const Arg *a)
 {
-	int idx = tabs.active;
+	int idx = c->tabs_active;
 	int new_idx = idx + a->i;
 
-	if (new_idx < 0 || new_idx >= tabs.count)
+	if (new_idx < 0 || new_idx >= c->tabs_count)
 		return;
 
-	WebKitWebView *tmp = tabs.views[idx];
-	tabs.views[idx] = tabs.views[new_idx];
-	tabs.views[new_idx] = tmp;
+	WebKitWebView *tmp = c->tabs_views[idx];
+	c->tabs_views[idx] = c->tabs_views[new_idx];
+	c->tabs_views[new_idx] = tmp;
 
-	gboolean ptmp = tab_pins[idx];
-	tab_pins[idx] = tab_pins[new_idx];
-	tab_pins[new_idx] = ptmp;
+	gboolean ptmp = c->tab_pins[idx];
+	c->tab_pins[idx] = c->tab_pins[new_idx];
+	c->tab_pins[new_idx] = ptmp;
 
-	tabs.active = new_idx;
+	c->tabs_active = new_idx;
 	update_tabbar(c);
 }
 
@@ -1196,7 +1183,7 @@ follow_hint(Client *c, const char *label)
 	} break;
 	case HintModeNewWindow: {
 		gchar *url_copy = g_strdup(target->url);
-		int prev = tabs.active;
+		int prev = c->tabs_active;
 
 		hints_cleanup(c); /* clears hints on old view, resets state */
 		tab_new(c, &(Arg){.i = 1});
@@ -1330,14 +1317,14 @@ updatetitle(Client *c)
 	else
 		name = "";
 
-	pin = (tab_pins && tabs.active >= 0 && tabs.active < tabs.count &&
-		   tab_pins[tabs.active])
+	pin = (c->tab_pins && c->tabs_active >= 0 && c->tabs_active < c->tabs_count &&
+		   c->tab_pins[c->tabs_active])
 			  ? "[P]"
 			  : "";
 
-	if (tabs.count > 1) {
+	if (c->tabs_count > 1) {
 		title = g_strdup_printf("[%d/%d]%s %s",
-								tabs.active + 1, tabs.count, pin, name);
+								c->tabs_active + 1, c->tabs_count, pin, name);
 	} else {
 		title = g_strdup_printf("%s%s", name, pin);
 	}
@@ -1742,6 +1729,11 @@ destroyclient(Client *c)
 		g_object_unref(c->mousepos);
 		c->mousepos = NULL;
 	}
+
+	g_free(c->tabs_views);
+	g_free(c->tab_pins);
+	for (int i = 0; i < c->closed_tab_top; i++)
+		g_free(c->closed_tab_stack[i]);
 
 	for (p = clients; p && p->next != c; p = p->next)
 		;
@@ -2585,7 +2577,7 @@ decidenewwindow(WebKitPolicyDecision *d, Client *c)
 	case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED:
 		arg.v = webkit_uri_request_get_uri(
 			webkit_navigation_action_get_request(a));
-		prev = tabs.active;
+		prev = c->tabs_active;
 		tab_new(c, &(Arg){.i = 1});
 		loaduri(c, &arg);
 		tab_switch_to(c, prev);
@@ -2956,10 +2948,10 @@ filechooser(WebKitWebView *v, WebKitFileChooserRequest *r, Client *c)
 static void
 closeview(WebKitWebView *v, Client *c)
 {
-	if (tabs.count > 1) {
-		for (int i = 0; i < tabs.count; i++) {
-			if (tabs.views[i] == v) {
-				if (i != tabs.active)
+	if (c->tabs_count > 1) {
+		for (int i = 0; i < c->tabs_count; i++) {
+			if (c->tabs_views[i] == v) {
+				if (i != c->tabs_active)
 					tab_switch_to(c, i);
 				tab_close(c, &(Arg){0});
 				return;
@@ -3654,7 +3646,7 @@ clicknewwindow(Client *c, const Arg *a, WebKitHitTestResult *h)
 static void
 clicknewtab(Client *c, const Arg *a, WebKitHitTestResult *h)
 {
-	int prev = tabs.active;
+	int prev = c->tabs_active;
 	Arg arg;
 
 	(void)a;
@@ -4466,34 +4458,36 @@ history_select(Client *c, int direction)
 static void
 tab_pin(Client *c, const Arg *a)
 {
-	if (tabs.count <= 0)
+	if (c->tabs_count <= 0)
 		return;
 
-	if (!tab_pins)
-		tab_pins = g_malloc0(tabs.count * sizeof(gboolean));
+	if (!c->tab_pins)
+		c->tab_pins = g_malloc0(c->tabs_count * sizeof(gboolean));
 
-	tab_pins[tabs.active] = !tab_pins[tabs.active];
+	c->tab_pins[c->tabs_active] = !c->tab_pins[c->tabs_active];
 	updatetitle(c);
 }
 
 static gboolean
 pin_keepalive(gpointer data)
 {
-	if (!tab_pins)
-		return TRUE;
-
-	for (int i = 0; i < tabs.count; i++) {
-		if (i == tabs.active)
-			continue;
-		if (!tab_pins[i])
-			continue;
-		if (!tabs.views[i])
-			continue;
-		if (!webkit_web_view_is_playing_audio(tabs.views[i]))
+	for (Client *c = clients; c; c = c->next) {
+		if (!c->tab_pins)
 			continue;
 
-		webkit_web_view_evaluate_javascript(tabs.views[i],
-											"void(0);", -1, NULL, NULL, NULL, NULL, NULL);
+		for (int i = 0; i < c->tabs_count; i++) {
+			if (i == c->tabs_active)
+				continue;
+			if (!c->tab_pins[i])
+				continue;
+			if (!c->tabs_views[i])
+				continue;
+			if (!webkit_web_view_is_playing_audio(c->tabs_views[i]))
+				continue;
+
+			webkit_web_view_evaluate_javascript(c->tabs_views[i],
+												"void(0);", -1, NULL, NULL, NULL, NULL, NULL);
+		}
 	}
 
 	return TRUE;
