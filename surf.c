@@ -3727,10 +3727,12 @@ fifo_read(GIOChannel *chan, GIOCondition cond, gpointer data)
 				}
 				if (*url) {
 					Arg a = {.v = url};
-					if (new_tab)
-						newwindow(c, &a, 0);
-					else
+					if (new_tab) {
+						tab_new(c, &(Arg){.i = 1});
 						loaduri(c, &a);
+					} else {
+						loaduri(c, &a);
+					}
 				}
 			}
 			g_free(line);
