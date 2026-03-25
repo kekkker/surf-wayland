@@ -21,6 +21,21 @@ typedef enum {
 	HintModeYank,
 } HintMode;
 
+typedef struct {
+	char *label;
+	char *url;
+	void *element;
+	int x, y;
+} Hint;
+
+typedef struct {
+	GArray *hints;
+	char *input;
+	HintMode mode;
+	int active;
+	guint64 pageid;
+} HintState;
+
 /*
  * Per-tab state.  Everything that is logically "about this page" lives here.
  * Signals from background tabs update their own Tab, never the Client.
@@ -54,6 +69,9 @@ typedef struct {
 	const char           *needle;
 	int                   find_match_count;
 	int                   find_current_match;
+
+	/* hint state */
+	HintState             hintstate;
 
 	/* tab metadata */
 	int                   pinned;

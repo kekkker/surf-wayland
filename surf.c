@@ -1005,23 +1005,6 @@ tab_move(Client *c, const Arg *a)
 /* Hint label characters (home row keys) */
 static const char *hintkeys = "asdfghjkl";
 
-typedef struct {
-	char *label;
-	char *url;
-	void *element;
-	int x, y;
-} Hint;
-
-typedef struct {
-	GArray *hints;
-	char *input;
-	HintMode mode;
-	int active;
-	guint64 pageid;
-} HintState;
-
-static HintState hintstate = {0};
-
 static int
 hint_label_length(int count)
 {
@@ -1065,27 +1048,29 @@ request_hints_from_extension(Client *c)
 static void
 hints_cleanup(Client *c)
 {
-	if (!hintstate.active)
+	HintState *hs = &ctab(c)->hintstate;
+
+	if (!hs->active)
 		return;
 
 	/* Always try to clear the overlay */
 	WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
 	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
 
-	if (hintstate.hints) {
-		for (guint i = 0; i < hintstate.hints->len; i++) {
-			Hint *h = &g_array_index(hintstate.hints, Hint, i);
+	if (hs->hints) {
+		for (guint i = 0; i < hs->hints->len; i++) {
+			Hint *h = &g_array_index(hs->hints, Hint, i);
 			g_free(h->label);
 			g_free(h->url);
 		}
-		g_array_free(hintstate.hints, TRUE);
-		hintstate.hints = NULL;
+		g_array_free(hs->hints, TRUE);
+		hs->hints = NULL;
 	}
 
-	g_free(hintstate.input);
-	hintstate.input = NULL;
+	g_free(hs->input);
+	hs->input = NULL;
 
-	hintstate.active = 0;
+	hs->active = 0;
 
 	ctab(c)->mode = ModeNormal;
 	updatetitle(c);
@@ -1094,14 +1079,16 @@ hints_cleanup(Client *c)
 static void
 hints_start(Client *c, const Arg *a)
 {
-	if (hintstate.active)
+	HintState *hs = &ctab(c)->hintstate;
+
+	if (hs->active)
 		hints_cleanup(c);
 
-	hintstate.mode = a->i;
-	hintstate.active = 1;
-	hintstate.pageid = ctab(c)->pageid;
-	hintstate.hints = g_array_new(FALSE, TRUE, sizeof(Hint));
-	hintstate.input = g_strdup("");
+	hs->mode = a->i;
+	hs->active = 1;
+	hs->pageid = ctab(c)->pageid;
+	hs->hints = g_array_new(FALSE, TRUE, sizeof(Hint));
+	hs->input = g_strdup("");
 
 	ctab(c)->mode = ModeHint;
 
@@ -1113,15 +1100,16 @@ static void
 filter_hints(Client *c)
 {
 	GVariantBuilder builder;
+	HintState *hs = &ctab(c)->hintstate;
 
-	if (!hintstate.hints)
+	if (!hs->hints)
 		return;
 
 	g_variant_builder_init(&builder, G_VARIANT_TYPE("a(ssii)"));
 
-	for (guint i = 0; i < hintstate.hints->len; i++) {
-		Hint *h = &g_array_index(hintstate.hints, Hint, i);
-		if (g_str_has_prefix(h->label, hintstate.input)) {
+	for (guint i = 0; i < hs->hints->len; i++) {
+		Hint *h = &g_array_index(hs->hints, Hint, i);
+		if (g_str_has_prefix(h->label, hs->input)) {
 			g_variant_builder_add(&builder, "(ssii)",
 								  h->label, h->url, h->x, h->y);
 		}
@@ -1135,10 +1123,11 @@ filter_hints(Client *c)
 static void
 follow_hint(Client *c, const char *label)
 {
+	HintState *hs = &ctab(c)->hintstate;
 	Hint *target = NULL;
 
-	for (guint i = 0; i < hintstate.hints->len; i++) {
-		Hint *h = &g_array_index(hintstate.hints, Hint, i);
+	for (guint i = 0; i < hs->hints->len; i++) {
+		Hint *h = &g_array_index(hs->hints, Hint, i);
 		if (strcmp(h->label, label) == 0) {
 			target = h;
 			break;
@@ -1175,7 +1164,7 @@ follow_hint(Client *c, const char *label)
 	}
 
 	Arg arg;
-	switch (hintstate.mode) {
+	switch (hs->mode) {
 	case HintModeLink: {
 		gchar *url_copy = g_strdup(target->url);
 		hints_cleanup(c);
@@ -1210,11 +1199,12 @@ follow_hint(Client *c, const char *label)
 static gboolean
 hints_keypress(Client *c, guint keyval, GdkModifierType state)
 {
+	HintState *hs = &ctab(c)->hintstate;
 	char key;
 	char *newinput;
 	int label_len;
 
-	if (!hintstate.active || hintstate.pageid != ctab(c)->pageid)
+	if (!hs->active || hs->pageid != ctab(c)->pageid)
 		return FALSE;
 
 	if (keyval == GDK_KEY_Escape) {
@@ -1223,9 +1213,9 @@ hints_keypress(Client *c, guint keyval, GdkModifierType state)
 	}
 
 	if (keyval == GDK_KEY_BackSpace) {
-		int len = strlen(hintstate.input);
+		int len = strlen(hs->input);
 		if (len > 0) {
-			hintstate.input[len - 1] = '\0';
+			hs->input[len - 1] = '\0';
 			filter_hints(c);
 		} else {
 			hints_cleanup(c); /* No input left, exit hints */
@@ -1237,23 +1227,23 @@ hints_keypress(Client *c, guint keyval, GdkModifierType state)
 	if (!strchr(hintkeys, key))
 		return TRUE;
 
-	newinput = g_strdup_printf("%s%c", hintstate.input, key);
-	g_free(hintstate.input);
-	hintstate.input = newinput;
+	newinput = g_strdup_printf("%s%c", hs->input, key);
+	g_free(hs->input);
+	hs->input = newinput;
 
-	if (hintstate.hints->len == 0) {
+	if (hs->hints->len == 0) {
 		hints_cleanup(c); /* No hints available */
 		return TRUE;
 	}
 
-	label_len = strlen(g_array_index(hintstate.hints, Hint, 0).label);
+	label_len = strlen(g_array_index(hs->hints, Hint, 0).label);
 
 	int matches = 0;
 	char *matched_label = NULL;
 
-	for (guint i = 0; i < hintstate.hints->len; i++) {
-		Hint *h = &g_array_index(hintstate.hints, Hint, i);
-		if (g_str_has_prefix(h->label, hintstate.input)) {
+	for (guint i = 0; i < hs->hints->len; i++) {
+		Hint *h = &g_array_index(hs->hints, Hint, i);
+		if (g_str_has_prefix(h->label, hs->input)) {
 			matches++;
 			matched_label = h->label;
 		}
@@ -1261,7 +1251,7 @@ hints_keypress(Client *c, guint keyval, GdkModifierType state)
 
 	if (matches == 0) {
 		hints_cleanup(c); /* ADD: No matches, cleanup */
-	} else if ((int)strlen(hintstate.input) == label_len && matches == 1) {
+	} else if ((int)strlen(hs->input) == label_len && matches == 1) {
 		follow_hint(c, matched_label);
 		/* hints_cleanup is called inside follow_hint */
 	} else {
@@ -1275,12 +1265,13 @@ static void
 hints_receive_data(Client *c, GVariant *data)
 {
 	GVariantIter iter;
+	HintState *hs = &ctab(c)->hintstate;
 	const gchar *url;
 	gint x, y, width, height;
 	int index = 0;
 	int total;
 
-	if (!hintstate.active)
+	if (!hs->active)
 		return;
 
 	total = g_variant_n_children(data);
@@ -1299,7 +1290,7 @@ hints_receive_data(Client *c, GVariant *data)
 		hint.x = x;
 		hint.y = y;
 
-		g_array_append_val(hintstate.hints, hint);
+		g_array_append_val(hs->hints, hint);
 	}
 
 	filter_hints(c);
