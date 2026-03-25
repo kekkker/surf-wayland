@@ -283,6 +283,7 @@ static void add_global_stylesheets(WebKitUserContentManager *cm);
 static void inject_userscripts_early(WebKitUserContentManager *cm, const char *uri);
 
 static void findcountchanged(WebKitFindController *f, guint count, Client *c);
+static void foundtext(WebKitFindController *f, guint count, Client *c);
 static void findfailed(WebKitFindController *f, Client *c);
 
 static GArray *history_entries = NULL;
@@ -880,6 +881,8 @@ tab_new(Client *c, const Arg *a)
 	/* Connect find signals for this new view */
 	g_signal_connect(t->finder, "counted-matches",
 	                 G_CALLBACK(findcountchanged), c);
+	g_signal_connect(t->finder, "found-text",
+	                 G_CALLBACK(foundtext), c);
 	g_signal_connect(t->finder, "failed-to-find-text",
 	                 G_CALLBACK(findfailed), c);
 
@@ -2112,6 +2115,8 @@ showview(WebKitWebView *v, Client *c)
 	t->finder = webkit_web_view_get_find_controller(t->view);
 	g_signal_connect(t->finder, "counted-matches",
 	                 G_CALLBACK(findcountchanged), c);
+	g_signal_connect(t->finder, "found-text",
+	                 G_CALLBACK(foundtext), c);
 	g_signal_connect(t->finder, "failed-to-find-text",
 	                 G_CALLBACK(findfailed), c);
 	t->pageid = webkit_web_view_get_page_id(t->view);
@@ -3271,18 +3276,14 @@ find(Client *c, const Arg *a)
 	if (a && a->i) {
 		if (a->i > 0) {
 			webkit_find_controller_search_next(t->finder);
-			if (t->find_match_count > 0) {
-				t->find_current_match++;
-				if (t->find_current_match > t->find_match_count)
-					t->find_current_match = 1;
-			}
+			/* We rely on WebKit's internal match tracking - found-text signal
+			 * updates find_current_match, and counted-matches updates find_match_count.
+			 * No manual bookkeeping needed. */
 		} else {
 			webkit_find_controller_search_previous(t->finder);
-			if (t->find_match_count > 0) {
-				t->find_current_match--;
-				if (t->find_current_match < 1)
-					t->find_current_match = t->find_match_count;
-			}
+			/* We rely on WebKit's internal match tracking - found-text signal
+			 * updates find_current_match, and counted-matches updates find_match_count.
+			 * No manual bookkeeping needed. */
 		}
 		updatebar(c);
 	} else {
@@ -4651,6 +4652,21 @@ findcountchanged(WebKitFindController *f, guint count, Client *c)
 {
 	(void)f;
 	ctab(c)->find_match_count = count;
+	updatebar(c);
+}
+
+static void
+foundtext(WebKitFindController *f, guint count, Client *c)
+{
+	(void)f;
+	Tab *t = ctab(c);
+	/*
+	 * WebKit's found-text signal provides the 1-based index of the
+	 * currently highlighted match. This keeps our state in sync with
+	 * WebKit's internal selection, eliminating the need for manual
+	 * bookkeeping that could desync.
+	 */
+	t->find_current_match = count;
 	updatebar(c);
 }
 
