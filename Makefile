@@ -12,6 +12,8 @@ WLIB = $(WSRC:.c=.so)
 
 all: options surf $(WLIB)
 
+build: all
+
 options:
 	@echo surf build options:
 	@echo "CC            = $(CC)"

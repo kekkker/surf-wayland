@@ -21,42 +21,88 @@ typedef enum {
 	HintModeYank,
 } HintMode;
 
-typedef struct Client {
-	GtkWidget *win;
-	WebKitWebView *view;
-	WebKitSettings *settings;
-	WebKitWebContext *context;
-	WebKitWebInspector *inspector;
+/*
+ * Per-tab state.  Everything that is logically "about this page" lives here.
+ * Signals from background tabs update their own Tab, never the Client.
+ */
+typedef struct {
+	WebKitWebView        *view;
+
+	/* page identity */
+	guint64               pageid;
+
+	/* navigation / display */
+	char                 *title;     /* current page title (owned) */
+	char                 *targeturi; /* link/image/media under pointer (owned) */
+	int                   hover_link;/* overtitle flag: showing hovered link */
+	int                   progress;  /* 0-100 */
+
+	/* TLS */
+	GTlsCertificate      *cert;
+	GTlsCertificate      *failedcert;
+	GTlsCertificateFlags  tlserr;
+	int                   https;
+	int                   insecure;
+	int                   errorpage;
+
+	/* interaction state */
+	Mode                  mode;
+	WebKitHitTestResult  *mousepos;
+
+	/* in-page find */
 	WebKitFindController *finder;
-	WebKitHitTestResult *mousepos;
-	GTlsCertificate *cert, *failedcert;
-	GTlsCertificateFlags tlserr;
-	char instance_id[64];
-	guint64 pageid;
-	int progress, fullscreen, https, insecure, errorpage;
-	int tab_id;
-	int tab_pinned;
-	Mode mode;
-	GtkWidget *vbox;
-	GtkWidget *tabbar;
-	GtkWidget *statusbar;
-	GtkWidget *barlabel;
-	GtkWidget *statentry;
-	char *title, *overtitle, *targeturi;
-	GtkWidget *dlbar;
-	gchar *dl_pending_uri;  /* download URI saved while prompting for save path */
-	gchar *dl_pending_path; /* confirmed save path, consumed by next decidedestination */
-	const char *needle;
-	int newtab_pending;
-	int find_match_count;
-	int find_current_match;
-	WebKitWebView **tabs_views;
-	gboolean *tab_pins;
-	int tabs_count;
-	int tabs_active;
-	char *closed_tab_stack[CLOSED_TAB_MAX];
-	int closed_tab_top;
-	char *surf_fifo;
-	GIOChannel *fifo_chan;
-	struct Client *next;
+	const char           *needle;
+	int                   find_match_count;
+	int                   find_current_match;
+
+	/* tab metadata */
+	int                   pinned;
+} Tab;
+
+typedef struct Client {
+	/* --- window-level widgets --- */
+	GtkWidget            *win;
+	GtkWidget            *vbox;
+	GtkWidget            *tabbar;
+	GtkWidget            *statusbar;
+	GtkWidget            *barlabel;
+	GtkWidget            *statentry;
+	GtkWidget            *dlbar;
+
+	/* --- shared WebKit objects (window-wide) --- */
+	WebKitSettings       *settings; /* first tab's settings; shared by related views */
+	WebKitWebContext     *context;
+	WebKitWebInspector   *inspector; /* inspector of the active tab */
+
+	/* --- tab array --- */
+	Tab                  *tabs;
+	int                   tabs_count;
+	int                   tabs_active;
+
+	/* --- window-level state --- */
+	char                  instance_id[64];
+	int                   fullscreen;
+
+	/* --- command/search bar transient state --- */
+	int                   newtab_pending;
+
+	/* --- download state --- */
+	gchar                *dl_pending_uri;
+	gchar                *dl_pending_path;
+
+	/* --- closed-tab stack --- */
+	char                 *closed_tab_stack[CLOSED_TAB_MAX];
+	int                   closed_tab_top;
+
+	/* --- FIFO for userscript communication --- */
+	char                 *surf_fifo;
+	GIOChannel           *fifo_chan;
+
+	struct Client        *next;
 } Client;
+
+static inline Tab *
+ctab(Client *c)
+{
+	return &c->tabs[c->tabs_active];
+}

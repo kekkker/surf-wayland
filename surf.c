@@ -37,7 +37,6 @@
 
 #define LENGTH(x) (sizeof(x) / sizeof(x[0]))
 #define CLEANMASK(mask) (mask & (MODKEY | GDK_SHIFT_MASK))
-#define INSPECTOR_OPEN_DATA_KEY "surf-inspector-open"
 
 enum {
 	OnDoc = WEBKIT_HIT_TEST_RESULT_CONTEXT_DOCUMENT,
@@ -162,8 +161,6 @@ static gboolean winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint ke
 static void winevent_enter(GtkEventControllerMotion *ctrl, double x, double y, Client *c);
 static void winevent_leave(GtkEventControllerMotion *ctrl, Client *c);
 static void winevent_fullscreen(GObject *win, GParamSpec *pspec, Client *c);
-static void inspectorclosed(WebKitWebInspector *inspector, Client *c);
-static gboolean inspectoropenwindow(WebKitWebInspector *inspector, Client *c);
 static void showview(WebKitWebView *v, Client *c);
 static GtkWidget *createwindow(Client *c);
 static gboolean loadfailedtls(WebKitWebView *v, gchar *uri,
@@ -248,7 +245,7 @@ static void find_select_exit(Client *c);
 static void find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data);
 
 /* Tab management */
-static void tab_init(Client *c);
+static Tab *tab_alloc(Client *c);
 static void tab_switch_to(Client *c, int index);
 static void tab_new(Client *c, const Arg *a);
 static void tab_close(Client *c, const Arg *a);
@@ -645,6 +642,19 @@ generate_instance_id(Client *c)
 			 "surf-%ld-%u", (long)getpid(), g_random_int());
 }
 
+/* Allocate and zero-initialise a new Tab slot appended to c->tabs. */
+static Tab *
+tab_alloc(Client *c)
+{
+	c->tabs_count++;
+	c->tabs = g_realloc(c->tabs, c->tabs_count * sizeof(Tab));
+	Tab *t = &c->tabs[c->tabs_count - 1];
+	memset(t, 0, sizeof(Tab));
+	t->progress = 100;
+	t->mode = ModeNormal;
+	return t;
+}
+
 Client *
 newclient(Client *rc)
 {
@@ -656,9 +666,11 @@ newclient(Client *rc)
 	c->next = clients;
 	clients = c;
 
-	c->progress = 100;
-	c->view = newview(c, rc ? rc->view : NULL);
-	c->mode = ModeNormal;
+	/* Bootstrap the first tab */
+	Tab *t = tab_alloc(c);
+	c->tabs_active = 0;
+	/* rc is non-NULL when creating a related view (popup/tab); pass its active view */
+	t->view = newview(c, rc ? ctab(rc)->view : NULL);
 
 	return c;
 }
@@ -702,7 +714,7 @@ loaduri(Client *c, const Arg *a)
 	if (strcmp(url, geturi(c)) == 0) {
 		reload(c, a);
 	} else {
-		webkit_web_view_load_uri(c->view, url);
+		webkit_web_view_load_uri(ctab(c)->view, url);
 		updatetitle(c);
 	}
 
@@ -714,22 +726,9 @@ geturi(Client *c)
 {
 	const char *uri;
 
-	if (!(uri = webkit_web_view_get_uri(c->view)))
+	if (!(uri = webkit_web_view_get_uri(ctab(c)->view)))
 		uri = "about:blank";
 	return uri;
-}
-
-static void
-tab_init(Client *c)
-{
-	if (c->tabs_count > 0)
-		return;
-
-	c->tabs_count = 1;
-	c->tabs_views = g_malloc(sizeof(WebKitWebView *));
-	c->tabs_views[0] = c->view;
-	c->tabs_active = 0;
-	c->tab_pins = g_malloc0(sizeof(gboolean));
 }
 
 static void
@@ -760,8 +759,11 @@ update_tabbar(Client *c)
 		gtk_box_remove(GTK_BOX(c->tabbar), child);
 
 	for (i = 0; i < c->tabs_count; i++) {
-		const char *title = webkit_web_view_get_title(c->tabs_views[i]);
-		const char *uri = webkit_web_view_get_uri(c->tabs_views[i]);
+		Tab *t = &c->tabs[i];
+		/* Prefer the cached title, fall back to live WebKit title */
+		const char *title = t->title && *t->title ? t->title
+		                    : webkit_web_view_get_title(t->view);
+		const char *uri   = webkit_web_view_get_uri(t->view);
 		GtkWidget *label, *box;
 		GtkGesture *gesture;
 		gchar *text;
@@ -771,7 +773,7 @@ update_tabbar(Client *c)
 
 		gchar *valid_title = g_utf8_make_valid(title, -1);
 
-		if (c->tab_pins && c->tab_pins[i]) {
+		if (t->pinned) {
 			text = g_strdup_printf("[P] %s", valid_title);
 			g_free(valid_title);
 		} else {
@@ -804,92 +806,92 @@ update_tabbar(Client *c)
 static void
 tab_switch_to(Client *c, int index)
 {
+	Tab *prev_t, *next_t;
+
 	if (index < 0 || index >= c->tabs_count || index == c->tabs_active)
 		return;
 
-	if (c->tabs_views[index] == NULL)
+	next_t = &c->tabs[index];
+	if (next_t->view == NULL)
 		return;
 
-	/* Hide current */
-	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count &&
-		c->tabs_views[c->tabs_active] != NULL) {
-		gtk_widget_set_visible(GTK_WIDGET(c->tabs_views[c->tabs_active]), FALSE);
+	/* Hide current tab's view widget */
+	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count) {
+		prev_t = &c->tabs[c->tabs_active];
+		if (prev_t->view)
+			gtk_widget_set_visible(GTK_WIDGET(prev_t->view), FALSE);
 	}
 
-	/* Show new */
 	c->tabs_active = index;
-	c->view = c->tabs_views[index];
-	c->pageid = webkit_web_view_get_page_id(c->view);
-	c->finder = webkit_web_view_get_find_controller(c->view);
-	c->inspector = webkit_web_view_get_inspector(c->view);
-	c->settings = webkit_web_view_get_settings(c->view);
-	c->context = webkit_web_view_get_context(c->view);
 
-	gtk_widget_set_visible(GTK_WIDGET(c->view), TRUE);
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	/* Sync window-level inspector pointer to the newly active tab */
+	c->inspector = webkit_web_view_get_inspector(next_t->view);
 
-	c->mode = ModeNormal;
+	/* Sync live WebKit state into the Tab (progress, TLS) in case we
+	 * missed signals while this tab was hidden. */
+	next_t->progress = webkit_web_view_get_estimated_load_progress(next_t->view) * 100;
+	next_t->https    = webkit_web_view_get_tls_info(next_t->view,
+	                                                 &next_t->cert,
+	                                                 &next_t->tlserr);
+
+	/* Reset any transient UI mode to Normal on switch */
+	next_t->mode = ModeNormal;
 	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 
-	g_free(c->title);
-	c->title = g_strdup(webkit_web_view_get_title(c->view));
-	c->progress = webkit_web_view_get_estimated_load_progress(c->view) * 100;
-	c->https = webkit_web_view_get_tls_info(c->view, &c->cert, &c->tlserr);
-	updatetitle(c);
+	gtk_widget_set_visible(GTK_WIDGET(next_t->view), TRUE);
+	gtk_widget_grab_focus(GTK_WIDGET(next_t->view));
 
+	updatetitle(c);
 	update_tabbar(c);
 }
 
 static void
 tab_new(Client *c, const Arg *a)
 {
-	WebKitWebView *v;
-
-	tab_init(c);
-
-	v = newview(c, c->view);
-
-	gtk_widget_set_vexpand(GTK_WIDGET(v), TRUE);
-	gtk_widget_set_hexpand(GTK_WIDGET(v), TRUE);
-	gtk_box_insert_child_after(GTK_BOX(c->vbox), GTK_WIDGET(v),
-							   gtk_widget_get_prev_sibling(c->statusbar));
-
-	gtk_widget_set_visible(GTK_WIDGET(c->tabs_views[c->tabs_active]), FALSE);
-
 	int insert_at = c->tabs_active + 1;
+
+	/* Hide the currently visible view */
+	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count &&
+	    c->tabs[c->tabs_active].view)
+		gtk_widget_set_visible(GTK_WIDGET(c->tabs[c->tabs_active].view), FALSE);
+
+	/* Insert a new Tab slot after the active one */
 	c->tabs_count++;
-	c->tabs_views = g_realloc(c->tabs_views, c->tabs_count * sizeof(WebKitWebView *));
-	c->tab_pins = g_realloc(c->tab_pins, c->tabs_count * sizeof(gboolean));
-	memmove(&c->tabs_views[insert_at + 1], &c->tabs_views[insert_at],
-			(c->tabs_count - 1 - insert_at) * sizeof(WebKitWebView *));
-	memmove(&c->tab_pins[insert_at + 1], &c->tab_pins[insert_at],
-			(c->tabs_count - 1 - insert_at) * sizeof(gboolean));
-	c->tabs_views[insert_at] = v;
-	c->tab_pins[insert_at] = FALSE;
+	c->tabs = g_realloc(c->tabs, c->tabs_count * sizeof(Tab));
+	/* Shift tabs right to make room at insert_at */
+	memmove(&c->tabs[insert_at + 1], &c->tabs[insert_at],
+	        (c->tabs_count - 1 - insert_at) * sizeof(Tab));
+	Tab *t = &c->tabs[insert_at];
+	memset(t, 0, sizeof(Tab));
+	t->progress = 100;
+	t->mode = ModeNormal;
+
+	/* Create the WebView related to the current active view */
+	t->view = newview(c, c->tabs[c->tabs_active == insert_at
+	                               ? insert_at + 1 /* original active shifted */
+	                               : c->tabs_active].view);
+
+	gtk_widget_set_vexpand(GTK_WIDGET(t->view), TRUE);
+	gtk_widget_set_hexpand(GTK_WIDGET(t->view), TRUE);
+	gtk_box_insert_child_after(GTK_BOX(c->vbox), GTK_WIDGET(t->view),
+	                           gtk_widget_get_prev_sibling(c->statusbar));
+
+	t->pageid = webkit_web_view_get_page_id(t->view);
+	t->finder = webkit_web_view_get_find_controller(t->view);
+
+	/* Connect find signals for this new view */
+	g_signal_connect(t->finder, "counted-matches",
+	                 G_CALLBACK(findcountchanged), c);
+	g_signal_connect(t->finder, "failed-to-find-text",
+	                 G_CALLBACK(findfailed), c);
 
 	c->tabs_active = insert_at;
 
-	c->view = v;
-	c->pageid = webkit_web_view_get_page_id(v);
-	c->finder = webkit_web_view_get_find_controller(v);
-
-	/* Connect find signals for this new view */
-	g_signal_connect(c->finder, "counted-matches",
-					 G_CALLBACK(findcountchanged), c);
-	g_signal_connect(c->finder, "failed-to-find-text",
-					 G_CALLBACK(findfailed), c);
-
-	g_free(c->title);
-	c->title = NULL;
-	c->progress = 100;
-	c->mode = ModeNormal;
-
-	gtk_widget_set_visible(GTK_WIDGET(v), TRUE);
-
+	gtk_widget_set_visible(GTK_WIDGET(t->view), TRUE);
 	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
-	gtk_widget_grab_focus(GTK_WIDGET(v));
+	gtk_widget_grab_focus(GTK_WIDGET(t->view));
 	updatetitle(c);
 	update_tabbar(c);
 
@@ -904,45 +906,51 @@ tab_close(Client *c, const Arg *a)
 {
 	int idx;
 
-	if (c->tabs_count <= 1) {
+	if (c->tabs_count <= 1)
 		return;
-	}
 
 	idx = c->tabs_active;
 
-	WebKitWebView *dead = c->tabs_views[idx];
+	Tab dying = c->tabs[idx]; /* copy-by-value so we own it after removal */
 
-	webkit_web_view_stop_loading(dead);
-	gtk_widget_set_visible(GTK_WIDGET(dead), FALSE);
+	webkit_web_view_stop_loading(dying.view);
+	gtk_widget_set_visible(GTK_WIDGET(dying.view), FALSE);
 
-	for (int i = idx; i < c->tabs_count - 1; i++) {
-		c->tabs_views[i] = c->tabs_views[i + 1];
-		if (c->tab_pins)
-			c->tab_pins[i] = c->tab_pins[i + 1];
-	}
+	/* Shift tabs left over the closed slot */
+	memmove(&c->tabs[idx], &c->tabs[idx + 1],
+	        (c->tabs_count - 1 - idx) * sizeof(Tab));
 	c->tabs_count--;
-	c->tabs_views = g_realloc(c->tabs_views, c->tabs_count * sizeof(WebKitWebView *));
-	c->tab_pins = g_realloc(c->tab_pins, c->tabs_count * sizeof(gboolean));
+	c->tabs = g_realloc(c->tabs, c->tabs_count * sizeof(Tab));
 
+	/* Pick neighbour to switch to; set active to -1 first so
+	 * tab_switch_to doesn't skip (index == tabs_active). */
 	int new_idx = idx < c->tabs_count ? idx : c->tabs_count - 1;
 	c->tabs_active = -1;
 	tab_switch_to(c, new_idx);
 
-	g_signal_handlers_disconnect_matched(dead,
-										 G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
+	/* Disconnect all signals connected with c as data (this view only) */
+	g_signal_handlers_disconnect_matched(dying.view,
+	                                     G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, c);
 
-	const char *dead_uri = webkit_web_view_get_uri(dead);
+	/* Push onto closed-tab stack */
+	const char *dead_uri = webkit_web_view_get_uri(dying.view);
 	if (dead_uri && strcmp(dead_uri, "about:blank") != 0) {
 		if (c->closed_tab_top == CLOSED_TAB_MAX) {
 			g_free(c->closed_tab_stack[0]);
 			memmove(c->closed_tab_stack, c->closed_tab_stack + 1,
-					(CLOSED_TAB_MAX - 1) * sizeof(char *));
+			        (CLOSED_TAB_MAX - 1) * sizeof(char *));
 			c->closed_tab_top--;
 		}
 		c->closed_tab_stack[c->closed_tab_top++] = g_strdup(dead_uri);
 	}
 
-	gtk_box_remove(GTK_BOX(c->vbox), GTK_WIDGET(dead));
+	/* Free per-tab owned strings */
+	g_free(dying.title);
+	g_free(dying.targeturi);
+	if (dying.mousepos)
+		g_object_unref(dying.mousepos);
+
+	gtk_box_remove(GTK_BOX(c->vbox), GTK_WIDGET(dying.view));
 	update_tabbar(c);
 }
 
@@ -961,7 +969,7 @@ tab_reopen(Client *c, const Arg *a)
 static void
 tab_next(Client *c, const Arg *a)
 {
-	tab_init(c);
+	(void)a;
 	if (c->tabs_count <= 1)
 		return;
 	int next = (c->tabs_active + 1) % c->tabs_count;
@@ -971,7 +979,6 @@ tab_next(Client *c, const Arg *a)
 static void
 tab_prev(Client *c, const Arg *a)
 {
-	tab_init(c);
 	if (c->tabs_count <= 1)
 		return;
 	int prev = (c->tabs_active - 1 + c->tabs_count) % c->tabs_count;
@@ -981,19 +988,15 @@ tab_prev(Client *c, const Arg *a)
 static void
 tab_move(Client *c, const Arg *a)
 {
-	int idx = c->tabs_active;
+	int idx     = c->tabs_active;
 	int new_idx = idx + a->i;
 
 	if (new_idx < 0 || new_idx >= c->tabs_count)
 		return;
 
-	WebKitWebView *tmp = c->tabs_views[idx];
-	c->tabs_views[idx] = c->tabs_views[new_idx];
-	c->tabs_views[new_idx] = tmp;
-
-	gboolean ptmp = c->tab_pins[idx];
-	c->tab_pins[idx] = c->tab_pins[new_idx];
-	c->tab_pins[new_idx] = ptmp;
+	Tab tmp = c->tabs[idx];
+	c->tabs[idx] = c->tabs[new_idx];
+	c->tabs[new_idx] = tmp;
 
 	c->tabs_active = new_idx;
 	update_tabbar(c);
@@ -1056,7 +1059,7 @@ request_hints_from_extension(Client *c)
 {
 	WebKitUserMessage *msg;
 	msg = webkit_user_message_new("hints-find-links", NULL);
-	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
 }
 
 static void
@@ -1067,7 +1070,7 @@ hints_cleanup(Client *c)
 
 	/* Always try to clear the overlay */
 	WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
-	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
 
 	if (hintstate.hints) {
 		for (guint i = 0; i < hintstate.hints->len; i++) {
@@ -1084,7 +1087,7 @@ hints_cleanup(Client *c)
 
 	hintstate.active = 0;
 
-	c->mode = ModeNormal;
+	ctab(c)->mode = ModeNormal;
 	updatetitle(c);
 }
 
@@ -1096,11 +1099,11 @@ hints_start(Client *c, const Arg *a)
 
 	hintstate.mode = a->i;
 	hintstate.active = 1;
-	hintstate.pageid = c->pageid;
+	hintstate.pageid = ctab(c)->pageid;
 	hintstate.hints = g_array_new(FALSE, TRUE, sizeof(Hint));
 	hintstate.input = g_strdup("");
 
-	c->mode = ModeHint;
+	ctab(c)->mode = ModeHint;
 
 	request_hints_from_extension(c);
 	updatetitle(c);
@@ -1126,7 +1129,7 @@ filter_hints(Client *c)
 
 	GVariant *hints_data = g_variant_builder_end(&builder);
 	WebKitUserMessage *msg = webkit_user_message_new("hints-update", hints_data);
-	webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
 }
 
 static void
@@ -1152,10 +1155,10 @@ follow_hint(Client *c, const char *label)
 		if (sscanf(target->url, "[input:%u]", &elem_id) == 1) {
 			GVariant *data = g_variant_new("(u)", elem_id);
 			WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
-			webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+			webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
 		}
 		hints_cleanup(c);
-		c->mode = ModeInsert;
+		ctab(c)->mode = ModeInsert;
 		updatetitle(c);
 		return;
 	}
@@ -1165,7 +1168,7 @@ follow_hint(Client *c, const char *label)
 		if (sscanf(target->url, "[elem:%u]", &elem_id) == 1) {
 			GVariant *data = g_variant_new("(u)", elem_id);
 			WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
-			webkit_web_view_send_message_to_page(c->view, msg, NULL, NULL, NULL);
+			webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
 		}
 		hints_cleanup(c);
 		return;
@@ -1211,7 +1214,7 @@ hints_keypress(Client *c, guint keyval, GdkModifierType state)
 	char *newinput;
 	int label_len;
 
-	if (!hintstate.active || hintstate.pageid != c->pageid)
+	if (!hintstate.active || hintstate.pageid != ctab(c)->pageid)
 		return FALSE;
 
 	if (keyval == GDK_KEY_Escape) {
@@ -1308,22 +1311,20 @@ updatetitle(Client *c)
 	char *title;
 	const char *name;
 	const char *pin;
+	Tab *t = ctab(c);
 
-	if (c->overtitle)
-		name = c->overtitle;
-	else if (c->title)
-		name = c->title;
+	if (t->hover_link)
+		name = t->targeturi;
+	else if (t->title)
+		name = t->title;
 	else
 		name = "";
 
-	pin = (c->tab_pins && c->tabs_active >= 0 && c->tabs_active < c->tabs_count &&
-		   c->tab_pins[c->tabs_active])
-			  ? "[P]"
-			  : "";
+	pin = t->pinned ? "[P]" : "";
 
 	if (c->tabs_count > 1) {
 		title = g_strdup_printf("[%d/%d]%s %s",
-								c->tabs_active + 1, c->tabs_count, pin, name);
+		                        c->tabs_active + 1, c->tabs_count, pin, name);
 	} else {
 		title = g_strdup_printf("%s%s", name, pin);
 	}
@@ -1399,6 +1400,8 @@ static void
 setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 {
 	GdkRGBA bgcolor = {0};
+	Tab *t = ctab(c);
+	WebKitSettings *settings = webkit_web_view_get_settings(t->view);
 
 	modparams[p] = curconfig[p].prio;
 
@@ -1408,7 +1411,7 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case AccessWebcam:
 		return;
 	case CaretBrowsing:
-		webkit_settings_set_enable_caret_browsing(c->settings, a->i);
+		webkit_settings_set_enable_caret_browsing(settings, a->i);
 		refresh = 0;
 		break;
 	case Certificate:
@@ -1417,53 +1420,53 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 		return;
 	case CookiePolicies:
 		webkit_cookie_manager_set_accept_policy(
-			webkit_network_session_get_cookie_manager(webkit_web_view_get_network_session(c->view)),
+			webkit_network_session_get_cookie_manager(
+				webkit_web_view_get_network_session(t->view)),
 			cookiepolicy_get());
 		refresh = 0;
 		break;
 	case DarkMode:
 		g_object_set(gtk_settings_get_default(),
-					 "gtk-application-prefer-dark-theme", a->i, NULL);
+		             "gtk-application-prefer-dark-theme", a->i, NULL);
 		return;
 	case DiskCache:
-		webkit_web_context_set_cache_model(c->context, a->i ? WEBKIT_CACHE_MODEL_WEB_BROWSER : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
+		webkit_web_context_set_cache_model(c->context,
+		    a->i ? WEBKIT_CACHE_MODEL_WEB_BROWSER
+		         : WEBKIT_CACHE_MODEL_DOCUMENT_VIEWER);
 		return;
 	case DefaultCharset:
-		webkit_settings_set_default_charset(c->settings, a->v);
+		webkit_settings_set_default_charset(settings, a->v);
 		return;
 	case DNSPrefetch:
-		g_object_set(c->settings, "enable-dns-prefetching", (gboolean)a->i, NULL);
+		g_object_set(settings, "enable-dns-prefetching", (gboolean)a->i, NULL);
 		return;
 	case FileURLsCrossAccess:
-		webkit_settings_set_allow_file_access_from_file_urls(
-			c->settings, a->i);
-		webkit_settings_set_allow_universal_access_from_file_urls(
-			c->settings, a->i);
+		webkit_settings_set_allow_file_access_from_file_urls(settings, a->i);
+		webkit_settings_set_allow_universal_access_from_file_urls(settings, a->i);
 		return;
 	case FontSize:
-		webkit_settings_set_default_font_size(c->settings, a->i);
+		webkit_settings_set_default_font_size(settings, a->i);
 		return;
 	case Geolocation:
 		refresh = 0;
 		break;
 	case HideBackground:
 		if (a->i)
-			webkit_web_view_set_background_color(c->view, &bgcolor);
+			webkit_web_view_set_background_color(t->view, &bgcolor);
 		return;
 	case Inspector:
-		webkit_settings_set_enable_developer_extras(c->settings, a->i);
+		webkit_settings_set_enable_developer_extras(settings, a->i);
 		return;
 	case JavaScript:
-		webkit_settings_set_enable_javascript(c->settings, a->i);
+		webkit_settings_set_enable_javascript(settings, a->i);
 		break;
 	case KioskMode:
 		return;
 	case LoadImages:
-		webkit_settings_set_auto_load_images(c->settings, a->i);
+		webkit_settings_set_auto_load_images(settings, a->i);
 		break;
 	case MediaManualPlay:
-		webkit_settings_set_media_playback_requires_user_gesture(
-			c->settings, a->i);
+		webkit_settings_set_media_playback_requires_user_gesture(settings, a->i);
 		break;
 	case PDFJSviewer:
 		return;
@@ -1476,37 +1479,35 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 	case ShowIndicators:
 		break;
 	case SmoothScrolling:
-		webkit_settings_set_enable_smooth_scrolling(c->settings, a->i);
+		webkit_settings_set_enable_smooth_scrolling(settings, a->i);
 		return;
 	case SiteQuirks:
-		webkit_settings_set_enable_site_specific_quirks(
-			c->settings, a->i);
+		webkit_settings_set_enable_site_specific_quirks(settings, a->i);
 		break;
 	case SpellChecking:
-		webkit_web_context_set_spell_checking_enabled(
-			c->context, a->i);
+		webkit_web_context_set_spell_checking_enabled(c->context, a->i);
 		return;
 	case SpellLanguages:
 		return;
 	case StrictTLS:
 		webkit_network_session_set_tls_errors_policy(
-			webkit_web_view_get_network_session(c->view),
+			webkit_web_view_get_network_session(t->view),
 			a->i ? WEBKIT_TLS_ERRORS_POLICY_FAIL : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 		break;
-		case Style:
-			webkit_user_content_manager_remove_all_style_sheets(
-				webkit_web_view_get_user_content_manager(c->view));
-			add_global_stylesheets(
-				webkit_web_view_get_user_content_manager(c->view));
-			if (a->i)
-				setstyle(c, getstyle(geturi(c)));
-			refresh = 0;
+	case Style:
+		webkit_user_content_manager_remove_all_style_sheets(
+			webkit_web_view_get_user_content_manager(t->view));
+		add_global_stylesheets(
+			webkit_web_view_get_user_content_manager(t->view));
+		if (a->i)
+			setstyle(c, getstyle(geturi(c)));
+		refresh = 0;
 		break;
 	case WebGL:
-		webkit_settings_set_enable_webgl(c->settings, a->i);
+		webkit_settings_set_enable_webgl(settings, a->i);
 		break;
 	case ZoomLevel:
-		webkit_web_view_set_zoom_level(c->view, a->f);
+		webkit_web_view_set_zoom_level(t->view, a->f);
 		return;
 	default:
 		return;
@@ -1570,7 +1571,7 @@ setcert(Client *c, const char *uri)
 		slash = strchr(uri, '/');
 		host = slash ? g_strndup(uri, slash - uri) : g_strdup(uri);
 		webkit_network_session_allow_tls_certificate_for_host(
-			webkit_web_view_get_network_session(c->view), cert, host);
+			webkit_web_view_get_network_session(ctab(c)->view), cert, host);
 		g_free(host);
 	}
 
@@ -1607,11 +1608,11 @@ setstyle(Client *c, const char *file)
 	}
 
 	webkit_user_content_manager_add_style_sheet(
-		webkit_web_view_get_user_content_manager(c->view),
+		webkit_web_view_get_user_content_manager(ctab(c)->view),
 		webkit_user_style_sheet_new(style,
-									WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-									WEBKIT_USER_STYLE_LEVEL_USER,
-									NULL, NULL));
+		                            WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+		                            WEBKIT_USER_STYLE_LEVEL_USER,
+		                            NULL, NULL));
 
 	g_free(style);
 }
@@ -1637,8 +1638,8 @@ evalscript(Client *c, const char *jsstr, ...)
 	script = g_strdup_vprintf(jsstr, ap);
 	va_end(ap);
 
-	webkit_web_view_evaluate_javascript(c->view, script, -1,
-										NULL, NULL, NULL, NULL, NULL);
+	webkit_web_view_evaluate_javascript(ctab(c)->view, script, -1,
+	                                    NULL, NULL, NULL, NULL, NULL);
 	g_free(script);
 }
 
@@ -1722,15 +1723,19 @@ destroyclient(Client *c)
 {
 	Client *p;
 
-	webkit_web_view_stop_loading(c->view);
-
-	if (c->mousepos) {
-		g_object_unref(c->mousepos);
-		c->mousepos = NULL;
+	/* Free per-tab resources */
+	for (int i = 0; i < c->tabs_count; i++) {
+		Tab *t = &c->tabs[i];
+		if (t->view)
+			webkit_web_view_stop_loading(t->view);
+		g_free(t->title);
+		g_free(t->targeturi);
+		if (t->mousepos)
+			g_object_unref(t->mousepos);
+		/* cert/failedcert are borrowed from WebKit, not owned by us */
 	}
+	g_free(c->tabs);
 
-	g_free(c->tabs_views);
-	g_free(c->tab_pins);
 	for (int i = 0; i < c->closed_tab_top; i++)
 		g_free(c->closed_tab_stack[i]);
 	if (c->fifo_chan)
@@ -1772,10 +1777,8 @@ static Client *
 find_client_for_view(WebKitWebView *v, Client *hint)
 {
 	if (hint) {
-		if (hint->view == v)
-			return hint;
 		for (int i = 0; i < hint->tabs_count; i++) {
-			if (hint->tabs_views[i] == v)
+			if (hint->tabs[i].view == v)
 				return hint;
 		}
 	}
@@ -1783,10 +1786,8 @@ find_client_for_view(WebKitWebView *v, Client *hint)
 	for (Client *c = clients; c; c = c->next) {
 		if (c == hint)
 			continue;
-		if (c->view == v)
-			return c;
 		for (int i = 0; i < c->tabs_count; i++) {
-			if (c->tabs_views[i] == v)
+			if (c->tabs[i].view == v)
 				return c;
 		}
 	}
@@ -1808,7 +1809,6 @@ newview(Client *c, WebKitWebView *rv)
 	WebKitWebContext *context;
 	WebKitNetworkSession *netsession;
 	WebKitCookieManager *cookiemanager;
-	WebKitWebInspector *inspector;
 	GtkGesture *click;
 
 	if (!shared_content_manager) {
@@ -1922,11 +1922,6 @@ newview(Client *c, WebKitWebView *rv)
 	g_signal_connect(G_OBJECT(v), "run-file-chooser",
 					 G_CALLBACK(filechooser), c);
 
-	inspector = webkit_web_view_get_inspector(v);
-	g_object_set_data(G_OBJECT(inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(0));
-	g_signal_connect(inspector, "closed", G_CALLBACK(inspectorclosed), c);
-	g_signal_connect(inspector, "open-window", G_CALLBACK(inspectoropenwindow), c);
-
 	/* Button release for mouse gesture/hint mode handling */
 	click = gtk_gesture_click_new();
 	gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click), 0);
@@ -1935,28 +1930,13 @@ newview(Client *c, WebKitWebView *rv)
 	g_signal_connect(click, "released", G_CALLBACK(buttonreleased), c);
 	gtk_widget_add_controller(GTK_WIDGET(v), GTK_EVENT_CONTROLLER(click));
 
-	c->find_match_count = 0;
-	c->find_current_match = 0;
-
-	c->context = webkit_web_view_get_context(v);
+	/* Store the shared WebKit context on the Client (window-level) */
+	c->context  = webkit_web_view_get_context(v);
 	c->settings = settings;
 
 	setparameter(c, 0, DarkMode, &curconfig[DarkMode].val);
 
 	return v;
-}
-
-static void
-inspectorclosed(WebKitWebInspector *inspector, Client *c)
-{
-	g_object_set_data(G_OBJECT(inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(0));
-}
-
-static gboolean
-inspectoropenwindow(WebKitWebInspector *inspector, Client *c)
-{
-	g_object_set_data(G_OBJECT(inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(1));
-	return FALSE;
 }
 
 static void
@@ -1987,7 +1967,7 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 		return NULL;
 	}
 
-	return GTK_WIDGET(n->view);
+	return GTK_WIDGET(ctab(n)->view);
 }
 
 static void
@@ -1997,14 +1977,15 @@ buttonreleased(GtkGestureClick *gesture, int n_press, double x, double y, Client
 	guint button;
 	GdkModifierType state;
 	int i;
+	Tab *t = ctab(c);
 
-	if (!c->mousepos)
+	if (!t->mousepos)
 		return;
 
-	element = webkit_hit_test_result_get_context(c->mousepos);
+	element = webkit_hit_test_result_get_context(t->mousepos);
 
 	if (element & OnEdit) {
-		c->mode = ModeInsert;
+		t->mode = ModeInsert;
 		updatetitle(c);
 	}
 
@@ -2016,7 +1997,7 @@ buttonreleased(GtkGestureClick *gesture, int n_press, double x, double y, Client
 			button == buttons[i].button &&
 			CLEANMASK(state) == CLEANMASK(buttons[i].mask) &&
 			buttons[i].func) {
-			buttons[i].func(c, &buttons[i].arg, c->mousepos);
+			buttons[i].func(c, &buttons[i].arg, t->mousepos);
 			return;
 		}
 	}
@@ -2027,27 +2008,28 @@ winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 			 GdkModifierType state, Client *c)
 {
 	int i;
+	Tab *t = ctab(c);
 
 	if (curconfig[KioskMode].val.i)
 		return FALSE;
 
-	if (c->mode == ModeCommand || c->mode == ModeSearch)
+	if (t->mode == ModeCommand || t->mode == ModeSearch)
 		return FALSE;
 
-	if (c->mode == ModeInsert) {
+	if (t->mode == ModeInsert) {
 		if (keyval == GDK_KEY_Escape) {
-			c->mode = ModeNormal;
-			gtk_widget_grab_focus(GTK_WIDGET(c->view));
+			t->mode = ModeNormal;
+			gtk_widget_grab_focus(GTK_WIDGET(t->view));
 			updatetitle(c);
 			return TRUE;
 		}
 		return FALSE;
 	}
 
-	if (c->mode == ModeHint)
+	if (t->mode == ModeHint)
 		return hints_keypress(c, keyval, state);
 
-	if (c->mode == ModeSelect) {
+	if (t->mode == ModeSelect) {
 		switch (keyval) {
 		case GDK_KEY_Escape:
 			find_select_exit(c);
@@ -2057,7 +2039,7 @@ winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 			evalscript(c,
 					   "if(window._surfFindSelect)"
 					   "_surfFindSelect(%d);",
-					   c->find_current_match - 1);
+					   t->find_current_match - 1);
 			return TRUE;
 		case GDK_KEY_V:
 			evalscript(c,
@@ -2075,7 +2057,7 @@ winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 			return TRUE;
 		case GDK_KEY_y:
 			webkit_web_view_evaluate_javascript(
-				c->view, "window.getSelection().toString()",
+				t->view, "window.getSelection().toString()",
 				-1, NULL, NULL, NULL, find_select_yank_cb, c);
 			return TRUE;
 		}
@@ -2097,14 +2079,15 @@ winevent_key(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 static void
 winevent_enter(GtkEventControllerMotion *ctrl, double x, double y, Client *c)
 {
-	c->overtitle = c->targeturi;
+	Tab *t = ctab(c);
+	t->hover_link = (t->targeturi != NULL);
 	updatetitle(c);
 }
 
 static void
 winevent_leave(GtkEventControllerMotion *ctrl, Client *c)
 {
-	c->overtitle = NULL;
+	ctab(c)->hover_link = 0;
 	updatetitle(c);
 }
 
@@ -2121,15 +2104,18 @@ showview(WebKitWebView *v, Client *c)
 	GtkCssProvider *css;
 	GtkEventController *barkey;
 	char *cssstr;
+	Tab *t = ctab(c);
 
-	c->finder = webkit_web_view_get_find_controller(c->view);
-	g_signal_connect(c->finder, "counted-matches",
-					 G_CALLBACK(findcountchanged), c);
-	g_signal_connect(c->finder, "failed-to-find-text",
-					 G_CALLBACK(findfailed), c);
-	c->inspector = webkit_web_view_get_inspector(c->view);
+	/* Bootstrap the first Tab's WebKit-derived fields now that the view
+	 * is fully constructed and ready-to-show. */
+	t->finder = webkit_web_view_get_find_controller(t->view);
+	g_signal_connect(t->finder, "counted-matches",
+	                 G_CALLBACK(findcountchanged), c);
+	g_signal_connect(t->finder, "failed-to-find-text",
+	                 G_CALLBACK(findfailed), c);
+	t->pageid = webkit_web_view_get_page_id(t->view);
 
-	c->pageid = webkit_web_view_get_page_id(c->view);
+	c->inspector = webkit_web_view_get_inspector(t->view);
 	c->win = createwindow(c);
 
 	c->vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
@@ -2145,9 +2131,9 @@ showview(WebKitWebView *v, Client *c)
 	gtk_box_append(GTK_BOX(c->vbox), c->dlbar);
 
 	/* Webview expands to fill remaining space */
-	gtk_widget_set_vexpand(GTK_WIDGET(c->view), TRUE);
-	gtk_widget_set_hexpand(GTK_WIDGET(c->view), TRUE);
-	gtk_box_append(GTK_BOX(c->vbox), GTK_WIDGET(c->view));
+	gtk_widget_set_vexpand(GTK_WIDGET(t->view), TRUE);
+	gtk_widget_set_hexpand(GTK_WIDGET(t->view), TRUE);
+	gtk_box_append(GTK_BOX(c->vbox), GTK_WIDGET(t->view));
 
 	/* Tab bar styling */
 	GtkCssProvider *tabcss = gtk_css_provider_new();
@@ -2263,9 +2249,8 @@ showview(WebKitWebView *v, Client *c)
 	gtk_widget_set_visible(c->dlbar, FALSE); /* hidden until first download */
 	gtk_window_present(GTK_WINDOW(c->win));
 
-	tab_init(c);	  /* Make sure tab system is initialized */
-	update_tabbar(c); /* Draw the tabs */
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	update_tabbar(c);
+	gtk_widget_grab_focus(GTK_WIDGET(t->view));
 
 	generate_instance_id(c);
 	setup_fifo(c);
@@ -2277,14 +2262,14 @@ showview(WebKitWebView *v, Client *c)
 	}
 
 	if (curconfig[HideBackground].val.i)
-		webkit_web_view_set_background_color(c->view, &bgcolor);
+		webkit_web_view_set_background_color(t->view, &bgcolor);
 
 	if (curconfig[RunInFullscreen].val.i)
 		togglefullscreen(c, NULL);
 
 	if (curconfig[ZoomLevel].val.f != 1.0)
-		webkit_web_view_set_zoom_level(c->view,
-									   curconfig[ZoomLevel].val.f);
+		webkit_web_view_set_zoom_level(t->view,
+		                               curconfig[ZoomLevel].val.f);
 
 	updatebar(c);
 }
@@ -2318,20 +2303,32 @@ createwindow(Client *c)
 	return w;
 }
 
+/* Find the Tab index inside Client c that owns view v. Returns -1 if not found. */
+static int
+tab_index_for_view(Client *c, WebKitWebView *v)
+{
+	for (int i = 0; i < c->tabs_count; i++) {
+		if (c->tabs[i].view == v)
+			return i;
+	}
+	return -1;
+}
+
 static gboolean
 loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 			  GTlsCertificateFlags err, Client *c)
 {
 	GString *errmsg = g_string_new(NULL);
 	gchar *html, *pem;
+	int tidx = tab_index_for_view(c, v);
 
-	/* Background tab: ignore TLS error - don't corrupt active tab state */
-	if (v != c->view)
+	if (tidx < 0)
 		return FALSE;
 
-	c->failedcert = g_object_ref(cert);
-	c->tlserr = err;
-	c->errorpage = 1;
+	Tab *t = &c->tabs[tidx];
+	t->failedcert = g_object_ref(cert);
+	t->tlserr     = err;
+	t->errorpage  = 1;
 
 	if (err & G_TLS_CERTIFICATE_UNKNOWN_CA)
 		g_string_append(errmsg,
@@ -2359,14 +2356,14 @@ loadfailedtls(WebKitWebView *v, gchar *uri, GTlsCertificate *cert,
 
 	g_object_get(cert, "certificate-pem", &pem, NULL);
 	html = g_strdup_printf("<p>Could not validate TLS for &ldquo;%s&rdquo;<br>%s</p>"
-						   "<p>You can inspect the following certificate "
-						   "with Ctrl-t (default keybinding).</p>"
-						   "<p><pre>%s</pre></p>",
-						   uri, errmsg->str, pem);
+	                       "<p>You can inspect the following certificate "
+	                       "with Ctrl-t (default keybinding).</p>"
+	                       "<p><pre>%s</pre></p>",
+	                       uri, errmsg->str, pem);
 	g_free(pem);
 	g_string_free(errmsg, TRUE);
 
-	webkit_web_view_load_alternate_html(c->view, html, uri, NULL);
+	webkit_web_view_load_alternate_html(t->view, html, uri, NULL);
 	g_free(html);
 
 	return TRUE;
@@ -2376,77 +2373,101 @@ static void
 loadchanged(WebKitWebView *v, WebKitLoadEvent e, Client *c)
 {
 	const char *uri;
+	Tab *t = g_object_get_data(G_OBJECT(v), "surf-tab");
 
-	/* Background tab: don't touch c->view state (certs, params, scripts).
-	 * Only track history on finish and refresh the tab bar label. */
-	if (v != c->view) {
-		if (e == WEBKIT_LOAD_FINISHED) {
-			uri = webkit_web_view_get_uri(v);
-			if (uri && *uri)
-				history_add(uri, webkit_web_view_get_title(v));
-		}
-		update_tabbar(c);
+	if (!t)
 		return;
-	}
 
-	uri = geturi(c);
+	uri = webkit_web_view_get_uri(v);
+	if (!uri)
+		return;
+
+	gboolean is_active = (t == ctab(c));
 
 	switch (e) {
 	case WEBKIT_LOAD_STARTED:
-		g_free(c->title);
-		c->title = g_strdup(uri);
-		c->https = c->insecure = 0;
-		seturiparameters(c, uri, loadtransient);
-		if (c->errorpage)
-			c->errorpage = 0;
+		g_free(t->title);
+		t->title = g_strdup(uri);
+		t->https = t->insecure = 0;
+		if (t->errorpage)
+			t->errorpage = 0;
 		else
-			g_clear_object(&c->failedcert);
+			g_clear_object(&t->failedcert);
+
+		if (is_active) {
+			seturiparameters(c, uri, loadtransient);
+			updatetitle(c);
+		}
+		update_tabbar(c);
 		break;
+
 	case WEBKIT_LOAD_REDIRECTED:
-		g_free(c->title);
-		c->title = g_strdup(uri);
-		seturiparameters(c, uri, loadtransient);
+		g_free(t->title);
+		t->title = g_strdup(uri);
+		if (is_active) {
+			seturiparameters(c, uri, loadtransient);
+			updatetitle(c);
+		}
+		update_tabbar(c);
 		break;
+
 	case WEBKIT_LOAD_COMMITTED:
-		g_free(c->title);
-		c->title = g_strdup(uri);
-		seturiparameters(c, uri, loadcommitted);
-		c->https = webkit_web_view_get_tls_info(c->view, &c->cert,
-												&c->tlserr);
+		g_free(t->title);
+		t->title = g_strdup(uri);
+		t->https = webkit_web_view_get_tls_info(t->view, &t->cert, &t->tlserr);
+		if (is_active) {
+			seturiparameters(c, uri, loadcommitted);
+			updatetitle(c);
+		}
+		update_tabbar(c);
 		break;
+
 	case WEBKIT_LOAD_FINISHED:
-		seturiparameters(c, uri, loadfinished);
-		history_add(uri, c->title);
-		runscript(c);
+		if (is_active) {
+			seturiparameters(c, uri, loadfinished);
+			runscript(c);
+		}
+		history_add(uri, t->title);
+		update_tabbar(c);
 		break;
 	}
-	updatetitle(c);
 }
 
 static void
 progresschanged(WebKitWebView *v, GParamSpec *ps, Client *c)
 {
-	if (v != c->view) {
-		update_tabbar(c);
+	int tidx = tab_index_for_view(c, v);
+
+	if (tidx < 0)
 		return;
-	}
-	c->progress = webkit_web_view_get_estimated_load_progress(c->view) *
-				  100;
-	updatetitle(c);
+
+	Tab *t = &c->tabs[tidx];
+	t->progress = webkit_web_view_get_estimated_load_progress(v) * 100;
+
+	if (tidx == c->tabs_active)
+		updatetitle(c);
+	update_tabbar(c);
 }
 
 static void
 titlechanged(WebKitWebView *view, GParamSpec *ps, Client *c)
 {
-	if (view == c->view) {
-		g_free(c->title);
-		c->title = g_strdup(webkit_web_view_get_title(c->view));
+	int tidx = tab_index_for_view(c, view);
+
+	if (tidx < 0)
+		return;
+
+	Tab *t = &c->tabs[tidx];
+	g_free(t->title);
+	t->title = g_strdup(webkit_web_view_get_title(view));
+
+	if (tidx == c->tabs_active)
 		updatetitle(c);
 
-		const char *uri = geturi(c);
-		if (c->title && *c->title && uri && !g_str_has_prefix(uri, "about:"))
-			history_add(uri, c->title);
-	}
+	const char *uri = webkit_web_view_get_uri(view);
+	if (t->title && *t->title && uri && !g_str_has_prefix(uri, "about:"))
+		history_add(uri, t->title);
+
 	update_tabbar(c);
 }
 
@@ -2490,23 +2511,31 @@ mousetargetchanged(WebKitWebView *v, WebKitHitTestResult *h, guint modifiers,
 				   Client *c)
 {
 	WebKitHitTestResultContext hc = webkit_hit_test_result_get_context(h);
+	int tidx = tab_index_for_view(c, v);
 
-	if (c->mousepos)
-		g_object_unref(c->mousepos);
-	c->mousepos = g_object_ref(h);
+	if (tidx < 0)
+		return;
 
-	g_free(c->targeturi);
+	Tab *t = &c->tabs[tidx];
+
+	if (t->mousepos)
+		g_object_unref(t->mousepos);
+	t->mousepos = g_object_ref(h);
+
+	g_free(t->targeturi);
 	if (hc & OnLink)
-		c->targeturi = g_strdup(webkit_hit_test_result_get_link_uri(h));
+		t->targeturi = g_strdup(webkit_hit_test_result_get_link_uri(h));
 	else if (hc & OnImg)
-		c->targeturi = g_strdup(webkit_hit_test_result_get_image_uri(h));
+		t->targeturi = g_strdup(webkit_hit_test_result_get_image_uri(h));
 	else if (hc & OnMedia)
-		c->targeturi = g_strdup(webkit_hit_test_result_get_media_uri(h));
+		t->targeturi = g_strdup(webkit_hit_test_result_get_media_uri(h));
 	else
-		c->targeturi = NULL;
+		t->targeturi = NULL;
 
-	c->overtitle = c->targeturi;
-	updatetitle(c);
+	t->hover_link = (t->targeturi != NULL);
+
+	if (tidx == c->tabs_active)
+		updatetitle(c);
 }
 
 static gboolean
@@ -2523,6 +2552,9 @@ permissionrequested(WebKitWebView *v, WebKitPermissionRequest *r, Client *c)
 		else if (webkit_user_media_permission_is_for_video_device(
 					 WEBKIT_USER_MEDIA_PERMISSION_REQUEST(r)))
 			param = AccessWebcam;
+	} else if (WEBKIT_IS_CLIPBOARD_PERMISSION_REQUEST(r)) {
+		webkit_permission_request_allow(r);
+		return TRUE;
 	} else {
 		return FALSE;
 	}
@@ -2648,8 +2680,9 @@ decideresource(WebKitPolicyDecision *d, Client *c)
 static void
 insecurecontent(WebKitWebView *v, WebKitInsecureContentEvent e, Client *c)
 {
-	if (v == c->view)
-		c->insecure = 1;
+	int tidx = tab_index_for_view(c, v);
+	if (tidx >= 0)
+		c->tabs[tidx].insecure = 1;
 }
 
 static gchar *
@@ -2779,7 +2812,7 @@ decidedestination(WebKitDownload *d, gchar *suggested_filename, Client *c)
 		dldir = g_get_home_dir();
 	gchar *default_dest = g_build_filename(dldir, suggested_filename, NULL);
 
-	c->mode = ModeCommand;
+	ctab(c)->mode = ModeCommand;
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [DOWNLOAD] ");
 	gtk_widget_set_visible(c->barlabel, TRUE);
 	gtk_widget_set_focusable(c->statentry, TRUE);
@@ -2970,7 +3003,7 @@ closeview(WebKitWebView *v, Client *c)
 {
 	if (c->tabs_count > 1) {
 		for (int i = 0; i < c->tabs_count; i++) {
-			if (c->tabs_views[i] == v) {
+			if (c->tabs[i].view == v) {
 				if (i != c->tabs_active)
 					tab_switch_to(c, i);
 				tab_close(c, &(Arg){0});
@@ -3004,17 +3037,19 @@ pasteuri(GObject *clipboard, GAsyncResult *result, gpointer d)
 static void
 reload(Client *c, const Arg *a)
 {
+	WebKitWebView *v = ctab(c)->view;
 	if (a->i)
-		webkit_web_view_reload_bypass_cache(c->view);
+		webkit_web_view_reload_bypass_cache(v);
 	else
-		webkit_web_view_reload(c->view);
+		webkit_web_view_reload(v);
 }
 
 static void
 print(Client *c, const Arg *a)
 {
-	webkit_print_operation_run_dialog(webkit_print_operation_new(c->view),
-									  GTK_WINDOW(c->win));
+	(void)a;
+	webkit_print_operation_run_dialog(webkit_print_operation_new(ctab(c)->view),
+	                                  GTK_WINDOW(c->win));
 }
 
 static void
@@ -3071,16 +3106,18 @@ static void
 screenshot(Client *c, const Arg *a)
 {
 	(void)a;
-	webkit_web_view_get_snapshot(c->view,
-								 WEBKIT_SNAPSHOT_REGION_FULL_DOCUMENT,
-								 WEBKIT_SNAPSHOT_OPTIONS_NONE,
-								 NULL, screenshot_cb, c);
+	webkit_web_view_get_snapshot(ctab(c)->view,
+	                             WEBKIT_SNAPSHOT_REGION_FULL_DOCUMENT,
+	                             WEBKIT_SNAPSHOT_OPTIONS_NONE,
+	                             NULL, screenshot_cb, c);
 }
 
 static void
 showcert(Client *c, const Arg *a)
 {
-	GTlsCertificate *cert = c->failedcert ? c->failedcert : c->cert;
+	(void)a;
+	Tab *t = ctab(c);
+	GTlsCertificate *cert = t->failedcert ? t->failedcert : t->cert;
 	GtkWidget *win, *scroll, *view;
 	GtkTextBuffer *buf;
 	gchar *pem = NULL;
@@ -3118,7 +3155,7 @@ clipboard(Client *c, const Arg *a)
 		gdk_clipboard_read_text_async(gdk_display_get_primary_clipboard(dpy),
 									  NULL, pasteuri, c);
 	} else {
-		const char *uri = c->targeturi ? c->targeturi : geturi(c);
+		const char *uri = ctab(c)->targeturi ? ctab(c)->targeturi : geturi(c);
 		gdk_clipboard_set_text(gdk_display_get_clipboard(dpy), uri);
 		gdk_clipboard_set_text(gdk_display_get_primary_clipboard(dpy), uri);
 	}
@@ -3127,16 +3164,15 @@ clipboard(Client *c, const Arg *a)
 static void
 zoom(Client *c, const Arg *a)
 {
+	WebKitWebView *v = ctab(c)->view;
 	if (a->i > 0)
-		webkit_web_view_set_zoom_level(c->view,
-									   curconfig[ZoomLevel].val.f + 0.1);
+		webkit_web_view_set_zoom_level(v, curconfig[ZoomLevel].val.f + 0.1);
 	else if (a->i < 0)
-		webkit_web_view_set_zoom_level(c->view,
-									   curconfig[ZoomLevel].val.f - 0.1);
+		webkit_web_view_set_zoom_level(v, curconfig[ZoomLevel].val.f - 0.1);
 	else
-		webkit_web_view_set_zoom_level(c->view, 1.0);
+		webkit_web_view_set_zoom_level(v, 1.0);
 
-	curconfig[ZoomLevel].val.f = webkit_web_view_get_zoom_level(c->view);
+	curconfig[ZoomLevel].val.f = webkit_web_view_get_zoom_level(v);
 }
 
 static void
@@ -3145,7 +3181,7 @@ scrollv(Client *c, const Arg *a)
 	char js[128];
 	snprintf(js, sizeof(js),
 			 "window.scrollBy(0,window.innerHeight/100*%d);", a->i);
-	webkit_web_view_evaluate_javascript(c->view, js, -1,
+	webkit_web_view_evaluate_javascript(ctab(c)->view, js, -1,
 										NULL, NULL, NULL, NULL, NULL);
 }
 
@@ -3155,23 +3191,23 @@ scrollh(Client *c, const Arg *a)
 	char js[128];
 	snprintf(js, sizeof(js),
 			 "window.scrollBy(window.innerWidth/100*%d,0);", a->i);
-	webkit_web_view_evaluate_javascript(c->view, js, -1,
+	webkit_web_view_evaluate_javascript(ctab(c)->view, js, -1,
 										NULL, NULL, NULL, NULL, NULL);
 }
 
 static void
 navigate(Client *c, const Arg *a)
 {
+	WebKitWebView *v = ctab(c)->view;
 	if (a->i < 0)
-		webkit_web_view_go_back(c->view);
+		webkit_web_view_go_back(v);
 	else if (a->i > 0)
-		webkit_web_view_go_forward(c->view);
+		webkit_web_view_go_forward(v);
 }
 
 static void
 reloaduserscripts(Client *c, const Arg *a)
 {
-	(void)c;
 	(void)a;
 
 	if (!shared_content_manager)
@@ -3182,8 +3218,8 @@ reloaduserscripts(Client *c, const Arg *a)
 
 	for (Client *it = clients; it; it = it->next) {
 		for (int i = 0; i < it->tabs_count; i++) {
-			if (it->tabs_views[i])
-				webkit_web_view_reload(it->tabs_views[i]);
+			if (it->tabs[i].view)
+				webkit_web_view_reload(it->tabs[i].view);
 		}
 	}
 }
@@ -3191,7 +3227,8 @@ reloaduserscripts(Client *c, const Arg *a)
 static void
 stop(Client *c, const Arg *a)
 {
-	webkit_web_view_stop_loading(c->view);
+	(void)a;
+	webkit_web_view_stop_loading(ctab(c)->view);
 }
 
 static void
@@ -3222,10 +3259,9 @@ togglecookiepolicy(Client *c, const Arg *a)
 static void
 toggleinspector(Client *c, const Arg *a)
 {
-	if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(c->inspector), INSPECTOR_OPEN_DATA_KEY))) {
+	if (webkit_web_inspector_get_web_view(c->inspector)) {
 		webkit_web_inspector_close(c->inspector);
 	} else if (curconfig[Inspector].val.i) {
-		g_object_set_data(G_OBJECT(c->inspector), INSPECTOR_OPEN_DATA_KEY, GINT_TO_POINTER(1));
 		webkit_web_inspector_show(c->inspector);
 	}
 }
@@ -3233,20 +3269,21 @@ toggleinspector(Client *c, const Arg *a)
 static void
 find(Client *c, const Arg *a)
 {
+	Tab *t = ctab(c);
 	if (a && a->i) {
 		if (a->i > 0) {
-			webkit_find_controller_search_next(c->finder);
-			if (c->find_match_count > 0) {
-				c->find_current_match++;
-				if (c->find_current_match > c->find_match_count)
-					c->find_current_match = 1;
+			webkit_find_controller_search_next(t->finder);
+			if (t->find_match_count > 0) {
+				t->find_current_match++;
+				if (t->find_current_match > t->find_match_count)
+					t->find_current_match = 1;
 			}
 		} else {
-			webkit_find_controller_search_previous(c->finder);
-			if (c->find_match_count > 0) {
-				c->find_current_match--;
-				if (c->find_current_match < 1)
-					c->find_current_match = c->find_match_count;
+			webkit_find_controller_search_previous(t->finder);
+			if (t->find_match_count > 0) {
+				t->find_current_match--;
+				if (t->find_current_match < 1)
+					t->find_current_match = t->find_match_count;
 			}
 		}
 		updatebar(c);
@@ -3258,9 +3295,11 @@ find(Client *c, const Arg *a)
 static void
 opensearch(Client *c, const Arg *a)
 {
-	c->mode = ModeSearch;
-	c->find_match_count = 0;
-	c->find_current_match = 0;
+	(void)a;
+	Tab *t = ctab(c);
+	t->mode = ModeSearch;
+	t->find_match_count = 0;
+	t->find_current_match = 0;
 
 	gtk_label_set_text(GTK_LABEL(c->barlabel), " [SEARCH] ");
 	gtk_widget_set_visible(c->barlabel, TRUE);
@@ -3277,7 +3316,7 @@ opensearch(Client *c, const Arg *a)
 static void
 bar_on_changed(GtkEditable *editable, Client *c)
 {
-	if (c->mode == ModeCommand)
+	if (ctab(c)->mode == ModeCommand)
 		history_filter(c, gtk_editable_get_text(editable));
 }
 
@@ -3293,17 +3332,18 @@ updatebar(Client *c)
 {
 	char *text;
 	const char *uri, *modestr;
+	Tab *t = ctab(c);
 
 	if (!c->statentry)
 		return;
 
-	if (c->mode == ModeCommand || c->mode == ModeSearch)
+	if (t->mode == ModeCommand || t->mode == ModeSearch)
 		return;
 
 	updatebar_style(c);
 	uri = geturi(c);
 
-	switch (c->mode) {
+	switch (t->mode) {
 	case ModeInsert:
 		modestr = "INSERT";
 		break;
@@ -3324,12 +3364,12 @@ updatebar(Client *c)
 		break;
 	}
 
-	if (c->progress > 0 && c->progress < 100)
+	if (t->progress > 0 && t->progress < 100)
 		text = g_strdup_printf(" [%s] [%i%%] %s", modestr,
-							   c->progress, uri);
-	else if (c->find_match_count > 0)
+		                       t->progress, uri);
+	else if (t->find_match_count > 0)
 		text = g_strdup_printf(" [%s] [%d/%d] %s", modestr,
-							   c->find_current_match, c->find_match_count, uri);
+		                       t->find_current_match, t->find_match_count, uri);
 	else
 		text = g_strdup_printf(" [%s] %s", modestr, uri);
 
@@ -3342,7 +3382,7 @@ openbar(Client *c, const Arg *a)
 {
 	const char *uri;
 
-	c->mode = ModeCommand;
+	ctab(c)->mode = ModeCommand;
 
 	history_load();
 
@@ -3370,7 +3410,7 @@ openbar(Client *c, const Arg *a)
 static void
 closebar(Client *c)
 {
-	c->mode = ModeNormal;
+	ctab(c)->mode = ModeNormal;
 	c->newtab_pending = 0;
 
 	history_hide(c);
@@ -3381,7 +3421,7 @@ closebar(Client *c)
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 	gtk_widget_set_focusable(c->statentry, FALSE);
 
-	gtk_widget_grab_focus(GTK_WIDGET(c->view));
+	gtk_widget_grab_focus(GTK_WIDGET(ctab(c)->view));
 	updatetitle(c);
 	updatebar(c);
 }
@@ -3389,7 +3429,8 @@ closebar(Client *c)
 static void
 openbar_newtab(Client *c, const Arg *a)
 {
-	c->mode = ModeCommand;
+	(void)a;
+	ctab(c)->mode = ModeCommand;
 	c->newtab_pending = 1;
 
 	history_load();
@@ -3464,7 +3505,7 @@ find_select_exit(Client *c)
 			   "window.getSelection().removeAllRanges();"
 			   "if(typeof CSS!=='undefined'&&CSS.highlights)"
 			   "CSS.highlights.delete('surf-find-sel');");
-	c->mode = ModeNormal;
+	ctab(c)->mode = ModeNormal;
 	updatebar(c);
 	updatebar_style(c);
 }
@@ -3473,11 +3514,12 @@ static void
 find_select_enter(Client *c, const Arg *a)
 {
 	(void)a;
-	if (c->find_match_count <= 0)
+	Tab *t = ctab(c);
+	if (t->find_match_count <= 0)
 		return;
-	c->mode = ModeSelect;
+	t->mode = ModeSelect;
 	evalscript(c, "if(window._surfFindSelect)_surfFindSelect(%d);",
-			   c->find_current_match - 1);
+			   t->find_current_match - 1);
 	updatebar(c);
 	updatebar_style(c);
 }
@@ -3486,16 +3528,17 @@ static void
 find_select_line(Client *c, const Arg *a)
 {
 	(void)a;
-	if (c->find_match_count <= 0)
+	Tab *t = ctab(c);
+	if (t->find_match_count <= 0)
 		return;
-	c->mode = ModeSelect;
+	t->mode = ModeSelect;
 	evalscript(c,
 			   "if(window._surfFindSelect){"
 			   "_surfFindSelect(%d);"
 			   "var s=window.getSelection();"
 			   "s.modify('move','backward','lineboundary');"
 			   "s.modify('extend','forward','lineboundary');}",
-			   c->find_current_match - 1);
+			   t->find_current_match - 1);
 	updatebar(c);
 	updatebar_style(c);
 }
@@ -3541,19 +3584,20 @@ static void
 baractivate(GtkEntry *entry, Client *c)
 {
 	const char *text, *input;
+	Tab *t = ctab(c);
 
 	text = gtk_editable_get_text(GTK_EDITABLE(entry));
 
-	if (c->mode == ModeSearch) {
+	if (t->mode == ModeSearch) {
 		input = text;
 
 		if (input && *input) {
-			webkit_find_controller_search(c->finder, input,
+			webkit_find_controller_search(t->finder, input,
 										  findopts, G_MAXUINT);
-			webkit_find_controller_count_matches(c->finder, input,
+			webkit_find_controller_count_matches(t->finder, input,
 												 findopts, G_MAXUINT);
 			find_highlight_update(c, input);
-			c->find_current_match = 1;
+			t->find_current_match = 1;
 		}
 
 		closebar(c);
@@ -3569,7 +3613,7 @@ baractivate(GtkEntry *entry, Client *c)
 			g_mkdir_with_parents(dir, 0755);
 			g_free(dir);
 			c->dl_pending_path = g_strdup(path);
-			webkit_web_view_download_uri(c->view, c->dl_pending_uri);
+			webkit_web_view_download_uri(t->view, c->dl_pending_uri);
 		}
 		g_free(c->dl_pending_uri);
 		c->dl_pending_uri = NULL;
@@ -3589,7 +3633,6 @@ baractivate(GtkEntry *entry, Client *c)
 
 			closebar(c);
 
-			tab_init(c);
 			tab_new(c, &(Arg){.i = 1});
 			Arg a = {.v = saved_input};
 			loaduri(c, &a);
@@ -3610,9 +3653,11 @@ static gboolean
 barkeypress(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 			GdkModifierType state, Client *c)
 {
+	Tab *t = ctab(c);
+
 	if (keyval == GDK_KEY_Escape) {
-		if (c->mode == ModeSearch) {
-			webkit_find_controller_search_finish(c->finder);
+		if (t->mode == ModeSearch) {
+			webkit_find_controller_search_finish(t->finder);
 			find_highlight_update(c, NULL);
 		}
 		if (c->dl_pending_uri) {
@@ -3623,7 +3668,7 @@ barkeypress(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 		return TRUE;
 	}
 
-	if (c->mode == ModeSearch) {
+	if (t->mode == ModeSearch) {
 		g_idle_add((GSourceFunc)bar_update_search, c);
 		return FALSE;
 	}
@@ -3661,10 +3706,12 @@ barkeypress(GtkEventControllerKey *ctrl, guint keyval, guint keycode,
 static void
 toggleinsert(Client *c, const Arg *a)
 {
-	if (c->mode == ModeInsert)
-		c->mode = ModeNormal;
+	(void)a;
+	Tab *t = ctab(c);
+	if (t->mode == ModeInsert)
+		t->mode = ModeNormal;
 	else
-		c->mode = ModeInsert;
+		t->mode = ModeInsert;
 	updatetitle(c);
 }
 
@@ -3770,7 +3817,8 @@ spawnuserscript(Client *c, const Arg *a)
 {
 	const char *script = a->v;
 	const char *uri = geturi(c);
-	const char *title = c->title ? c->title : "";
+	const char *title = ctab(c)->title ? ctab(c)->title : "";
+	const char *mode = ctab(c)->mode == ModeInsert ? "insert" : "normal";
 
 	if (!c->surf_fifo) {
 		fprintf(stderr, "spawnuserscript: no fifo\n");
@@ -3781,12 +3829,12 @@ spawnuserscript(Client *c, const Arg *a)
 		setenv("SURF_FIFO", c->surf_fifo, 1);
 		setenv("SURF_URL", uri, 1);
 		setenv("SURF_TITLE", title, 1);
-		setenv("SURF_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
+		setenv("SURF_MODE", mode, 1);
 
 		setenv("QUTE_FIFO", c->surf_fifo, 1);
 		setenv("QUTE_URL", uri, 1);
 		setenv("QUTE_TITLE", title, 1);
-		setenv("QUTE_MODE", c->mode == ModeInsert ? "insert" : "normal", 1);
+		setenv("QUTE_MODE", mode, 1);
 
 		/* Close all fds >= 3 so parent's sockets/fifo don't leak */
 		int _maxfd = (int)sysconf(_SC_OPEN_MAX);
@@ -4263,7 +4311,7 @@ bar_update_filter(gpointer data)
 	Client *c = (Client *)data;
 	const char *text;
 
-	if (c->mode != ModeCommand)
+	if (ctab(c)->mode != ModeCommand)
 		return FALSE;
 
 	text = gtk_editable_get_text(GTK_EDITABLE(c->statentry));
@@ -4501,35 +4549,30 @@ history_select(Client *c, int direction)
 static void
 tab_pin(Client *c, const Arg *a)
 {
+	(void)a;
 	if (c->tabs_count <= 0)
 		return;
-
-	if (!c->tab_pins)
-		c->tab_pins = g_malloc0(c->tabs_count * sizeof(gboolean));
-
-	c->tab_pins[c->tabs_active] = !c->tab_pins[c->tabs_active];
+	ctab(c)->pinned = !ctab(c)->pinned;
 	updatetitle(c);
 }
 
 static gboolean
 pin_keepalive(gpointer data)
 {
+	(void)data;
 	for (Client *c = clients; c; c = c->next) {
-		if (!c->tab_pins)
-			continue;
-
 		for (int i = 0; i < c->tabs_count; i++) {
 			if (i == c->tabs_active)
 				continue;
-			if (!c->tab_pins[i])
+			if (!c->tabs[i].pinned)
 				continue;
-			if (!c->tabs_views[i])
+			if (!c->tabs[i].view)
 				continue;
-			if (!webkit_web_view_is_playing_audio(c->tabs_views[i]))
+			if (!webkit_web_view_is_playing_audio(c->tabs[i].view))
 				continue;
 
-			webkit_web_view_evaluate_javascript(c->tabs_views[i],
-												"void(0);", -1, NULL, NULL, NULL, NULL, NULL);
+			webkit_web_view_evaluate_javascript(c->tabs[i].view,
+			                                    "void(0);", -1, NULL, NULL, NULL, NULL, NULL);
 		}
 	}
 
@@ -4542,7 +4585,7 @@ updatebar_style(Client *c)
 	GtkCssProvider *css, *old_css;
 	const char *bg, *fg;
 
-	switch (c->mode) {
+	switch (ctab(c)->mode) {
 	case ModeInsert:
 		bg = "#005f00";
 		fg = "#ffffff";
@@ -4610,16 +4653,19 @@ updatebar_style(Client *c)
 static void
 findcountchanged(WebKitFindController *f, guint count, Client *c)
 {
-	c->find_match_count = count;
+	(void)f;
+	ctab(c)->find_match_count = count;
 	updatebar(c);
 }
 
 static void
 findfailed(WebKitFindController *f, Client *c)
 {
-	c->find_match_count = 0;
-	c->find_current_match = 0;
-	updatebar(c); /* MAKE SURE THIS IS HERE */
+	(void)f;
+	Tab *t = ctab(c);
+	t->find_match_count = 0;
+	t->find_current_match = 0;
+	updatebar(c);
 }
 
 int
