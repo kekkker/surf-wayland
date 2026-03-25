@@ -295,9 +295,6 @@ static void history_select(Client *c, int direction);
 static void history_hide(Client *c);
 static void history_attach(Client *c);
 static gboolean bar_update_filter(gpointer data) __attribute__((unused));
-static GtkWidget *history_list = NULL;
-static GtkWidget *history_scroll = NULL;
-static int history_selected = -1;
 static void tab_pin(Client *c, const Arg *a);
 static void tab_reopen(Client *c, const Arg *a);
 static void tab_move(Client *c, const Arg *a);
@@ -911,7 +908,9 @@ tab_close(Client *c, const Arg *a)
 
 	idx = c->tabs_active;
 
-	Tab dying = c->tabs[idx]; /* copy-by-value so we own it after removal */
+	/* Take ownership of view for cleanup after removing from array */
+	Tab dying = c->tabs[idx];
+	g_object_ref(dying.view);  /* ref for cleanup after removal */
 
 	webkit_web_view_stop_loading(dying.view);
 	gtk_widget_set_visible(GTK_WIDGET(dying.view), FALSE);
@@ -950,7 +949,9 @@ tab_close(Client *c, const Arg *a)
 	if (dying.mousepos)
 		g_object_unref(dying.mousepos);
 
+	/* Remove view from parent widget and drop our reference */
 	gtk_box_remove(GTK_BOX(c->vbox), GTK_WIDGET(dying.view));
+	g_object_unref(dying.view);
 	update_tabbar(c);
 }
 
@@ -1712,7 +1713,7 @@ spawn(Client *c, const Arg *a)
 static void
 destroyclient(Client *c)
 {
-	Client *p;
+	Client *p, *prev = NULL;
 
 	/* Free per-tab resources */
 	for (int i = 0; i < c->tabs_count; i++) {
@@ -1723,7 +1724,9 @@ destroyclient(Client *c)
 		g_free(t->targeturi);
 		if (t->mousepos)
 			g_object_unref(t->mousepos);
-		/* cert/failedcert are borrowed from WebKit, not owned by us */
+		/* cert/failedcert: cert is borrowed from WebKit, failedcert is owned */
+		if (t->failedcert)
+			g_object_unref(t->failedcert);
 	}
 	g_free(c->tabs);
 
@@ -1736,10 +1739,17 @@ destroyclient(Client *c)
 		g_free(c->surf_fifo);
 	}
 
-	for (p = clients; p && p->next != c; p = p->next)
+	/* Free history popup widgets */
+	if (c->history_list)
+		g_object_unref(c->history_list);
+	if (c->history_scroll)
+		g_object_unref(c->history_scroll);
+
+	/* Unlink client from list using proper prev pointer */
+	for (p = clients; p && p != c; prev = p, p = p->next)
 		;
-	if (p)
-		p->next = c->next;
+	if (prev)
+		prev->next = c->next;
 	else
 		clients = c->next;
 	free(c);
@@ -3046,6 +3056,7 @@ print(Client *c, const Arg *a)
 static void
 screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 {
+	Client *c = data;
 	GdkTexture *texture;
 	GError *err = NULL;
 	char path[PATH_MAX];
@@ -3053,11 +3064,12 @@ screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	struct tm *tm;
 	time_t t;
 
-	if (!gtk_widget_get_realized(GTK_WIDGET(obj)))
+	/* Validate that the view still exists in this client */
+	if (tab_index_for_view(c, WEBKIT_WEB_VIEW(obj)) < 0)
 		return;
 
 	texture = webkit_web_view_get_snapshot_finish(WEBKIT_WEB_VIEW(obj),
-												  res, &err);
+													  res, &err);
 	if (err) {
 		fprintf(stderr, "screenshot: %s\n", err->message);
 		g_error_free(err);
@@ -3085,13 +3097,8 @@ screenshot_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	else
 		fprintf(stderr, "screenshot: %s\n", path);
 	g_object_unref(texture);
-
-	(void)data;
-
-	char *argv[] = {"notify-send", "-t", "4000", "Screenshot saved", path, NULL};
-	g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH,
-				  NULL, NULL, NULL, NULL);
 }
+
 
 static void
 screenshot(Client *c, const Arg *a)
@@ -3542,10 +3549,8 @@ find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer data)
 	GError *err = NULL;
 	char *text;
 
-	/* Same guard as screenshot_cb: the view may have been destroyed while
-	 * the JS evaluation was in flight.  evaluate_javascript_finish would
-	 * crash accessing the freed WebPageProxy at a small offset. */
-	if (!gtk_widget_get_realized(GTK_WIDGET(obj)))
+	/* Validate that the view still exists in this client */
+	if (tab_index_for_view(c, WEBKIT_WEB_VIEW(obj)) < 0)
 		return;
 
 	val = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(obj),
@@ -4268,10 +4273,10 @@ history_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data)
 static void
 history_hide(Client *c)
 {
-	if (history_scroll) {
-		gtk_widget_set_visible(history_scroll, FALSE);
+	if (c->history_scroll) {
+		gtk_widget_set_visible(c->history_scroll, FALSE);
 	}
-	history_selected = -1;
+	c->history_selected = -1;
 }
 
 static void
@@ -4279,21 +4284,21 @@ history_attach(Client *c)
 {
 	GtkWidget *parent, *before_sb;
 
-	if (!history_scroll)
+	if (!c->history_scroll)
 		return;
 
-	parent = gtk_widget_get_parent(history_scroll);
+	parent = gtk_widget_get_parent(c->history_scroll);
 	if (parent && parent != c->vbox && GTK_IS_BOX(parent))
-		gtk_box_remove(GTK_BOX(parent), history_scroll);
+		gtk_box_remove(GTK_BOX(parent), c->history_scroll);
 
 	before_sb = gtk_widget_get_first_child(c->vbox);
 	while (before_sb && gtk_widget_get_next_sibling(before_sb) != c->statusbar)
 		before_sb = gtk_widget_get_next_sibling(before_sb);
 
 	if (parent == c->vbox)
-		gtk_box_reorder_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
+		gtk_box_reorder_child_after(GTK_BOX(c->vbox), c->history_scroll, before_sb);
 	else
-		gtk_box_insert_child_after(GTK_BOX(c->vbox), history_scroll, before_sb);
+		gtk_box_insert_child_after(GTK_BOX(c->vbox), c->history_scroll, before_sb);
 }
 
 static gboolean
@@ -4322,19 +4327,19 @@ history_filter(Client *c, const char *text)
 	if (!history_entries || !text)
 		return;
 
-	if (!history_scroll) {
-		history_scroll = gtk_scrolled_window_new();
-		gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(history_scroll),
+	if (!c->history_scroll) {
+		c->history_scroll = gtk_scrolled_window_new();
+		gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(c->history_scroll),
 									   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 
-		history_list = gtk_list_box_new();
-		gtk_list_box_set_selection_mode(GTK_LIST_BOX(history_list),
+		c->history_list = gtk_list_box_new();
+		gtk_list_box_set_selection_mode(GTK_LIST_BOX(c->history_list),
 										GTK_SELECTION_NONE);
-		gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(history_list), TRUE);
-		g_signal_connect(history_list, "row-activated",
+		gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(c->history_list), TRUE);
+		g_signal_connect(c->history_list, "row-activated",
 						 G_CALLBACK(history_row_activated), c);
-		gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(history_scroll),
-									  history_list);
+		gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(c->history_scroll),
+									  c->history_list);
 
 		css = gtk_css_provider_new();
 		gtk_css_provider_load_from_string(css,
@@ -4370,15 +4375,15 @@ history_filter(Client *c, const char *text)
 										  "  color: #cccccc;"
 										  "}");
 
-		gtk_widget_set_name(history_scroll, "history-scroll");
-		gtk_widget_set_name(history_list, "history-list");
+		gtk_widget_set_name(c->history_scroll, "history-scroll");
+		gtk_widget_set_name(c->history_list, "history-list");
 
 		gtk_style_context_add_provider_for_display(
 			gdk_display_get_default(),
 			GTK_STYLE_PROVIDER(css),
 			GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 1);
 
-		g_object_set_data_full(G_OBJECT(history_list), "css",
+		g_object_set_data_full(G_OBJECT(c->history_list), "css",
 							   css, g_object_unref);
 	}
 
@@ -4387,8 +4392,8 @@ history_filter(Client *c, const char *text)
 	/* Clear existing rows */
 	{
 		GtkWidget *row;
-		while ((row = gtk_widget_get_first_child(history_list)))
-			gtk_list_box_remove(GTK_LIST_BOX(history_list), row);
+		while ((row = gtk_widget_get_first_child(c->history_list)))
+			gtk_list_box_remove(GTK_LIST_BOX(c->history_list), row);
 	}
 
 	seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
@@ -4456,27 +4461,27 @@ history_filter(Client *c, const char *text)
 		gtk_widget_set_name(label, e->uri);
 		g_free(display_text);
 
-		gtk_list_box_insert(GTK_LIST_BOX(history_list), label, -1);
+		gtk_list_box_insert(GTK_LIST_BOX(c->history_list), label, -1);
 
 		GtkListBoxRow *row = gtk_list_box_get_row_at_index(
-			GTK_LIST_BOX(history_list), count);
+			GTK_LIST_BOX(c->history_list), count);
 		(void)row;
 
 		count++;
 	}
 
 	g_hash_table_destroy(seen);
-	history_selected = -1;
+	c->history_selected = -1;
 
 	if (count > 0) {
 		int row_height = 24;
 		int popup_height = count * row_height;
 		if (popup_height > 360)
 			popup_height = 360;
-		gtk_widget_set_size_request(history_scroll, -1, popup_height);
-		gtk_widget_set_visible(history_scroll, TRUE);
-	} else if (history_scroll) {
-		gtk_widget_set_visible(history_scroll, FALSE);
+		gtk_widget_set_size_request(c->history_scroll, -1, popup_height);
+		gtk_widget_set_visible(c->history_scroll, TRUE);
+	} else if (c->history_scroll) {
+		gtk_widget_set_visible(c->history_scroll, FALSE);
 	}
 }
 
@@ -4486,39 +4491,39 @@ history_select(Client *c, int direction)
 	GtkListBoxRow *row;
 	int n;
 
-	if (!history_list)
+	if (!c->history_list)
 		return;
 
 	n = 0;
-	while (gtk_list_box_get_row_at_index(GTK_LIST_BOX(history_list), n))
+	while (gtk_list_box_get_row_at_index(GTK_LIST_BOX(c->history_list), n))
 		n++;
 
 	if (n == 0)
 		return;
 
 	/* Remove old highlight */
-	if (history_selected >= 0) {
+	if (c->history_selected >= 0) {
 		row = gtk_list_box_get_row_at_index(
-			GTK_LIST_BOX(history_list), history_selected);
+			GTK_LIST_BOX(c->history_list), c->history_selected);
 		if (row)
 			gtk_widget_remove_css_class(GTK_WIDGET(row), "hl");
 	}
 
-	if (history_selected < 0) {
+	if (c->history_selected < 0) {
 		if (direction > 0)
-			history_selected = 0;
+			c->history_selected = 0;
 		else
-			history_selected = n - 1;
+			c->history_selected = n - 1;
 	} else {
-		history_selected += direction;
-		if (history_selected < 0)
-			history_selected = n - 1;
-		if (history_selected >= n)
-			history_selected = 0;
+		c->history_selected += direction;
+		if (c->history_selected < 0)
+			c->history_selected = n - 1;
+		if (c->history_selected >= n)
+			c->history_selected = 0;
 	}
 
 	row = gtk_list_box_get_row_at_index(
-		GTK_LIST_BOX(history_list), history_selected);
+		GTK_LIST_BOX(c->history_list), c->history_selected);
 	if (row) {
 		gtk_widget_add_css_class(GTK_WIDGET(row), "hl");
 

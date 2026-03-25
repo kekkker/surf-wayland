@@ -53,8 +53,8 @@ typedef struct {
 	int                   progress;  /* 0-100 */
 
 	/* TLS */
-	GTlsCertificate      *cert;
-	GTlsCertificate      *failedcert;
+	GTlsCertificate      *cert;        /* borrowed ref from webkit_web_view_get_tls_info() */
+	GTlsCertificate      *failedcert;  /* owned ref (taken on TLS error) */
 	GTlsCertificateFlags  tlserr;
 	int                   https;
 	int                   insecure;
@@ -115,6 +115,11 @@ typedef struct Client {
 	/* --- FIFO for userscript communication --- */
 	char                 *surf_fifo;
 	GIOChannel           *fifo_chan;
+
+	/* --- history popup state (per-window) --- */
+	GtkWidget            *history_list;
+	GtkWidget            *history_scroll;
+	int                   history_selected;
 
 	struct Client        *next;
 } Client;
