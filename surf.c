@@ -1956,8 +1956,8 @@ createview(WebKitWebView *v, WebKitNavigationAction *a, Client *c)
 
 	switch (webkit_navigation_action_get_navigation_type(a)) {
 	case WEBKIT_NAVIGATION_TYPE_OTHER:
-		if (webkit_navigation_action_is_user_gesture(a))
-			return NULL;
+		/* WebKit reports most JS-driven popup requests as OTHER.
+		 * Do not drop them here, even when they come from a user gesture. */
 		n = newclient(c);
 		break;
 	case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED:
