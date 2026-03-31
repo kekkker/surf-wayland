@@ -887,6 +887,7 @@ tab_new(Client *c, const Arg *a)
 	                 G_CALLBACK(findfailed), c);
 
 	c->tabs_active = insert_at;
+	c->inspector = webkit_web_view_get_inspector(t->view);
 
 	gtk_widget_set_visible(GTK_WIDGET(t->view), TRUE);
 	gtk_widget_set_focusable(c->statentry, FALSE);
@@ -1896,6 +1897,10 @@ newview(Client *c, WebKitWebView *rv)
 		g_object_unref(netsession);
 		g_object_unref(context);
 	}
+
+	/* Related views do not reliably pick up every setting we care about. */
+	webkit_settings_set_enable_developer_extras(settings,
+	                                            curconfig[Inspector].val.i);
 
 	g_signal_connect(G_OBJECT(v), "notify::estimated-load-progress",
 					 G_CALLBACK(progresschanged), c);
@@ -3262,10 +3267,17 @@ togglecookiepolicy(Client *c, const Arg *a)
 static void
 toggleinspector(Client *c, const Arg *a)
 {
-	if (webkit_web_inspector_get_web_view(c->inspector)) {
-		webkit_web_inspector_close(c->inspector);
+	WebKitWebInspector *inspector;
+
+	inspector = webkit_web_view_get_inspector(ctab(c)->view);
+	c->inspector = inspector;
+
+	if (webkit_web_inspector_get_web_view(inspector)) {
+		webkit_web_inspector_close(inspector);
 	} else if (curconfig[Inspector].val.i) {
-		webkit_web_inspector_show(c->inspector);
+		if (webkit_web_inspector_get_can_attach(inspector))
+			webkit_web_inspector_attach(inspector);
+		webkit_web_inspector_show(inspector);
 	}
 }
 
