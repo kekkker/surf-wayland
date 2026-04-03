@@ -3188,7 +3188,8 @@ scrollv(Client *c, const Arg *a)
 {
 	char js[128];
 	snprintf(js, sizeof(js),
-			 "window.scrollBy(0,window.innerHeight/100*%d);", a->i);
+			 "document.scrollingElement.scrollTop"
+			 "+=window.innerHeight/100*%d;", a->i);
 	webkit_web_view_evaluate_javascript(ctab(c)->view, js, -1,
 										NULL, NULL, NULL, NULL, NULL);
 }

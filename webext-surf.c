@@ -77,6 +77,7 @@ static const char clear_hints_js[] =
 "(function(){"
 "  var c = document.getElementById('surf-hints-container');"
 "  if (c) c.parentNode.removeChild(c);"
+"  document.body.style.removeProperty('position');"
 "})()";
 
 static JSCContext *
@@ -193,7 +194,9 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 		"  if (c) c.parentNode.removeChild(c);"
 		"  c = document.createElement('div');"
 		"  c.id = 'surf-hints-container';"
-		"  c.style.cssText = 'all:initial!important;display:block!important;pointer-events:none!important;';"
+		"  c.style.cssText = 'all:initial!important;display:block!important;"
+		"position:absolute!important;top:0!important;left:0!important;"
+		"pointer-events:none!important;';"
 		"  hints.forEach(function(h){"
 		"    var d = document.createElement('div');"
 		"    d.textContent = h.l;"
@@ -209,7 +212,8 @@ draw_hints(WebKitWebPage *page, GVariant *hints_data)
 		"box-shadow:0 0 3px rgba(0,0,0,0.5)!important;';"
 		"    c.appendChild(d);"
 		"  });"
-		"  document.documentElement.appendChild(c);"
+		"  document.body.style.setProperty('position','relative','important');"
+		"  document.body.appendChild(c);"
 		"})(%s)", json->str);
 
 	g_string_free(json, TRUE);
