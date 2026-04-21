@@ -121,6 +121,13 @@ typedef struct Client {
 	GtkWidget            *history_scroll;
 	int                   history_selected;
 
+	/* --- split view state --- */
+	GtkWidget            *parent_paned;
+	WebKitWebView        *split_view;      /* second pane's view, or NULL */
+	HintState             split_hintstate; /* hint state for the split pane */
+	gboolean              split_focus_end; /* TRUE = end pane has focus */
+	int                   split_tab;       /* index of tab that owns the split, or -1 */
+
 	struct Client        *next;
 } Client;
 
@@ -128,4 +135,22 @@ static inline Tab *
 ctab(Client *c)
 {
 	return &c->tabs[c->tabs_active];
+}
+
+/* Returns the WebKitWebView that should receive commands (split-aware). */
+static inline WebKitWebView *
+focused_view(Client *c)
+{
+	if (c->split_focus_end && c->split_view)
+		return c->split_view;
+	return ctab(c)->view;
+}
+
+/* Returns the HintState for the currently focused pane. */
+static inline HintState *
+focused_hintstate(Client *c)
+{
+	if (c->split_focus_end && c->split_view)
+		return &c->split_hintstate;
+	return &ctab(c)->hintstate;
 }

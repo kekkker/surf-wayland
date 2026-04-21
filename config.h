@@ -1,5 +1,5 @@
 /* modifier 0 means no modifier */
-static int surfuseragent = 1;
+static int surfuseragent = 0;
 static char *fulluseragent = "";
 static char *scriptfile = "~/.surf/script.js";
 static char *styledir = "~/.surf/styles/";
@@ -12,7 +12,6 @@ static const char *filepicker_cmd[] = {
 	"foot", "-e", "sh", "-c",
 	"NNN_PLUG='p:preview-tui' NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' nnn -a -p '{}'",
 	NULL};
-
 
 static Parameter defconfig[ParameterLast] = {
 	[AccessMicrophone] = {
@@ -171,6 +170,10 @@ static SiteSpecific certs[] = {
 
 #define MODKEY GDK_CONTROL_MASK
 
+void splitview(Client *c, const Arg *a);
+void splitfocus(Client *c, const Arg *a);
+void splitclose_key(Client *c, const Arg *a);
+
 static Key keys[] = {
 	/* modifier              keyval          function    arg */
 
@@ -179,7 +182,6 @@ static Key keys[] = {
 	{MODKEY, GDK_KEY_s, dl_clear, {0}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_r, reload, {.i = 1}},
 	{MODKEY, GDK_KEY_r, reload, {.i = 0}},
-	{MODKEY, GDK_KEY_l, navigate, {.i = +1}},
 	{MODKEY, GDK_KEY_h, navigate, {.i = -1}},
 	{MODKEY, GDK_KEY_j, tab_move, {.i = +1}},
 	{MODKEY, GDK_KEY_k, tab_move, {.i = -1}},
@@ -202,6 +204,11 @@ static Key keys[] = {
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_b, toggle, {.i = ScrollBars}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_t, toggle, {.i = StrictTLS}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_m, toggle, {.i = Style}},
+
+	/* --- Split view (tmux-like) --- */
+	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_underscore, splitview, {.i = 'h'}}, /* vertical split (Ctrl+_) */
+	{MODKEY, GDK_KEY_l, splitfocus, {0}},								  /* cycle focus between panes (tmux default) */
+	{MODKEY, GDK_KEY_q, splitclose_key, {0}},							  /* close split */
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_d, toggle, {.i = DarkMode}},
 	{MODKEY, GDK_KEY_F1, showinstanceid, {0}},
 

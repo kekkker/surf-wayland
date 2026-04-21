@@ -257,7 +257,7 @@ static void openbar_newtab(Client *c, const Arg *a);
 static void hints_start(Client *c, const Arg *a);
 static void hints_cleanup(Client *c);
 static gboolean hints_keypress(Client *c, guint keyval, GdkModifierType state);
-static void hints_receive_data(Client *c, GVariant *data);
+static void hints_receive_data(Client *c, WebKitWebView *v, GVariant *data);
 
 /* Buttons */
 static void clicknavigate(Client *c, const Arg *a, WebKitHitTestResult *h);
@@ -272,6 +272,7 @@ static display_context_t display_ctx;
 static int showinstanceidflag = 0;
 static int cookiepolicy;
 Client *clients;
+static gboolean splitlock = FALSE;
 
 /* Userscript support */
 static GMainLoop *mainloop;
@@ -483,6 +484,145 @@ sigchld(int unused)
 }
 
 static void
+split_close(Client *c)
+{
+	if (!c->parent_paned)
+		return;
+
+	Tab *split_t = &c->tabs[c->split_tab];
+
+	/* Pull split_t->view out of the wrapper box before paned is destroyed */
+	GtkWidget *start_wrap = gtk_paned_get_start_child(GTK_PANED(c->parent_paned));
+	g_object_ref(split_t->view);
+	gtk_box_remove(GTK_BOX(start_wrap), GTK_WIDGET(split_t->view));
+	/* Now detach the empty wrapper from paned so paned can be destroyed cleanly */
+	gtk_paned_set_start_child(GTK_PANED(c->parent_paned), NULL);
+
+	/* Remember where paned sits so we can put the view back there */
+	GtkWidget *paned_prev = gtk_widget_get_prev_sibling(c->parent_paned);
+
+	/* Remove paned from vbox (destroys paned + split_view) */
+	gtk_box_remove(GTK_BOX(c->vbox), c->parent_paned);
+
+	/* Re-insert the split tab's view at the same position */
+	if (paned_prev)
+		gtk_box_insert_child_after(GTK_BOX(c->vbox), GTK_WIDGET(split_t->view), paned_prev);
+	else
+		gtk_box_prepend(GTK_BOX(c->vbox), GTK_WIDGET(split_t->view));
+	g_object_unref(split_t->view);
+
+	/* Keep it hidden if it's not the active tab */
+	if (c->split_tab != c->tabs_active)
+		gtk_widget_set_visible(GTK_WIDGET(split_t->view), FALSE);
+
+	c->parent_paned    = NULL;
+	c->split_view      = NULL;
+	c->split_focus_end = FALSE;
+	c->split_tab       = -1;
+}
+
+void
+splitview(Client *c, const Arg *a)
+{
+	GtkWidget *paned;
+	Tab *ct = ctab(c);
+	const char *uri;
+
+	if (splitlock)
+		return;
+	splitlock = TRUE;
+
+	if (c->parent_paned) {
+		splitlock = FALSE;
+		return; /* already split; use Ctrl+Q to close */
+	} else {
+		/* Get current URI */
+		uri = webkit_web_view_get_uri(ct->view);
+
+		/* Remove current view from vbox; remember position */
+		GtkWidget *view_prev = gtk_widget_get_prev_sibling(GTK_WIDGET(ct->view));
+		gtk_box_remove(GTK_BOX(c->vbox), GTK_WIDGET(ct->view));
+
+		/* Create paned container */
+		paned = gtk_paned_new(a->i == 'h' ? GTK_ORIENTATION_HORIZONTAL
+		                                    : GTK_ORIENTATION_VERTICAL);
+		gtk_paned_set_wide_handle(GTK_PANED(paned), TRUE);
+		c->parent_paned = paned;
+		c->split_tab    = c->tabs_active;
+
+		/* Create second pane view related to current tab (inherits context + extension) */
+		WebKitWebView *splitv = newview(c, ct->view);
+		c->split_view = splitv;
+
+		/* Wrap each view in a box so CSS border renders on a GTK widget */
+		GtkWidget *start_wrap = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+		GtkWidget *end_wrap   = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+		gtk_widget_set_vexpand(start_wrap, TRUE);
+		gtk_widget_set_hexpand(start_wrap, TRUE);
+		gtk_widget_set_vexpand(end_wrap, TRUE);
+		gtk_widget_set_hexpand(end_wrap, TRUE);
+		gtk_widget_add_css_class(start_wrap, "split-active");
+		gtk_widget_add_css_class(end_wrap,   "split-inactive");
+		gtk_box_append(GTK_BOX(start_wrap), GTK_WIDGET(ct->view));
+		gtk_box_append(GTK_BOX(end_wrap),   GTK_WIDGET(splitv));
+
+		/* Add wrapped views to paned */
+		gtk_paned_set_start_child(GTK_PANED(paned), start_wrap);
+		gtk_paned_set_end_child(GTK_PANED(paned),   end_wrap);
+
+		/* Insert paned at the same position the view occupied */
+		if (view_prev)
+			gtk_box_insert_child_after(GTK_BOX(c->vbox), paned, view_prev);
+		else
+			gtk_box_prepend(GTK_BOX(c->vbox), paned);
+
+		/* Load same URL in new view */
+		if (uri)
+			webkit_web_view_load_uri(splitv, uri);
+
+		/* Focus the new pane */
+		c->split_focus_end = TRUE;
+		gtk_widget_remove_css_class(start_wrap, "split-active");
+		gtk_widget_add_css_class(start_wrap,    "split-inactive");
+		gtk_widget_grab_focus(end_wrap);
+	}
+
+	splitlock = FALSE;
+}
+
+void
+splitfocus(Client *c, const Arg *a)
+{
+	if (!c->parent_paned)
+		return;
+
+	c->split_focus_end = !c->split_focus_end;
+
+	GtkWidget *start_wrap = gtk_paned_get_start_child(GTK_PANED(c->parent_paned));
+	GtkWidget *end_wrap   = gtk_paned_get_end_child(GTK_PANED(c->parent_paned));
+
+	if (c->split_focus_end) {
+		gtk_widget_remove_css_class(start_wrap, "split-active");
+		gtk_widget_add_css_class(start_wrap,    "split-inactive");
+		gtk_widget_remove_css_class(end_wrap,   "split-inactive");
+		gtk_widget_add_css_class(end_wrap,      "split-active");
+		gtk_widget_grab_focus(end_wrap);
+	} else {
+		gtk_widget_remove_css_class(end_wrap,   "split-active");
+		gtk_widget_add_css_class(end_wrap,      "split-inactive");
+		gtk_widget_remove_css_class(start_wrap, "split-inactive");
+		gtk_widget_add_css_class(start_wrap,    "split-active");
+		gtk_widget_grab_focus(start_wrap);
+	}
+}
+
+void
+splitclose_key(Client *c, const Arg *a)
+{
+	split_close(c);
+}
+
+static void
 sighup(int unused)
 {
 	Arg a = {.i = 0};
@@ -663,6 +803,7 @@ newclient(Client *rc)
 
 	c->next = clients;
 	clients = c;
+	c->split_tab = -1;
 
 	/* Bootstrap the first tab */
 	Tab *t = tab_alloc(c);
@@ -712,7 +853,7 @@ loaduri(Client *c, const Arg *a)
 	if (strcmp(url, geturi(c)) == 0) {
 		reload(c, a);
 	} else {
-		webkit_web_view_load_uri(ctab(c)->view, url);
+		webkit_web_view_load_uri(focused_view(c), url);
 		updatetitle(c);
 	}
 
@@ -724,7 +865,7 @@ geturi(Client *c)
 {
 	const char *uri;
 
-	if (!(uri = webkit_web_view_get_uri(ctab(c)->view)))
+	if (!(uri = webkit_web_view_get_uri(focused_view(c))))
 		uri = "about:blank";
 	return uri;
 }
@@ -813,10 +954,12 @@ tab_switch_to(Client *c, int index)
 	if (next_t->view == NULL)
 		return;
 
-	/* Hide current tab's view widget */
+	/* Hide current tab's widget (paned if it's the split tab, else the view) */
 	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count) {
 		prev_t = &c->tabs[c->tabs_active];
-		if (prev_t->view)
+		if (c->parent_paned && c->tabs_active == c->split_tab)
+			gtk_widget_set_visible(c->parent_paned, FALSE);
+		else if (prev_t->view)
 			gtk_widget_set_visible(GTK_WIDGET(prev_t->view), FALSE);
 	}
 
@@ -837,8 +980,18 @@ tab_switch_to(Client *c, int index)
 	gtk_widget_set_focusable(c->statentry, FALSE);
 	gtk_editable_set_editable(GTK_EDITABLE(c->statentry), FALSE);
 
-	gtk_widget_set_visible(GTK_WIDGET(next_t->view), TRUE);
-	gtk_widget_grab_focus(GTK_WIDGET(next_t->view));
+	/* Show next tab's widget (paned if it's the split tab, else the view) */
+	if (c->parent_paned && index == c->split_tab) {
+		gtk_widget_set_visible(c->parent_paned, TRUE);
+		GtkWidget *focus_pane = c->split_focus_end
+			? gtk_paned_get_end_child(GTK_PANED(c->parent_paned))
+			: gtk_paned_get_start_child(GTK_PANED(c->parent_paned));
+		if (focus_pane)
+			gtk_widget_grab_focus(focus_pane);
+	} else {
+		gtk_widget_set_visible(GTK_WIDGET(next_t->view), TRUE);
+		gtk_widget_grab_focus(GTK_WIDGET(next_t->view));
+	}
 
 	updatetitle(c);
 	update_tabbar(c);
@@ -849,10 +1002,13 @@ tab_new(Client *c, const Arg *a)
 {
 	int insert_at = c->tabs_active + 1;
 
-	/* Hide the currently visible view */
-	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count &&
-	    c->tabs[c->tabs_active].view)
-		gtk_widget_set_visible(GTK_WIDGET(c->tabs[c->tabs_active].view), FALSE);
+	/* Hide the currently visible widget (paned if on split tab, else the view) */
+	if (c->tabs_active >= 0 && c->tabs_active < c->tabs_count) {
+		if (c->parent_paned && c->tabs_active == c->split_tab)
+			gtk_widget_set_visible(c->parent_paned, FALSE);
+		else if (c->tabs[c->tabs_active].view)
+			gtk_widget_set_visible(GTK_WIDGET(c->tabs[c->tabs_active].view), FALSE);
+	}
 
 	/* Insert a new Tab slot after the active one */
 	c->tabs_count++;
@@ -860,6 +1016,10 @@ tab_new(Client *c, const Arg *a)
 	/* Shift tabs right to make room at insert_at */
 	memmove(&c->tabs[insert_at + 1], &c->tabs[insert_at],
 	        (c->tabs_count - 1 - insert_at) * sizeof(Tab));
+
+	/* Update split_tab index if it shifted right */
+	if (c->split_tab >= insert_at)
+		c->split_tab++;
 	Tab *t = &c->tabs[insert_at];
 	memset(t, 0, sizeof(Tab));
 	t->progress = 100;
@@ -912,6 +1072,10 @@ tab_close(Client *c, const Arg *a)
 
 	idx = c->tabs_active;
 
+	/* If closing the split tab, tear down the split first */
+	if (c->split_tab == idx)
+		split_close(c);
+
 	/* Take ownership of view for cleanup after removing from array */
 	Tab dying = c->tabs[idx];
 	g_object_ref(dying.view);  /* ref for cleanup after removal */
@@ -924,6 +1088,10 @@ tab_close(Client *c, const Arg *a)
 	        (c->tabs_count - 1 - idx) * sizeof(Tab));
 	c->tabs_count--;
 	c->tabs = g_realloc(c->tabs, c->tabs_count * sizeof(Tab));
+
+	/* Adjust split_tab index if a tab before it was closed */
+	if (c->split_tab > idx)
+		c->split_tab--;
 
 	/* Pick neighbour to switch to; set active to -1 first so
 	 * tab_switch_to doesn't skip (index == tabs_active). */
@@ -1047,20 +1215,20 @@ request_hints_from_extension(Client *c)
 {
 	WebKitUserMessage *msg;
 	msg = webkit_user_message_new("hints-find-links", NULL);
-	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
+	webkit_web_view_send_message_to_page(focused_view(c), msg, NULL, NULL, NULL);
 }
 
 static void
 hints_cleanup(Client *c)
 {
-	HintState *hs = &ctab(c)->hintstate;
+	HintState *hs = focused_hintstate(c);
 
 	if (!hs->active)
 		return;
 
 	/* Always try to clear the overlay */
 	WebKitUserMessage *msg = webkit_user_message_new("hints-clear", NULL);
-	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
+	webkit_web_view_send_message_to_page(focused_view(c), msg, NULL, NULL, NULL);
 
 	if (hs->hints) {
 		for (guint i = 0; i < hs->hints->len; i++) {
@@ -1084,14 +1252,14 @@ hints_cleanup(Client *c)
 static void
 hints_start(Client *c, const Arg *a)
 {
-	HintState *hs = &ctab(c)->hintstate;
+	HintState *hs = focused_hintstate(c);
 
 	if (hs->active)
 		hints_cleanup(c);
 
 	hs->mode = a->i;
 	hs->active = 1;
-	hs->pageid = ctab(c)->pageid;
+	hs->pageid = webkit_web_view_get_page_id(focused_view(c));
 	hs->hints = g_array_new(FALSE, TRUE, sizeof(Hint));
 	hs->input = g_strdup("");
 
@@ -1105,7 +1273,7 @@ static void
 filter_hints(Client *c)
 {
 	GVariantBuilder builder;
-	HintState *hs = &ctab(c)->hintstate;
+	HintState *hs = focused_hintstate(c);
 
 	if (!hs->hints)
 		return;
@@ -1122,13 +1290,13 @@ filter_hints(Client *c)
 
 	GVariant *hints_data = g_variant_builder_end(&builder);
 	WebKitUserMessage *msg = webkit_user_message_new("hints-update", hints_data);
-	webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
+	webkit_web_view_send_message_to_page(focused_view(c), msg, NULL, NULL, NULL);
 }
 
 static void
 follow_hint(Client *c, const char *label)
 {
-	HintState *hs = &ctab(c)->hintstate;
+	HintState *hs = focused_hintstate(c);
 	Hint *target = NULL;
 
 	for (guint i = 0; i < hs->hints->len; i++) {
@@ -1149,7 +1317,7 @@ follow_hint(Client *c, const char *label)
 		if (sscanf(target->url, "[input:%u]", &elem_id) == 1) {
 			GVariant *data = g_variant_new("(u)", elem_id);
 			WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
-			webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
+			webkit_web_view_send_message_to_page(focused_view(c), msg, NULL, NULL, NULL);
 		}
 		hints_cleanup(c);
 		ctab(c)->mode = ModeInsert;
@@ -1162,7 +1330,7 @@ follow_hint(Client *c, const char *label)
 		if (sscanf(target->url, "[elem:%u]", &elem_id) == 1) {
 			GVariant *data = g_variant_new("(u)", elem_id);
 			WebKitUserMessage *msg = webkit_user_message_new("hints-click", data);
-			webkit_web_view_send_message_to_page(ctab(c)->view, msg, NULL, NULL, NULL);
+			webkit_web_view_send_message_to_page(focused_view(c), msg, NULL, NULL, NULL);
 		}
 		hints_cleanup(c);
 		return;
@@ -1204,12 +1372,12 @@ follow_hint(Client *c, const char *label)
 static gboolean
 hints_keypress(Client *c, guint keyval, GdkModifierType state)
 {
-	HintState *hs = &ctab(c)->hintstate;
+	HintState *hs = focused_hintstate(c);
 	char key;
 	char *newinput;
 	int label_len;
 
-	if (!hs->active || hs->pageid != ctab(c)->pageid)
+	if (!hs->active || hs->pageid != webkit_web_view_get_page_id(focused_view(c)))
 		return FALSE;
 
 	if (keyval == GDK_KEY_Escape) {
@@ -1267,10 +1435,13 @@ hints_keypress(Client *c, guint keyval, GdkModifierType state)
 }
 
 static void
-hints_receive_data(Client *c, GVariant *data)
+hints_receive_data(Client *c, WebKitWebView *v, GVariant *data)
 {
 	GVariantIter iter;
-	HintState *hs = &ctab(c)->hintstate;
+	/* Pick hintstate by which view sent the reply, not by current focus */
+	HintState *hs = (c->split_view && v == c->split_view)
+	                ? &c->split_hintstate
+	                : &ctab(c)->hintstate;
 	const gchar *url;
 	gint x, y, width, height;
 	int index = 0;
@@ -1782,6 +1953,8 @@ static Client *
 find_client_for_view(WebKitWebView *v, Client *hint)
 {
 	if (hint) {
+		if (hint->split_view == v)
+			return hint;
 		for (int i = 0; i < hint->tabs_count; i++) {
 			if (hint->tabs[i].view == v)
 				return hint;
@@ -1791,6 +1964,8 @@ find_client_for_view(WebKitWebView *v, Client *hint)
 	for (Client *c = clients; c; c = c->next) {
 		if (c == hint)
 			continue;
+		if (c->split_view == v)
+			return c;
 		for (int i = 0; i < c->tabs_count; i++) {
 			if (c->tabs[i].view == v)
 				return c;
@@ -2182,6 +2357,16 @@ showview(WebKitWebView *v, Client *c)
 		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
 	g_object_unref(tabcss);
 
+	GtkCssProvider *splitcss = gtk_css_provider_new();
+	gtk_css_provider_load_from_string(splitcss,
+		".split-active   { border: 2px solid #4a9eff; }"
+		".split-inactive { border: 2px solid #3a3a3a; }");
+	gtk_style_context_add_provider_for_display(
+		gdk_display_get_default(),
+		GTK_STYLE_PROVIDER(splitcss),
+		GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref(splitcss);
+
 	c->statusbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
 
 	c->barlabel = gtk_label_new("");
@@ -2500,7 +2685,7 @@ viewusrmsgrcv(WebKitWebView *v, WebKitUserMessage *m, gpointer data)
 	if (strcmp(name, "hints-data") == 0) {
 		GVariant *params = webkit_user_message_get_parameters(m);
 		if (params && g_variant_is_of_type(params, G_VARIANT_TYPE("a(siiii)"))) {
-			hints_receive_data(c, params);
+			hints_receive_data(c, v, params);
 		}
 		return TRUE;
 	}
@@ -3048,7 +3233,7 @@ pasteuri(GObject *clipboard, GAsyncResult *result, gpointer d)
 static void
 reload(Client *c, const Arg *a)
 {
-	WebKitWebView *v = ctab(c)->view;
+	WebKitWebView *v = focused_view(c);
 	if (a->i)
 		webkit_web_view_reload_bypass_cache(v);
 	else
@@ -3172,7 +3357,7 @@ clipboard(Client *c, const Arg *a)
 static void
 zoom(Client *c, const Arg *a)
 {
-	WebKitWebView *v = ctab(c)->view;
+	WebKitWebView *v = focused_view(c);
 	if (a->i > 0)
 		webkit_web_view_set_zoom_level(v, curconfig[ZoomLevel].val.f + 0.1);
 	else if (a->i < 0)
@@ -3190,7 +3375,7 @@ scrollv(Client *c, const Arg *a)
 	snprintf(js, sizeof(js),
 			 "document.scrollingElement.scrollTop"
 			 "+=window.innerHeight/100*%d;", a->i);
-	webkit_web_view_evaluate_javascript(ctab(c)->view, js, -1,
+	webkit_web_view_evaluate_javascript(focused_view(c), js, -1,
 										NULL, NULL, NULL, NULL, NULL);
 }
 
@@ -3200,14 +3385,14 @@ scrollh(Client *c, const Arg *a)
 	char js[128];
 	snprintf(js, sizeof(js),
 			 "window.scrollBy(window.innerWidth/100*%d,0);", a->i);
-	webkit_web_view_evaluate_javascript(ctab(c)->view, js, -1,
+	webkit_web_view_evaluate_javascript(focused_view(c), js, -1,
 										NULL, NULL, NULL, NULL, NULL);
 }
 
 static void
 navigate(Client *c, const Arg *a)
 {
-	WebKitWebView *v = ctab(c)->view;
+	WebKitWebView *v = focused_view(c);
 	if (a->i < 0)
 		webkit_web_view_go_back(v);
 	else if (a->i > 0)
@@ -3237,7 +3422,7 @@ static void
 stop(Client *c, const Arg *a)
 {
 	(void)a;
-	webkit_web_view_stop_loading(ctab(c)->view);
+	webkit_web_view_stop_loading(focused_view(c));
 }
 
 static void
