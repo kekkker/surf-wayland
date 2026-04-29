@@ -77,6 +77,65 @@ static void on_web_process_terminated(WebKitWebView *wv,
     webkit_web_view_reload(wv);
 }
 
+static gboolean on_user_message(WebKitWebView *wv, WebKitUserMessage *msg, gpointer ud)
+{
+    (void)wv;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    const char *name = webkit_user_message_get_name(msg);
+
+    if (strcmp(name, "hints-data") == 0 && t) {
+        for (int i = 0; i < t->hint_count; i++) g_free(t->hints[i].url);
+        g_free(t->hints);
+        t->hints = NULL;
+        t->hint_count = 0;
+        t->hint_len = 0;
+        t->hint_buf[0] = '\0';
+
+        GVariant *params = webkit_user_message_get_parameters(msg);
+        if (params) {
+            gsize n = g_variant_n_children(params);
+            if (n > 0) {
+                t->hints = g_new(HintItem, n);
+                GVariantIter iter;
+                g_variant_iter_init(&iter, params);
+                const char *url;
+                gint32 x, y, w, h;
+                int i = 0;
+                while (g_variant_iter_loop(&iter, "(siiii)", &url, &x, &y, &w, &h)) {
+                    t->hints[i].url = g_strdup(url);
+                    t->hints[i].x = x; t->hints[i].y = y;
+                    t->hints[i].w = w; t->hints[i].h = h;
+                    hints_gen_label(i, t->hints[i].label, sizeof(t->hints[i].label));
+                    i++;
+                }
+                t->hint_count = i;
+            }
+        }
+
+        t->mode = MODE_HINT;
+
+        /* Send initial overlay (all hints visible) */
+        GVariantBuilder ub;
+        g_variant_builder_init(&ub, G_VARIANT_TYPE("a(ssii)"));
+        for (int i = 0; i < t->hint_count; i++)
+            g_variant_builder_add(&ub, "(ssii)",
+                t->hints[i].label, t->hints[i].url,
+                t->hints[i].x, t->hints[i].y);
+        webkit_web_view_send_message_to_page(d->wv,
+            webkit_user_message_new("hints-update", g_variant_builder_end(&ub)),
+            NULL, NULL, NULL);
+
+        d->on_change(d->cb_data);
+        return TRUE;
+    }
+
+    if (strcmp(name, "page-created") == 0)
+        return TRUE;
+
+    return FALSE;
+}
+
 static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent ev, gpointer ud)
 {
     TabCBData *d = ud;
@@ -147,7 +206,9 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, NULL);
     t->view = webkit_web_view_get_wpe_view(t->wv);
 
-    /* Assign to our toplevel so all tabs share one OS window */
+    /* Move view to our shared toplevel (max_views=0, unlimited).
+     * The auto-created per-view toplevel (max_views=1) loses its last
+     * ref here and is destroyed, closing the ghost window. */
     if (toplevel)
         wpe_view_set_toplevel(t->view, toplevel);
 
@@ -180,6 +241,8 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         G_CALLBACK(on_mouse_target_changed), cbd);
     g_signal_connect(t->wv, "web-process-terminated",
         G_CALLBACK(on_web_process_terminated), cbd);
+    g_signal_connect(t->wv, "user-message-received",
+        G_CALLBACK(on_user_message), cbd);
 
     /* Unmap previous active */
     if (ta->active >= 0)
@@ -203,6 +266,8 @@ void tabarray_close(TabArray *ta, int idx,
     g_free(t->title);
     g_free(t->uri);
     g_free(t->hover_uri);
+    for (int j = 0; j < t->hint_count; j++) g_free(t->hints[j].url);
+    g_free(t->hints);
 
     /* Shift array */
     memmove(&ta->items[idx], &ta->items[idx + 1],
@@ -238,6 +303,8 @@ void tabarray_free(TabArray *ta)
         g_free(ta->items[i].title);
         g_free(ta->items[i].uri);
         g_free(ta->items[i].hover_uri);
+        for (int j = 0; j < ta->items[i].hint_count; j++) g_free(ta->items[i].hints[j].url);
+        g_free(ta->items[i].hints);
     }
     free(ta->items);
     ta->items = NULL;

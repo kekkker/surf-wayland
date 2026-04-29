@@ -1,5 +1,4 @@
 /* surf config — WPE edition
- * Copy to config.h and edit to customize.
  * WPE_KEY_* names identical to XKB_KEY_* (xkbcommon-keysyms.h).
  * Modifier aliases: MODKEY = WPE_MODIFIER_KEYBOARD_CONTROL
  *                   SHIFT  = WPE_MODIFIER_KEYBOARD_SHIFT
@@ -20,37 +19,46 @@ static const char *certdir     = "~/.surf/certificates/";
 static const char *cachedir    = "~/.surf/cache/";
 static const char *cookiefile  = "~/.surf/cookies.sqlite";
 
+static const char *searchengine = "https://searx.syscat.org/?q=%s";
+
 /* key bindings
  * mod          key               function          arg
  */
 static Key keys[] = {
-    /* stop / reload */
+    /* mode */
     { 0,           WPE_KEY_Escape,   act_normal_mode,  {0}      },
+    { 0,           WPE_KEY_i,        act_insert_mode,  {0}      },
+
+    /* stop / reload */
     { MODKEY,      WPE_KEY_c,        act_stop,         {0}      },
-    { MODKEY|SHIFT,WPE_KEY_R,        act_reload,       {.i=1}   },
+    { 0,           WPE_KEY_r,        act_reload,       {.i=0}   },
     { MODKEY,      WPE_KEY_r,        act_reload,       {.i=0}   },
+    { MODKEY|SHIFT,WPE_KEY_R,        act_reload,       {.i=1}   },
 
     /* navigation */
-    { MODKEY,      WPE_KEY_l,        act_navigate,     {.i=+1}  },
+    { 0,           WPE_KEY_h,        act_navigate,     {.i=-1}  },
+    { 0,           WPE_KEY_l,        act_navigate,     {.i=+1}  },
     { MODKEY,      WPE_KEY_h,        act_navigate,     {.i=-1}  },
+    { MODKEY,      WPE_KEY_l,        act_navigate,     {.i=+1}  },
 
-    /* vertical scroll (viewport %) */
-    { MODKEY,      WPE_KEY_j,        act_scrollv,      {.i=+10} },
-    { MODKEY,      WPE_KEY_k,        act_scrollv,      {.i=-10} },
+    /* vertical scroll */
+    { 0,           WPE_KEY_j,        act_scrollv,      {.i=+10} },
+    { 0,           WPE_KEY_k,        act_scrollv,      {.i=-10} },
+    { MODKEY,      WPE_KEY_d,        act_scrollv,      {.i=+50} },
+    { MODKEY,      WPE_KEY_u,        act_scrollv,      {.i=-50} },
     { MODKEY,      WPE_KEY_space,    act_scrollv,      {.i=+50} },
     { MODKEY,      WPE_KEY_b,        act_scrollv,      {.i=-50} },
+    /* top / bottom */
+    { 0,           WPE_KEY_g,        act_scrollv,      {.i=-1000000} },
+    { SHIFT,       WPE_KEY_G,        act_scrollv,      {.i=+1000000} },
 
     /* horizontal scroll */
     { MODKEY,      WPE_KEY_i,        act_scrollh,      {.i=+10} },
-    { MODKEY,      WPE_KEY_u,        act_scrollh,      {.i=-10} },
 
     /* zoom */
-    { MODKEY|SHIFT,WPE_KEY_J,        act_zoom,         {.i=-1}  },
-    { MODKEY|SHIFT,WPE_KEY_K,        act_zoom,         {.i=+1}  },
-    { MODKEY|SHIFT,WPE_KEY_Q,        act_zoom,         {.i=0}   },
-    { MODKEY,      WPE_KEY_minus,    act_zoom,         {.i=-1}  },
-    { MODKEY,      WPE_KEY_plus,     act_zoom,         {.i=+1}  },
-    { MODKEY,      WPE_KEY_equal,    act_zoom,         {.i=+1}  },
+    { 0,           WPE_KEY_minus,    act_zoom,         {.i=-1}  },
+    { SHIFT,       WPE_KEY_plus,     act_zoom,         {.i=+1}  },
+    { 0,           WPE_KEY_equal,    act_zoom,         {.i=0}   },
 
     /* find */
     { MODKEY,      WPE_KEY_n,        act_find_next,    {.i=+1}  },
@@ -59,20 +67,29 @@ static Key keys[] = {
     /* full screen */
     { 0,           WPE_KEY_F11,      act_fullscreen,   {0}      },
 
-    /* tabs */
-    { MODKEY,      WPE_KEY_t,        act_new_tab,      {0}      },
-    { MODKEY,      WPE_KEY_w,        act_close_tab,    {0}      },
+    /* tabs — switch */
+    { MODKEY,      WPE_KEY_j,        act_switch_tab,   {.i=+1}  },
+    { MODKEY,      WPE_KEY_k,        act_switch_tab,   {.i=-1}  },
+    { SHIFT,       WPE_KEY_J,        act_switch_tab,   {.i=+1}  },
+    { SHIFT,       WPE_KEY_K,        act_switch_tab,   {.i=-1}  },
     { MODKEY,      WPE_KEY_Tab,      act_switch_tab,   {.i=+1}  },
     { MODKEY|SHIFT,WPE_KEY_Tab,      act_switch_tab,   {.i=-1}  },
 
-    /* mode */
-    { 0,           WPE_KEY_i,        act_insert_mode,  {0}      },
+    /* tabs — open / close / pin */
+    { 0,           WPE_KEY_t,        act_new_tab,      {0}      },
+    { MODKEY,      WPE_KEY_t,        act_new_tab,      {0}      },
+    { 0,           WPE_KEY_d,        act_close_tab,    {0}      },
+    { MODKEY,      WPE_KEY_w,        act_close_tab,    {0}      },
+    { SHIFT,       WPE_KEY_P,        act_pin_tab,      {0}      },
 
     /* command bar */
     { 0,           WPE_KEY_o,        act_open_bar,     {.i=0}   },
     { 0,           WPE_KEY_e,        act_open_bar,     {.i=1}   },
     { SHIFT,       WPE_KEY_O,        act_open_bar,     {.i=2}   },
     { 0,           WPE_KEY_slash,    act_open_search,  {0}      },
+
+    /* hints */
+    { 0,           WPE_KEY_f,        act_hint_start,   {0}      },
 
     /* quit */
     { MODKEY,      WPE_KEY_q,        act_quit,         {0}      },

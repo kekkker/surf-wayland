@@ -3,6 +3,7 @@
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
 #include <glib.h>
+#include "hints.h"
 
 typedef enum {
     MODE_NORMAL,
@@ -33,6 +34,12 @@ struct Tab {
 
     /* hover */
     char           *hover_uri;
+
+    /* hints */
+    HintItem       *hints;
+    int             hint_count;
+    char            hint_buf[8];
+    int             hint_len;
 };
 
 typedef struct {

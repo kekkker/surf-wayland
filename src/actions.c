@@ -183,3 +183,22 @@ void act_open_search(const Arg *a)
     t->mode = MODE_SEARCH;
     app_repaint_chrome();
 }
+
+void act_hint_start(const Arg *a)
+{
+    (void)a;
+    Tab *t = app_active_tab();
+    if (!t || t->mode != MODE_NORMAL) return;
+    webkit_web_view_send_message_to_page(t->wv,
+        webkit_user_message_new("hints-find-links", NULL),
+        NULL, NULL, NULL);
+}
+
+void act_pin_tab(const Arg *a)
+{
+    (void)a;
+    Tab *t = app_active_tab();
+    if (!t) return;
+    t->pinned = !t->pinned;
+    app_repaint_chrome();
+}

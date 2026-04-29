@@ -1,22 +1,11 @@
-#include <fcntl.h>
-#include <inttypes.h>
-#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <sys/socket.h>
-#include <sys/stat.h>
+#include <string.h>
 
 #include <gio/gio.h>
-#include <gio/gunixfdlist.h>
-#include <webkit/webkit-web-process-extension.h>
+#include <wpe/webkit-web-process-extension.h>
 #include <jsc/jsc.h>
 
-#include "types.h"
-
-#define LENGTH(x) (sizeof(x) / sizeof(x[0]))
-#define MSGBUFSZ 8
-
-static WebKitWebProcessExtension *webext;
 static GHashTable *pages_table = NULL;
 
 /* JavaScript run in the page context to collect clickable hints.
@@ -309,7 +298,6 @@ webkit_web_process_extension_initialize(WebKitWebProcessExtension *e)
 {
 	fprintf(stderr, "WEBEXT PID=%d: web process extension initialized\n", getpid());
 
-	webext = e;
 	pages_table = g_hash_table_new(g_direct_hash, g_direct_equal);
 
 	g_signal_connect(G_OBJECT(e), "page-created",

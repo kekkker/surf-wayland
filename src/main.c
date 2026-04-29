@@ -183,16 +183,22 @@ int main(int argc, char *argv[])
         g_error("surf: %s", err->message);
 
     wayland_init(&g_app.wl, g_app.display);
+
+    WebKitWebContext *ctx = webkit_web_context_get_default();
+    webkit_web_context_set_web_process_extensions_directory(ctx, WEBEXTDIR);
+
+    /* Pre-create the shared toplevel with unlimited views (max_views=0).
+     * WPE auto-creates a per-WebView toplevel with max_views=1, which
+     * silently rejects wpe_view_set_toplevel when the target is "full". */
+    g_app.toplevel = wpe_display_create_toplevel(WPE_DISPLAY(g_app.display), 0);
+    if (g_app.toplevel)
+        wpe_toplevel_resize(g_app.toplevel, winsize[0], winsize[1]);
+
     tabarray_init(&g_app.tabs);
     g_app.tab_close_fn = tab_close_cb;
 
-    /* First tab — WPE auto-creates toplevel */
-    Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), NULL,
+    Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), g_app.toplevel,
         tab_changed_cb, tab_close_cb, NULL);
-
-    g_app.toplevel = wpe_view_get_toplevel(first->view);
-    if (g_app.toplevel)
-        wpe_toplevel_resize(g_app.toplevel, winsize[0], winsize[1]);
 
     g_signal_connect(first->view, "resized",
         G_CALLBACK(on_view_resized), NULL);
