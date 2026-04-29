@@ -114,6 +114,8 @@ int main(int argc, char *argv[])
 
     g_signal_connect(first->view, "resized",
         G_CALLBACK(on_view_resized), NULL);
+    g_signal_connect(g_app.toplevel, "closed",
+        G_CALLBACK(g_main_loop_quit), g_app.loop);
 
     input_init(&in, first->view, NULL, NULL);
 
