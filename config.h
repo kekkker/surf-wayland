@@ -75,6 +75,9 @@ static Parameter defconfig[ParameterLast] = {
 	[PDFJSviewer] = {
 		{.i = 1},
 	},
+	[PrivacyMode] = {
+		{.i = 0},
+	},
 	[PreferredLanguages] = {
 		{.v = (char *[]){NULL}},
 	},
@@ -202,6 +205,7 @@ static Key keys[] = {
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_b, toggle, {.i = ScrollBars}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_t, toggle, {.i = StrictTLS}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_m, toggle, {.i = Style}},
+	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_x, toggle, {.i = PrivacyMode}},
 	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_d, toggle, {.i = DarkMode}},
 	{MODKEY, GDK_KEY_F1, showinstanceid, {0}},
 

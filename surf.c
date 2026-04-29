@@ -70,6 +70,7 @@ typedef enum {
 	LoadImages,
 	MediaManualPlay,
 	PDFJSviewer,
+	PrivacyMode,
 	PreferredLanguages,
 	RunInFullscreen,
 	ScrollBars,
@@ -299,6 +300,8 @@ static gboolean bar_update_filter(gpointer data) __attribute__((unused));
 static void tab_pin(Client *c, const Arg *a);
 static void tab_reopen(Client *c, const Arg *a);
 static void tab_move(Client *c, const Arg *a);
+static void reapply_stylesheets(Client *c);
+static void add_privacy_stylesheet(WebKitUserContentManager *cm);
 
 static guint pin_timer = 0;
 static gboolean pin_keepalive(gpointer data);
@@ -339,6 +342,7 @@ static ParamName loadcommitted[] = {
 	Inspector,
 	MediaManualPlay,
 	PDFJSviewer,
+	PrivacyMode,
 	RunInFullscreen,
 	ScrollBars,
 	SiteQuirks,
@@ -368,7 +372,7 @@ die(const char *errstr, ...)
 static void
 usage(void)
 {
-	die("usage: surf [-bBdDfFgGiIkKmMnNsStTvwxX]\n"
+	die("usage: surf [-bBdDfFgGiIkKmMnNpPsStTvwxX]\n"
 		"[-a cookiepolicies ] [-c cookiefile] [-C stylefile]\n"
 		"[-r scriptfile] [-u useragent] [-z zoomlevel] [uri]\n");
 }
@@ -1491,12 +1495,11 @@ setparameter(Client *c, int refresh, ParamName p, const Arg *a)
 			a->i ? WEBKIT_TLS_ERRORS_POLICY_FAIL : WEBKIT_TLS_ERRORS_POLICY_IGNORE);
 		break;
 	case Style:
-		webkit_user_content_manager_remove_all_style_sheets(
-			webkit_web_view_get_user_content_manager(t->view));
-		add_global_stylesheets(
-			webkit_web_view_get_user_content_manager(t->view));
-		if (a->i)
-			setstyle(c, getstyle(geturi(c)));
+		reapply_stylesheets(c);
+		refresh = 0;
+		break;
+	case PrivacyMode:
+		reapply_stylesheets(c);
 		refresh = 0;
 		break;
 	case WebGL:
@@ -1544,6 +1547,59 @@ add_global_stylesheets(WebKitUserContentManager *cm)
 		NULL, NULL);
 	webkit_user_content_manager_add_style_sheet(cm, stylesheet);
 	webkit_user_style_sheet_unref(stylesheet);
+}
+
+static void
+add_privacy_stylesheet(WebKitUserContentManager *cm)
+{
+	static const char privacy_css[] =
+		"html, body, body * {\n"
+		"  background: #000000 !important;\n"
+		"  background-image: none !important;\n"
+		"  color: #f5f5f5 !important;\n"
+		"  border-color: #3a3a3a !important;\n"
+		"  box-shadow: none !important;\n"
+		"  text-shadow: none !important;\n"
+		"  font-family: monospace !important;\n"
+		"}\n"
+		"a, a * { color: #ffffff !important; }\n"
+		"input, textarea, select, button {\n"
+		"  background: #050505 !important;\n"
+		"  color: #ffffff !important;\n"
+		"}\n"
+		"img, svg image, video, canvas, picture, iframe {\n"
+		"  image-rendering: pixelated !important;\n"
+		"  filter: grayscale(1) blur(10px) contrast(0.65) !important;\n"
+		"  opacity: 0.22 !important;\n"
+		"}\n"
+		"[style*=\"background-image\"], [class*=\"thumb\"], [role=\"img\"] {\n"
+		"  filter: grayscale(1) blur(10px) contrast(0.65) !important;\n"
+		"}\n"
+		"pre, code, kbd, samp { color: #ffffff !important; }\n";
+	WebKitUserStyleSheet *stylesheet;
+
+	stylesheet = webkit_user_style_sheet_new(
+		privacy_css,
+		WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+		WEBKIT_USER_STYLE_LEVEL_USER,
+		NULL, NULL);
+	webkit_user_content_manager_add_style_sheet(cm, stylesheet);
+	webkit_user_style_sheet_unref(stylesheet);
+}
+
+static void
+reapply_stylesheets(Client *c)
+{
+	WebKitUserContentManager *cm;
+
+	cm = webkit_web_view_get_user_content_manager(ctab(c)->view);
+	webkit_user_content_manager_remove_all_style_sheets(cm);
+	add_global_stylesheets(cm);
+
+	if (curconfig[Style].val.i)
+		setstyle(c, getstyle(geturi(c)));
+	if (curconfig[PrivacyMode].val.i)
+		add_privacy_stylesheet(cm);
 }
 
 static void
@@ -1656,7 +1712,7 @@ static void
 newwindow(Client *c, const Arg *a, int noembed)
 {
 	int i = 0;
-	const char *cmd[29], *uri;
+	const char *cmd[30], *uri;
 	const Arg arg = {.v = cmd};
 
 	cmd[i++] = argv0;
@@ -1678,6 +1734,7 @@ newwindow(Client *c, const Arg *a, int noembed)
 	cmd[i++] = curconfig[KioskMode].val.i ? "-K" : "-k";
 	cmd[i++] = curconfig[Style].val.i ? "-M" : "-m";
 	cmd[i++] = curconfig[Inspector].val.i ? "-N" : "-n";
+	cmd[i++] = curconfig[PrivacyMode].val.i ? "-P" : "-p";
 	if (scriptfile && g_strcmp0(scriptfile, "")) {
 		cmd[i++] = "-r";
 		cmd[i++] = scriptfile;
@@ -3343,7 +3400,7 @@ static void
 updatebar(Client *c)
 {
 	char *text;
-	const char *uri, *modestr;
+	const char *uri, *modestr, *priv;
 	Tab *t = ctab(c);
 
 	if (!c->statentry)
@@ -3375,15 +3432,16 @@ updatebar(Client *c)
 		modestr = "NORMAL";
 		break;
 	}
+	priv = curconfig[PrivacyMode].val.i ? "|PRIV" : "";
 
 	if (t->progress > 0 && t->progress < 100)
-		text = g_strdup_printf(" [%s] [%i%%] %s", modestr,
+		text = g_strdup_printf(" [%s%s] [%i%%] %s", modestr, priv,
 		                       t->progress, uri);
 	else if (t->find_match_count > 0)
-		text = g_strdup_printf(" [%s] [%d/%d] %s", modestr,
+		text = g_strdup_printf(" [%s%s] [%d/%d] %s", modestr, priv,
 		                       t->find_current_match, t->find_match_count, uri);
 	else
-		text = g_strdup_printf(" [%s] %s", modestr, uri);
+		text = g_strdup_printf(" [%s%s] %s", modestr, priv, uri);
 
 	gtk_editable_set_text(GTK_EDITABLE(c->statentry), text);
 	g_free(text);
@@ -4595,6 +4653,12 @@ updatebar_style(Client *c)
 	GtkCssProvider *css, *old_css;
 	const char *bg, *fg;
 
+	if (curconfig[PrivacyMode].val.i) {
+		bg = "#000000";
+		fg = "#ffffff";
+		goto apply;
+	}
+
 	switch (ctab(c)->mode) {
 	case ModeInsert:
 		bg = "#005f00";
@@ -4622,6 +4686,7 @@ updatebar_style(Client *c)
 		break;
 	}
 
+apply:
 	/* Remove old provider before adding new one to prevent accumulation */
 	old_css = g_object_get_data(G_OBJECT(c->statusbar), "bar-css");
 	if (old_css) {
@@ -4779,6 +4844,14 @@ main(int argc, char *argv[])
 	case 'N':
 		defconfig[Inspector].val.i = 1;
 		defconfig[Inspector].prio = 2;
+		break;
+	case 'p':
+		defconfig[PrivacyMode].val.i = 0;
+		defconfig[PrivacyMode].prio = 2;
+		break;
+	case 'P':
+		defconfig[PrivacyMode].val.i = 1;
+		defconfig[PrivacyMode].prio = 2;
 		break;
 	case 'r':
 		scriptfile = EARGF(usage());
