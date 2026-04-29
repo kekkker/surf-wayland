@@ -130,11 +130,13 @@ int main(int argc, char *argv[])
     g_app.loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(g_app.loop);
 
-    if (g_app.tabbar)   chrome_panel_destroy(g_app.tabbar);
+    /* Destroy our Wayland objects before WPE closes the connection */
+    if (g_app.tabbar)    chrome_panel_destroy(g_app.tabbar);
     if (g_app.statusbar) chrome_panel_destroy(g_app.statusbar);
+    wayland_finish(&g_app.wl);
+
     tabarray_free(&g_app.tabs);
     g_object_unref(g_app.display);
-    wayland_finish(&g_app.wl);
     g_main_loop_unref(g_app.loop);
     return 0;
 }
