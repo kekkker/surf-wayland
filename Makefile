@@ -4,43 +4,36 @@
 
 include config.mk
 
-SRC = surf.c display.c
+SRC  = src/main.c src/wayland.c src/input.c
+OBJ  = $(SRC:.c=.o)
+
+# webext-surf.c ported in Phase 8; excluded until then
 WSRC = webext-surf.c
-OBJ = $(SRC:.c=.o)
 WOBJ = $(WSRC:.c=.o)
 WLIB = $(WSRC:.c=.so)
 
-all: options surf $(WLIB)
-
-build: all
-
-options:
-	@echo surf build options:
-	@echo "CC            = $(CC)"
-	@echo "CFLAGS        = $(SURFCFLAGS)"
-	@echo "WEBEXTCFLAGS  = $(WEBEXTCFLAGS)"
-	@echo "LDFLAGS       = $(LDFLAGS)"
+all: surf
 
 surf: $(OBJ)
-	$(CC) $(SURFLDFLAGS) $(LDFLAGS) -o $@ $(OBJ) $(LIBS)
+	$(CC) -o $@ $(OBJ) $(SURFLIBS)
 
-$(OBJ) $(WOBJ): config.h common.h config.mk
+src/main.o:    src/main.c    src/wayland.h src/input.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/main.c
 
-config.h:
-	cp config.def.h $@
+src/wayland.o: src/wayland.c src/wayland.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wayland.c
 
-$(OBJ): $(SRC)
-	$(CC) $(SURFCFLAGS) -c $(SRC)
+src/input.o:   src/input.c   src/input.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/input.c
 
 $(WLIB): $(WOBJ)
-	$(CC) -shared -Wl,-soname,$@ $(LDFLAGS) -o $@ $? $(WEBEXTLIBS)
+	$(CC) -shared -Wl,-soname,$@ -o $@ $(WOBJ) $(WEXTLIBS)
 
 $(WOBJ): $(WSRC)
-	$(CC) $(WEBEXTCFLAGS) -c $(WSRC)
+	$(CC) $(WEXTCFLAGS) -c $(WSRC)
 
 clean:
-	rm -f surf $(OBJ)
-	rm -f $(WLIB) $(WOBJ)
+	rm -f surf $(OBJ) $(WLIB) $(WOBJ)
 
 install: all
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
@@ -48,9 +41,7 @@ install: all
 	chmod 755 $(DESTDIR)$(PREFIX)/bin/surf
 	mkdir -p $(DESTDIR)$(LIBDIR)
 	cp -f $(WLIB) $(DESTDIR)$(LIBDIR)
-	for wlib in $(WLIB); do \
-	    chmod 644 $(DESTDIR)$(LIBDIR)/$$wlib; \
-	done
+	chmod 644 $(DESTDIR)$(LIBDIR)/$(WLIB)
 	mkdir -p $(DESTDIR)$(MANPREFIX)/man1
 	sed "s/VERSION/$(VERSION)/g" < surf.1 > $(DESTDIR)$(MANPREFIX)/man1/surf.1
 	chmod 644 $(DESTDIR)$(MANPREFIX)/man1/surf.1
@@ -58,9 +49,7 @@ install: all
 uninstall:
 	rm -f $(DESTDIR)$(PREFIX)/bin/surf
 	rm -f $(DESTDIR)$(MANPREFIX)/man1/surf.1
-	for wlib in $(WLIB); do \
-	    rm -f $(DESTDIR)$(LIBDIR)/$$wlib; \
-	done
+	rm -f $(DESTDIR)$(LIBDIR)/$(WLIB)
 	- rmdir $(DESTDIR)$(LIBDIR)
 
-.PHONY: all options clean install uninstall
+.PHONY: all clean install uninstall

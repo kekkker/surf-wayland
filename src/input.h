@@ -1,0 +1,14 @@
+#pragma once
+
+#include <glib.h>
+#include <wpe/wpe-platform.h>
+
+typedef gboolean (*KeyFn)(guint keyval, WPEModifiers mods, gpointer data);
+
+typedef struct {
+    WPEView  *view;
+    KeyFn     handler;
+    gpointer  data;
+} InputState;
+
+void input_init(InputState *in, WPEView *view, KeyFn handler, gpointer data);
