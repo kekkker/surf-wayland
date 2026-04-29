@@ -7,7 +7,7 @@ typedef gboolean (*KeyFn)(guint keyval, WPEModifiers mods, gpointer data);
 
 typedef struct {
     WPEView  *view;
-    KeyFn     handler;
+    KeyFn     handler;   /* legacy; unused when keys[] dispatch active */
     gpointer  data;
 } InputState;
 

@@ -18,12 +18,12 @@ CPPFLAGS += -DVERSION=\"$(VERSION)\" \
             -D_DEFAULT_SOURCE
 
 SURFCFLAGS  = $(shell pkg-config --cflags $(PKG_UI) $(PKG_WPE)) $(CPPFLAGS) \
-              -Wall -Wextra -Wno-unused-parameter \
+              -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
               -Wno-sign-compare -Wno-missing-field-initializers -g -O1
 SURFLIBS    = $(shell pkg-config --libs $(PKG_UI) $(PKG_WPE))
 
 WEXTCFLAGS  = -fPIC $(shell pkg-config --cflags $(PKG_WEXT)) $(CPPFLAGS) \
-              -Wall -Wextra -Wno-unused-parameter \
+              -Wall -Wextra -Wno-unused-parameter -Wno-unused-variable \
               -Wno-sign-compare -Wno-missing-field-initializers -g -O1
 WEXTLIBS    = $(shell pkg-config --libs $(PKG_WEXT))
 

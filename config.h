@@ -1,256 +1,73 @@
-/* modifier 0 means no modifier */
-static int surfuseragent = 1;
-static char *fulluseragent = "";
-static char *scriptfile = "~/.surf/script.js";
-static char *styledir = "~/.surf/styles/";
-static char *certdir = "~/.surf/certificates/";
-static char *cachedir = "~/.surf/cache/";
-static char *cookiefile = "~/.surf/cookies.sqlite";
+/* surf config — WPE edition
+ * Copy to config.h and edit to customize.
+ * WPE_KEY_* names identical to XKB_KEY_* (xkbcommon-keysyms.h).
+ * Modifier aliases: MODKEY = WPE_MODIFIER_KEYBOARD_CONTROL
+ *                   SHIFT  = WPE_MODIFIER_KEYBOARD_SHIFT
+ *                   ALT    = WPE_MODIFIER_KEYBOARD_ALT
+ */
 
-/* External file picker for <input type="file">: {} replaced with temp file path */
-static const char *filepicker_cmd[] = {
-	"foot", "-e", "sh", "-c",
-	"NNN_PLUG='p:preview-tui' NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' nnn -a -p '{}'",
-	NULL};
+#define MODKEY WPE_MODIFIER_KEYBOARD_CONTROL
+#define SHIFT  WPE_MODIFIER_KEYBOARD_SHIFT
+#define ALT    WPE_MODIFIER_KEYBOARD_ALT
 
+/* default window size */
+static int winsize[] = { 1280, 800 };
 
-static Parameter defconfig[ParameterLast] = {
-	[AccessMicrophone] = {
-		{.i = 0},
-	},
-	[AccessWebcam] = {
-		{.i = 0},
-	},
-	[Certificate] = {
-		{.i = 0},
-	},
-	[CaretBrowsing] = {
-		{.i = 0},
-	},
-	[CookiePolicies] = {
-		{.v = "@Aa"},
-	},
-	[DarkMode] = {
-		{.i = 1},
-	},
-	[DefaultCharset] = {
-		{.v = "UTF-8"},
-	},
-	[DiskCache] = {
-		{.i = 1},
-	},
-	[DNSPrefetch] = {
-		{.i = 0},
-	},
-	[Ephemeral] = {
-		{.i = 0},
-	},
-	[FileURLsCrossAccess] = {
-		{.i = 0},
-	},
-	[FontSize] = {
-		{.i = 12},
-	},
-	[Geolocation] = {
-		{.i = 0},
-	},
-	[HideBackground] = {
-		{.i = 0},
-	},
-	[Inspector] = {
-		{.i = 1},
-	},
-	[JavaScript] = {
-		{.i = 1},
-	},
-	[KioskMode] = {
-		{.i = 0},
-	},
-	[LoadImages] = {
-		{.i = 1},
-	},
-	[MediaManualPlay] = {
-		{.i = 1},
-	},
-	[PDFJSviewer] = {
-		{.i = 1},
-	},
-	[PreferredLanguages] = {
-		{.v = (char *[]){NULL}},
-	},
-	[RunInFullscreen] = {
-		{.i = 0},
-	},
-	[ScrollBars] = {
-		{.i = 1},
-	},
-	[ShowIndicators] = {
-		{.i = 1},
-	},
-	[SiteQuirks] = {
-		{.i = 1},
-	},
-	[SmoothScrolling] = {
-		{.i = 0},
-	},
-	[SpellChecking] = {
-		{.i = 0},
-	},
-	[SpellLanguages] = {
-		{.v = ((char *[]){"en_US", NULL})},
-	},
-	[StrictTLS] = {
-		{.i = 1},
-	},
-	[Style] = {
-		{.i = 1},
-	},
-	[WebGL] = {
-		{.i = 1},
-	},
-	[ZoomLevel] = {
-		{.f = 1.0},
-	},
-};
+/* paths */
+static const char *scriptfile  = "~/.surf/script.js";
+static const char *styledir    = "~/.surf/styles/";
+static const char *certdir     = "~/.surf/certificates/";
+static const char *cachedir    = "~/.surf/cache/";
+static const char *cookiefile  = "~/.surf/cookies.sqlite";
 
-static UriParameters uriparams[] = {
-	{
-		"(://|\\.)suckless\\.org(/|$)",
-		{
-			[JavaScript] = {{.i = 0}, 1},
-		},
-	},
-};
-
-static int winsize[] = {800, 600};
-
-static WebKitFindOptions findopts = WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
-									WEBKIT_FIND_OPTIONS_WRAP_AROUND;
-
-/* DOWNLOAD(URI, referer) */
-#define DOWNLOAD(u, r)                                             \
-	{                                                              \
-		.v = (const char *[])                                      \
-		{                                                          \
-			"foot", "-e", "/bin/sh", "-c",                         \
-				"curl -g -L -J -O -A \"$1\" -b \"$2\" -c \"$2\""   \
-				" -e \"$3\" \"$4\"; read",                         \
-				"surf-download", useragent, cookiefile, r, u, NULL \
-		}                                                          \
-	}
-
-/* PLUMB(URI) */
-#define PLUMB(u)                           \
-	{                                      \
-		.v = (const char *[])              \
-		{                                  \
-			"/bin/sh", "-c",               \
-				"xdg-open \"$0\"", u, NULL \
-		}                                  \
-	}
-
-/* VIDEOPLAY(URI) */
-#define VIDEOPLAY(u)                                 \
-	{                                                \
-		.v = (const char *[])                        \
-		{                                            \
-			"/bin/sh", "-c",                         \
-				"mpv --really-quiet \"$0\"", u, NULL \
-		}                                            \
-	}
-
-/* styles */
-static SiteSpecific styles[] = {
-	{".*", "default.css"},
-};
-
-/* certificates */
-static SiteSpecific certs[] = {
-	{"://suckless\\.org/", "suckless.org.crt"},
-};
-
-#define MODKEY GDK_CONTROL_MASK
-
+/* key bindings
+ * mod          key               function          arg
+ */
 static Key keys[] = {
-	/* modifier              keyval          function    arg */
+    /* stop / reload */
+    { 0,           WPE_KEY_Escape,   act_normal_mode,  {0}      },
+    { MODKEY,      WPE_KEY_c,        act_stop,         {0}      },
+    { MODKEY|SHIFT,WPE_KEY_R,        act_reload,       {.i=1}   },
+    { MODKEY,      WPE_KEY_r,        act_reload,       {.i=0}   },
 
-	/* --- Ctrl+ keybinds --- */
-	{MODKEY, GDK_KEY_c, stop, {0}},
-	{MODKEY, GDK_KEY_s, dl_clear, {0}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_r, reload, {.i = 1}},
-	{MODKEY, GDK_KEY_r, reload, {.i = 0}},
-	{MODKEY, GDK_KEY_l, navigate, {.i = +1}},
-	{MODKEY, GDK_KEY_h, navigate, {.i = -1}},
-	{MODKEY, GDK_KEY_j, tab_move, {.i = +1}},
-	{MODKEY, GDK_KEY_k, tab_move, {.i = -1}},
-	{MODKEY, GDK_KEY_space, scrollv, {.i = +50}},
-	{MODKEY, GDK_KEY_b, scrollv, {.i = -50}},
-	{MODKEY, GDK_KEY_d, scrollv, {.i = +50}},
-	{MODKEY, GDK_KEY_u, scrollv, {.i = -50}},
-	{MODKEY, GDK_KEY_p, screenshot, {0}},
-	{MODKEY, GDK_KEY_n, find, {.i = +1}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_n, find, {.i = -1}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_p, print, {0}},
-	{MODKEY, GDK_KEY_t, showcert, {0}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_a, togglecookiepolicy, {0}},
-	{MODKEY, GDK_KEY_o, toggleinspector, {0}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_c, toggle, {.i = CaretBrowsing}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_g, toggle, {.i = Geolocation}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_s, toggle, {.i = JavaScript}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_u, reloaduserscripts, {0}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_i, toggle, {.i = LoadImages}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_b, toggle, {.i = ScrollBars}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_t, toggle, {.i = StrictTLS}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_m, toggle, {.i = Style}},
-	{MODKEY | GDK_SHIFT_MASK, GDK_KEY_d, toggle, {.i = DarkMode}},
-	{MODKEY, GDK_KEY_F1, showinstanceid, {0}},
+    /* navigation */
+    { MODKEY,      WPE_KEY_l,        act_navigate,     {.i=+1}  },
+    { MODKEY,      WPE_KEY_h,        act_navigate,     {.i=-1}  },
 
-	/* --- Normal-mode bare keys --- */
-	{0, GDK_KEY_Escape, stop, {0}},
-	{0, GDK_KEY_F11, togglefullscreen, {0}},
-	{0, GDK_KEY_i, toggleinsert, {0}},
-	{0, GDK_KEY_o, openbar, {.i = 0}},
-	{0, GDK_KEY_e, openbar, {.i = 1}},
-	{0, GDK_KEY_slash, opensearch, {0}},
-	{0, GDK_KEY_j, scrollv, {.i = +10}},
-	{0, GDK_KEY_k, scrollv, {.i = -10}},
-	{0, GDK_KEY_u, tab_reopen, {0}},
-	{0, GDK_KEY_h, navigate, {.i = -1}},
-	{0, GDK_KEY_l, navigate, {.i = +1}},
-	{0, GDK_KEY_r, reload, {.i = 0}},
-	{0, GDK_KEY_g, scrollv, {.i = -1000000}},
-	{GDK_SHIFT_MASK, GDK_KEY_g, scrollv, {.i = +1000000}},
-	{0, GDK_KEY_minus, zoom, {.i = -1}},
-	{GDK_SHIFT_MASK, GDK_KEY_plus, zoom, {.i = +1}},
-	{0, GDK_KEY_equal, zoom, {.i = 0}},
-	{0, GDK_KEY_v, find_select_enter, {0}},
-	{GDK_SHIFT_MASK, GDK_KEY_v, find_select_line, {0}},
-	{0, GDK_KEY_f, hints_start, {.i = HintModeLink}},
-	{GDK_SHIFT_MASK, GDK_KEY_f, hints_start, {.i = HintModeNewWindow}},
-	{0, GDK_KEY_y, hints_start, {.i = HintModeYank}},
-	{GDK_SHIFT_MASK, GDK_KEY_y, clipboard, {.i = 0}},
-	{0, GDK_KEY_t, tab_new, {.i = 0}},
-	{GDK_SHIFT_MASK, GDK_KEY_o, openbar_newtab, {0}},
-	{0, GDK_KEY_d, tab_close, {0}},
-	{GDK_SHIFT_MASK, GDK_KEY_j, tab_next, {0}},
-	{GDK_SHIFT_MASK, GDK_KEY_k, tab_prev, {0}},
-	{GDK_SHIFT_MASK, GDK_KEY_p, tab_pin, {0}},
-	{0, GDK_KEY_p, spawnuserscript, {.v = "$HOME/.surf/userscripts/surf-pass"}},
+    /* vertical scroll (viewport %) */
+    { MODKEY,      WPE_KEY_j,        act_scrollv,      {.i=+10} },
+    { MODKEY,      WPE_KEY_k,        act_scrollv,      {.i=-10} },
+    { MODKEY,      WPE_KEY_space,    act_scrollv,      {.i=+50} },
+    { MODKEY,      WPE_KEY_b,        act_scrollv,      {.i=-50} },
+
+    /* horizontal scroll */
+    { MODKEY,      WPE_KEY_i,        act_scrollh,      {.i=+10} },
+    { MODKEY,      WPE_KEY_u,        act_scrollh,      {.i=-10} },
+
+    /* zoom */
+    { MODKEY|SHIFT,WPE_KEY_J,        act_zoom,         {.i=-1}  },
+    { MODKEY|SHIFT,WPE_KEY_K,        act_zoom,         {.i=+1}  },
+    { MODKEY|SHIFT,WPE_KEY_Q,        act_zoom,         {.i=0}   },
+    { MODKEY,      WPE_KEY_minus,    act_zoom,         {.i=-1}  },
+    { MODKEY,      WPE_KEY_plus,     act_zoom,         {.i=+1}  },
+    { MODKEY,      WPE_KEY_equal,    act_zoom,         {.i=+1}  },
+
+    /* find */
+    { MODKEY,      WPE_KEY_n,        act_find_next,    {.i=+1}  },
+    { MODKEY|SHIFT,WPE_KEY_N,        act_find_next,    {.i=-1}  },
+
+    /* full screen */
+    { 0,           WPE_KEY_F11,      act_fullscreen,   {0}      },
+
+    /* tabs */
+    { MODKEY,      WPE_KEY_t,        act_new_tab,      {0}      },
+    { MODKEY,      WPE_KEY_w,        act_close_tab,    {0}      },
+    { MODKEY,      WPE_KEY_Tab,      act_switch_tab,   {.i=+1}  },
+    { MODKEY|SHIFT,WPE_KEY_Tab,      act_switch_tab,   {.i=-1}  },
+
+    /* mode */
+    { 0,           WPE_KEY_i,        act_insert_mode,  {0}      },
+
+    /* quit */
+    { MODKEY,      WPE_KEY_q,        act_quit,         {0}      },
 };
-
-/* button definitions */
-static Button buttons[] = {
-	/* target       event mask      button  function        argument        stop event */
-	{OnLink, 0, 2, clicknewtab, {0}, 1},	  /* middle click: background tab */
-	{OnLink, MODKEY, 1, clicknewtab, {0}, 1}, /* ctrl+click: background tab */
-	{OnAny, 0, 8, clicknavigate, {.i = -1}, 1},
-	{OnAny, 0, 9, clicknavigate, {.i = +1}, 1},
-	{OnMedia, MODKEY, 1, clickexternplayer, {0}, 1},
-};
-
-/* Status bar colors */
-static const char *stat_bg_normal = "#000000";
-static const char *stat_fg_normal = "#ffffff";
-static const char *stat_font = "13px 'Terminus (TTF)'";
-
-static const char *searchengine = "https://searx.syscat.org/?q=%s";
