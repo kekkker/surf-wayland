@@ -1,6 +1,7 @@
 #include "wayland.h"
 #include "input.h"
 #include "chrome.h"
+#include "tabs.h"
 
 #include <wpe/webkit.h>
 #include <wpe/wayland/wpe-wayland.h>
@@ -8,68 +9,77 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static WaylandState  wl;
-static InputState    in;
-static GMainLoop    *loop;
+/* ── global app state ────────────────────────────────────────────────────── */
 
-static ChromePanel  *tabbar;
-static ChromePanel  *statusbar;
-static WPEView      *main_view;
-static WebKitWebView *main_wv;
+static WaylandState     wl;
+static InputState       in;
+static GMainLoop       *loop;
+static TabArray         tabs;
+static ChromePanel     *tabbar_panel;
+static ChromePanel     *statusbar_panel;
+static WPEDisplayWayland *wpe_display;
+static WPEToplevel      *main_toplevel;
 
-static const char   *page_title    = NULL;
-static const char   *page_uri      = NULL;
-static int           page_progress = 0;
-static int           page_https    = 0;
-static int           page_insecure = 0;
-
-/* ── Chrome repaint ─────────────────────────────────────────────────────── */
+/* ── chrome repaint ──────────────────────────────────────────────────────── */
 
 static void repaint_chrome(void)
 {
-    if (!tabbar || !statusbar)
+    if (!tabbar_panel || !statusbar_panel || tabs.count == 0)
         return;
 
-    ChromeTab tab = {
-        .title  = page_title ? page_title : (page_uri ? page_uri : "New Tab"),
-        .active = 1,
-        .pinned = 0,
-    };
-    chrome_paint_tabbar(tabbar, &tab, 1);
-    chrome_panel_commit(tabbar);
+    /* Build tab list for chrome painter */
+    ChromeTab *ctabs = g_new0(ChromeTab, tabs.count);
+    for (int i = 0; i < tabs.count; i++) {
+        Tab *t = &tabs.items[i];
+        ctabs[i].title  = t->title ? t->title :
+                          (t->uri  ? t->uri  : "New Tab");
+        ctabs[i].active = (i == tabs.active);
+        ctabs[i].pinned = t->pinned;
+    }
+    chrome_paint_tabbar(tabbar_panel, ctabs, tabs.count);
+    chrome_panel_commit(tabbar_panel);
+    g_free(ctabs);
 
-    chrome_paint_statusbar(statusbar,
-        page_uri ? page_uri : "",
-        page_progress, page_https, page_insecure);
-    chrome_panel_commit(statusbar);
+    Tab *at = tabarray_active(&tabs);
+    chrome_paint_statusbar(statusbar_panel,
+        at ? (at->uri ? at->uri : "") : "",
+        at ? at->progress   : 0,
+        at ? at->https      : 0,
+        at ? at->insecure   : 0);
+    chrome_panel_commit(statusbar_panel);
 }
 
-/* ── Chrome setup / resize ──────────────────────────────────────────────── */
-
-static void setup_chrome(int win_w, int win_h)
+static void on_tab_changed(void *data)
 {
-    WPEToplevel *tl = wpe_view_get_toplevel(main_view);
-    if (!tl || !WPE_IS_TOPLEVEL_WAYLAND(tl))
+    (void)data;
+    repaint_chrome();
+}
+
+/* ── chrome layout ───────────────────────────────────────────────────────── */
+
+static void layout_chrome(int win_w, int win_h)
+{
+    if (!main_toplevel || !WPE_IS_TOPLEVEL_WAYLAND(main_toplevel))
         return;
 
     struct wl_surface *parent =
-        wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(tl));
+        wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(main_toplevel));
 
-    if (!tabbar) {
-        tabbar = chrome_panel_create(&wl, parent,
+    if (!tabbar_panel) {
+        tabbar_panel = chrome_panel_create(&wl, parent,
             0, 0, win_w, CHROME_TABBAR_H);
     } else {
-        chrome_panel_resize(tabbar, &wl, win_w, CHROME_TABBAR_H);
-        chrome_panel_set_position(tabbar, 0, 0);
+        chrome_panel_resize(tabbar_panel, &wl, win_w, CHROME_TABBAR_H);
+        chrome_panel_set_position(tabbar_panel, 0, 0);
     }
 
     int sbar_y = win_h - CHROME_STATUSBAR_H;
-    if (!statusbar) {
-        statusbar = chrome_panel_create(&wl, parent,
+    if (!statusbar_panel) {
+        statusbar_panel = chrome_panel_create(&wl, parent,
             0, sbar_y, win_w, CHROME_STATUSBAR_H);
     } else {
-        chrome_panel_resize(statusbar, &wl, win_w, CHROME_STATUSBAR_H);
-        chrome_panel_set_position(statusbar, 0, sbar_y);
+        chrome_panel_resize(statusbar_panel, &wl, win_w, CHROME_STATUSBAR_H);
+        chrome_panel_set_position(statusbar_panel, 0, sbar_y);
     }
 
     repaint_chrome();
@@ -78,53 +88,56 @@ static void setup_chrome(int win_w, int win_h)
 static void on_view_resized(WPEView *view, gpointer data)
 {
     (void)data;
-    int w = wpe_view_get_width(view);
-    int h = wpe_view_get_height(view);
-    setup_chrome(w, h);
+    layout_chrome(wpe_view_get_width(view), wpe_view_get_height(view));
 }
 
-/* ── WebKit signals ─────────────────────────────────────────────────────── */
-
-static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent ev, gpointer data)
-{
-    (void)data;
-    if (ev == WEBKIT_LOAD_STARTED) {
-        page_progress = 0;
-        page_https    = 0;
-        page_insecure = 0;
-    }
-    page_uri = webkit_web_view_get_uri(wv);
-    repaint_chrome();
-}
-
-static void on_notify_progress(GObject *obj, GParamSpec *pspec, gpointer data)
-{
-    (void)pspec; (void)data;
-    page_progress = (int)(webkit_web_view_get_estimated_load_progress(
-        WEBKIT_WEB_VIEW(obj)) * 100);
-    repaint_chrome();
-}
-
-static void on_notify_title(GObject *obj, GParamSpec *pspec, gpointer data)
-{
-    (void)pspec; (void)data;
-    page_title = webkit_web_view_get_title(WEBKIT_WEB_VIEW(obj));
-    repaint_chrome();
-}
-
-/* ── Input ──────────────────────────────────────────────────────────────── */
+/* ── input ───────────────────────────────────────────────────────────────── */
 
 static gboolean handle_key(guint keyval, WPEModifiers mods, gpointer data)
 {
     (void)data;
-    if (keyval == WPE_KEY_q && (mods & WPE_MODIFIER_KEYBOARD_CONTROL)) {
-        g_main_loop_quit(loop);
-        return TRUE;
-    }
-    /* Reload: Ctrl+R */
-    if (keyval == WPE_KEY_r && (mods & WPE_MODIFIER_KEYBOARD_CONTROL)) {
-        webkit_web_view_reload(main_wv);
-        return TRUE;
+    gboolean ctrl  = (mods & WPE_MODIFIER_KEYBOARD_CONTROL) != 0;
+    gboolean shift = (mods & WPE_MODIFIER_KEYBOARD_SHIFT)   != 0;
+
+    if (ctrl) {
+        switch (keyval) {
+        case WPE_KEY_q:
+            g_main_loop_quit(loop);
+            return TRUE;
+
+        case WPE_KEY_r:
+            if (tabarray_active(&tabs))
+                webkit_web_view_reload(tabarray_active(&tabs)->wv);
+            return TRUE;
+
+        case WPE_KEY_t:
+            /* New tab (empty) */
+            tabarray_new(&tabs, WPE_DISPLAY(wpe_display), main_toplevel,
+                on_tab_changed, NULL);
+            repaint_chrome();
+            return TRUE;
+
+        case WPE_KEY_w:
+            /* Close active tab; quit if last */
+            if (tabs.count == 1) {
+                g_main_loop_quit(loop);
+            } else {
+                tabarray_close(&tabs, tabs.active, on_tab_changed, NULL);
+                repaint_chrome();
+            }
+            return TRUE;
+
+        case WPE_KEY_Tab:
+            /* Cycle tabs */
+            if (tabs.count > 1) {
+                int next = shift
+                    ? (tabs.active - 1 + tabs.count) % tabs.count
+                    : (tabs.active + 1) % tabs.count;
+                tabarray_switch(&tabs, next);
+                repaint_chrome();
+            }
+            return TRUE;
+        }
     }
     return FALSE;
 }
@@ -136,42 +149,35 @@ int main(int argc, char *argv[])
     const char *url = argc > 1 ? argv[1] : "about:blank";
 
     GError *err = NULL;
-    WPEDisplayWayland *display = WPE_DISPLAY_WAYLAND(wpe_display_wayland_new());
-    if (!wpe_display_wayland_connect(display, NULL, &err))
+    wpe_display = WPE_DISPLAY_WAYLAND(wpe_display_wayland_new());
+    if (!wpe_display_wayland_connect(wpe_display, NULL, &err))
         g_error("surf: %s", err->message);
 
-    wayland_init(&wl, display);
+    wayland_init(&wl, wpe_display);
+    tabarray_init(&tabs);
 
-    main_wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
-        "display", WPE_DISPLAY(display), NULL);
+    /* First tab — WPE auto-creates toplevel */
+    Tab *first = tabarray_new(&tabs, WPE_DISPLAY(wpe_display), NULL,
+        on_tab_changed, NULL);
 
-    main_view = webkit_web_view_get_wpe_view(main_wv);
-    wpe_view_map(main_view);
+    main_toplevel = wpe_view_get_toplevel(first->view);
+    if (main_toplevel)
+        wpe_toplevel_resize(main_toplevel, 1280, 800);
 
-    WPEToplevel *tl = wpe_view_get_toplevel(main_view);
-    if (tl)
-        wpe_toplevel_resize(tl, 1280, 800);
-
-    g_signal_connect(main_view, "resized",
+    g_signal_connect(first->view, "resized",
         G_CALLBACK(on_view_resized), NULL);
-    g_signal_connect(main_wv, "load-changed",
-        G_CALLBACK(on_load_changed), NULL);
-    g_signal_connect(main_wv, "notify::estimated-load-progress",
-        G_CALLBACK(on_notify_progress), NULL);
-    g_signal_connect(main_wv, "notify::title",
-        G_CALLBACK(on_notify_title), NULL);
 
-    input_init(&in, main_view, handle_key, NULL);
+    input_init(&in, first->view, handle_key, NULL);
 
-    webkit_web_view_load_uri(main_wv, url);
+    webkit_web_view_load_uri(first->wv, url);
 
     loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(loop);
 
-    if (tabbar)   chrome_panel_destroy(tabbar);
-    if (statusbar) chrome_panel_destroy(statusbar);
-    g_object_unref(main_wv);
-    g_object_unref(display);
+    if (tabbar_panel)   chrome_panel_destroy(tabbar_panel);
+    if (statusbar_panel) chrome_panel_destroy(statusbar_panel);
+    tabarray_free(&tabs);
+    g_object_unref(wpe_display);
     wayland_finish(&wl);
     g_main_loop_unref(loop);
     return 0;

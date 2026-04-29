@@ -4,7 +4,7 @@
 
 include config.mk
 
-SRC  = src/main.c src/wayland.c src/input.c src/chrome.c
+SRC  = src/main.c src/wayland.c src/input.c src/chrome.c src/tabs.c
 OBJ  = $(SRC:.c=.o)
 
 # webext-surf.c ported in Phase 8; excluded until then
@@ -17,7 +17,7 @@ all: surf
 surf: $(OBJ)
 	$(CC) -o $@ $(OBJ) $(SURFLIBS)
 
-src/main.o:    src/main.c    src/wayland.h src/input.h src/chrome.h config.mk
+src/main.o:    src/main.c    src/wayland.h src/input.h src/chrome.h src/tabs.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/main.c
 
 src/wayland.o: src/wayland.c src/wayland.h config.mk
@@ -28,6 +28,9 @@ src/input.o:   src/input.c   src/input.h config.mk
 
 src/chrome.o:  src/chrome.c  src/chrome.h src/wayland.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/chrome.c
+
+src/tabs.o:    src/tabs.c    src/tabs.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/tabs.c
 
 $(WLIB): $(WOBJ)
 	$(CC) -shared -Wl,-soname,$@ -o $@ $(WOBJ) $(WEXTLIBS)
