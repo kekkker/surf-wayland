@@ -38,11 +38,15 @@ void app_repaint_chrome(void)
     g_free(ctabs);
 
     Tab *at = app_active_tab();
-    chrome_paint_statusbar(g_app.statusbar,
-        at ? (at->uri ? at->uri : "") : "",
-        at ? at->progress  : 0,
-        at ? at->https     : 0,
-        at ? at->insecure  : 0);
+    if (g_app.cmdbar.mode != CMDBAR_INACTIVE) {
+        chrome_paint_cmdbar(g_app.statusbar, &g_app.cmdbar);
+    } else {
+        chrome_paint_statusbar(g_app.statusbar,
+            at ? (at->uri ? at->uri : "") : "",
+            at ? at->progress  : 0,
+            at ? at->https     : 0,
+            at ? at->insecure  : 0);
+    }
     chrome_panel_commit(g_app.statusbar);
 }
 

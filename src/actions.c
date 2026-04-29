@@ -1,6 +1,7 @@
 #include "actions.h"
 #include "app.h"
 #include "tabs.h"
+#include "cmdbar.h"
 
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
@@ -149,14 +150,36 @@ void act_normal_mode(const Arg *a)
     (void)a;
     Tab *t = app_active_tab();
     if (!t) return;
-    if (t->mode == MODE_INSERT || t->mode == MODE_SEARCH) {
-        /* Stop any ongoing search */
-        if (t->mode == MODE_SEARCH)
+    if (t->mode == MODE_INSERT || t->mode == MODE_SEARCH ||
+        t->mode == MODE_COMMAND) {
+        if (t->mode == MODE_SEARCH && t->finder)
             webkit_find_controller_search_finish(t->finder);
+        if (t->mode == MODE_COMMAND || t->mode == MODE_SEARCH)
+            cmdbar_close(&g_app.cmdbar);
         t->mode = MODE_NORMAL;
         wpe_view_focus_in(t->view);
         app_repaint_chrome();
     }
-    /* Also stop loading on Escape in normal mode */
     webkit_web_view_stop_loading(t->wv);
+}
+
+void act_open_bar(const Arg *a)
+{
+    Tab *t = app_active_tab();
+    if (!t) return;
+    CmdBarMode mode = (a->i == 2) ? CMDBAR_URL_NEWTAB : CMDBAR_URL;
+    const char *prefill = (a->i == 1) ? t->uri : NULL;
+    cmdbar_open(&g_app.cmdbar, mode, prefill);
+    t->mode = MODE_COMMAND;
+    app_repaint_chrome();
+}
+
+void act_open_search(const Arg *a)
+{
+    (void)a;
+    Tab *t = app_active_tab();
+    if (!t) return;
+    cmdbar_open(&g_app.cmdbar, CMDBAR_SEARCH, NULL);
+    t->mode = MODE_SEARCH;
+    app_repaint_chrome();
 }

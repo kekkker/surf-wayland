@@ -4,7 +4,7 @@
 
 include config.mk
 
-SRC  = src/main.c src/wayland.c src/input.c src/chrome.c src/tabs.c src/actions.c
+SRC  = src/main.c src/wayland.c src/input.c src/chrome.c src/tabs.c src/actions.c src/cmdbar.c
 OBJ  = $(SRC:.c=.o)
 
 # webext-surf.c ported in Phase 8; excluded until then
@@ -23,17 +23,20 @@ src/main.o:    src/main.c    src/app.h src/input.h src/actions.h src/chrome.h sr
 src/wayland.o: src/wayland.c src/wayland.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wayland.c
 
-src/chrome.o:  src/chrome.c  src/chrome.h src/wayland.h config.mk
+src/chrome.o:  src/chrome.c  src/chrome.h src/cmdbar.h src/wayland.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/chrome.c
 
 src/tabs.o:    src/tabs.c    src/tabs.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/tabs.c
 
-src/actions.o: src/actions.c src/actions.h src/app.h src/tabs.h config.h config.mk
+src/actions.o: src/actions.c src/actions.h src/app.h src/tabs.h src/cmdbar.h config.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/actions.c
 
-src/input.o:   src/input.c   src/input.h src/app.h src/actions.h config.h config.mk
+src/input.o:   src/input.c   src/input.h src/app.h src/actions.h src/cmdbar.h config.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/input.c
+
+src/cmdbar.o:  src/cmdbar.c  src/cmdbar.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/cmdbar.c
 
 $(WLIB): $(WOBJ)
 	$(CC) -shared -Wl,-soname,$@ -o $@ $(WOBJ) $(WEXTLIBS)

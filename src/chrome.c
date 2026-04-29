@@ -1,8 +1,8 @@
+#define _GNU_SOURCE
 #include "chrome.h"
 
 #include <cairo/cairo.h>
 #include <pango/pangocairo.h>
-#define _GNU_SOURCE
 #include <sys/mman.h>
 #include <linux/memfd.h>
 #include <fcntl.h>
@@ -211,6 +211,50 @@ void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
     set_rgb_hex(cr, COL_STAT_FG);
     cairo_move_to(cr, 8, (p->height - th) / 2);
     pango_cairo_show_layout(cr, layout);
+
+    g_object_unref(layout);
+    cairo_destroy(cr);
+}
+
+void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb)
+{
+    cairo_t *cr = cairo_create(p->csurf);
+
+    set_rgb_hex(cr, 0x101020);
+    cairo_paint(cr);
+
+    const char *prompt = cb->prompt ? cb->prompt : "";
+
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string(FONT_CHROME);
+    pango_layout_set_font_description(layout, fd);
+    pango_font_description_free(fd);
+
+    /* prompt */
+    pango_layout_set_text(layout, prompt, -1);
+    int pw, ph;
+    pango_layout_get_pixel_size(layout, &pw, &ph);
+    int y0 = (p->height - ph) / 2;
+    if (y0 < 0) y0 = 0;
+
+    set_rgb_hex(cr, 0x88aaff);
+    cairo_move_to(cr, 4, y0);
+    pango_cairo_show_layout(cr, layout);
+
+    /* text */
+    pango_layout_set_text(layout, cb->buf, cb->len);
+    set_rgb_hex(cr, COL_STAT_FG);
+    cairo_move_to(cr, 4 + pw, y0);
+    pango_cairo_show_layout(cr, layout);
+
+    /* cursor: 2-px vertical bar */
+    PangoRectangle rect;
+    pango_layout_index_to_pos(layout, cb->cursor, &rect);
+    int cx = 4 + pw + rect.x / PANGO_SCALE;
+
+    set_rgb_hex(cr, 0xffffff);
+    cairo_rectangle(cr, cx, y0, 2, ph > 0 ? ph : p->height);
+    cairo_fill(cr);
 
     g_object_unref(layout);
     cairo_destroy(cr);

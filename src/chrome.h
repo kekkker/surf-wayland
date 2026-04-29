@@ -1,6 +1,7 @@
 #pragma once
 
 #include "wayland.h"
+#include "cmdbar.h"
 #include <cairo/cairo.h>
 #include <wayland-client.h>
 
@@ -36,4 +37,5 @@ void chrome_panel_destroy(ChromePanel *p);
 void chrome_paint_tabbar(ChromePanel *p, ChromeTab *tabs, int n);
 void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
     int https, int insecure);
+void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb);
 void chrome_panel_commit(ChromePanel *p);

@@ -2,6 +2,7 @@
 
 #include "wayland.h"
 #include "chrome.h"
+#include "cmdbar.h"
 #include "tabs.h"
 #include <glib.h>
 
@@ -12,6 +13,7 @@ typedef struct {
     TabArray           tabs;
     ChromePanel       *tabbar;
     ChromePanel       *statusbar;
+    CmdBar             cmdbar;
     GMainLoop         *loop;
     int                fullscreen;
 } AppState;

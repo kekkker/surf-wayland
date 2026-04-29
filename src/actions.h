@@ -38,3 +38,7 @@ void act_quit(const Arg *a);
 /* Mode */
 void act_insert_mode(const Arg *a);
 void act_normal_mode(const Arg *a);
+
+/* Command bar */
+void act_open_bar(const Arg *a);     /* a.i: 0=open, 1=edit current URL, 2=new-tab */
+void act_open_search(const Arg *a);

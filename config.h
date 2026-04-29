@@ -68,6 +68,12 @@ static Key keys[] = {
     /* mode */
     { 0,           WPE_KEY_i,        act_insert_mode,  {0}      },
 
+    /* command bar */
+    { 0,           WPE_KEY_o,        act_open_bar,     {.i=0}   },
+    { 0,           WPE_KEY_e,        act_open_bar,     {.i=1}   },
+    { SHIFT,       WPE_KEY_O,        act_open_bar,     {.i=2}   },
+    { 0,           WPE_KEY_slash,    act_open_search,  {0}      },
+
     /* quit */
     { MODKEY,      WPE_KEY_q,        act_quit,         {0}      },
 };
