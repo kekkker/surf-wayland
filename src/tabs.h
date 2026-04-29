@@ -30,6 +30,9 @@ struct Tab {
     WebKitFindController *finder;
     int             find_count;
     int             find_cur;
+
+    /* hover */
+    char           *hover_uri;
 };
 
 typedef struct {
@@ -39,10 +42,11 @@ typedef struct {
 } TabArray;
 
 typedef void (*TabChangedFn)(void *data);
+typedef void (*TabCloseFn)(int idx, void *data);
 
 void tabarray_init(TabArray *ta);
 Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
-    TabChangedFn on_change, void *cb_data);
+    TabChangedFn on_change, TabCloseFn on_close, void *cb_data);
 void tabarray_close(TabArray *ta, int index,
     TabChangedFn on_change, void *cb_data);
 void tabarray_switch(TabArray *ta, int index);

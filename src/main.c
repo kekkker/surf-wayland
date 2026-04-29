@@ -11,6 +11,7 @@
 #include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <linux/input-event-codes.h>
 
 /* ── global app state ────────────────────────────────────────────────────── */
 
@@ -41,8 +42,10 @@ void app_repaint_chrome(void)
     if (g_app.cmdbar.mode != CMDBAR_INACTIVE) {
         chrome_paint_cmdbar(g_app.statusbar, &g_app.cmdbar);
     } else {
-        chrome_paint_statusbar(g_app.statusbar,
-            at ? (at->uri ? at->uri : "") : "",
+        const char *uri = at
+            ? (at->hover_uri ? at->hover_uri : (at->uri ? at->uri : ""))
+            : "";
+        chrome_paint_statusbar(g_app.statusbar, uri,
             at ? at->progress  : 0,
             at ? at->https     : 0,
             at ? at->insecure  : 0);
@@ -96,6 +99,78 @@ static void tab_changed_cb(void *d)
     app_repaint_chrome();
 }
 
+static void tab_close_cb(int idx, void *data)
+{
+    (void)data;
+    if (g_app.tabs.count == 1) {
+        g_main_loop_quit(g_app.loop);
+        return;
+    }
+    tabarray_close(&g_app.tabs, idx, tab_changed_cb, NULL);
+    app_repaint_chrome();
+}
+
+/* ── pointer: tab clicks ─────────────────────────────────────────────────── */
+
+static struct wl_surface *ptr_surface;
+static int ptr_x;
+
+static void ptr_enter(void *d, struct wl_pointer *p, uint32_t ser,
+    struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y)
+{
+    (void)d; (void)p; (void)ser; (void)y;
+    ptr_surface = surf;
+    ptr_x = wl_fixed_to_int(x);
+}
+
+static void ptr_leave(void *d, struct wl_pointer *p, uint32_t ser,
+    struct wl_surface *surf)
+{
+    (void)d; (void)p; (void)ser; (void)surf;
+    ptr_surface = NULL;
+}
+
+static void ptr_motion(void *d, struct wl_pointer *p, uint32_t t,
+    wl_fixed_t x, wl_fixed_t y)
+{
+    (void)d; (void)p; (void)t; (void)y;
+    ptr_x = wl_fixed_to_int(x);
+}
+
+static void ptr_button(void *d, struct wl_pointer *p, uint32_t ser,
+    uint32_t t, uint32_t btn, uint32_t state)
+{
+    (void)d; (void)p; (void)ser; (void)t;
+    if (state != WL_POINTER_BUTTON_STATE_PRESSED) return;
+    if (!g_app.tabbar || ptr_surface != g_app.tabbar->surface) return;
+
+    int n = g_app.tabs.count;
+    if (n == 0) return;
+    int tw = g_app.tabbar->width / n;
+    if (tw > 200) tw = 200;
+    int idx = ptr_x / tw;
+    if (idx < 0 || idx >= n) return;
+
+    if (btn == BTN_LEFT) {
+        tabarray_switch(&g_app.tabs, idx);
+        app_repaint_chrome();
+    } else if (btn == BTN_MIDDLE) {
+        tab_close_cb(idx, NULL);
+    }
+}
+
+static void ptr_axis(void *d, struct wl_pointer *p, uint32_t t,
+    uint32_t axis, wl_fixed_t v)
+{ (void)d; (void)p; (void)t; (void)axis; (void)v; }
+
+static const struct wl_pointer_listener pointer_listener = {
+    .enter  = ptr_enter,
+    .leave  = ptr_leave,
+    .motion = ptr_motion,
+    .button = ptr_button,
+    .axis   = ptr_axis,
+};
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
@@ -109,10 +184,11 @@ int main(int argc, char *argv[])
 
     wayland_init(&g_app.wl, g_app.display);
     tabarray_init(&g_app.tabs);
+    g_app.tab_close_fn = tab_close_cb;
 
     /* First tab — WPE auto-creates toplevel */
     Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), NULL,
-        tab_changed_cb, NULL);
+        tab_changed_cb, tab_close_cb, NULL);
 
     g_app.toplevel = wpe_view_get_toplevel(first->view);
     if (g_app.toplevel)
@@ -122,6 +198,9 @@ int main(int argc, char *argv[])
         G_CALLBACK(on_view_resized), NULL);
     g_signal_connect(first->view, "closed",
         G_CALLBACK(on_view_closed), NULL);
+
+    if (g_app.wl.pointer)
+        wl_pointer_add_listener(g_app.wl.pointer, &pointer_listener, NULL);
 
     input_init(&in, first->view, NULL, NULL);
 

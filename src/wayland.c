@@ -3,6 +3,24 @@
 #include <stdio.h>
 #include <string.h>
 
+static void seat_capabilities(void *data, struct wl_seat *seat, uint32_t caps)
+{
+    WaylandState *wl = data;
+    if ((caps & WL_SEAT_CAPABILITY_POINTER) && !wl->pointer)
+        wl->pointer = wl_seat_get_pointer(seat);
+    else if (!(caps & WL_SEAT_CAPABILITY_POINTER) && wl->pointer) {
+        wl_pointer_destroy(wl->pointer);
+        wl->pointer = NULL;
+    }
+}
+
+static void seat_name(void *data, struct wl_seat *seat, const char *name)
+{ (void)data; (void)seat; (void)name; }
+
+static const struct wl_seat_listener seat_listener = {
+    seat_capabilities, seat_name
+};
+
 static void registry_global(void *data, struct wl_registry *reg,
     uint32_t name, const char *iface, uint32_t version)
 {
@@ -11,6 +29,8 @@ static void registry_global(void *data, struct wl_registry *reg,
     if (!strcmp(iface, wl_subcompositor_interface.name))
         wl->subcompositor = wl_registry_bind(reg, name,
             &wl_subcompositor_interface, 1);
+    else if (!strcmp(iface, wl_seat_interface.name))
+        wl->seat = wl_registry_bind(reg, name, &wl_seat_interface, 1);
 }
 
 static void registry_global_remove(void *data, struct wl_registry *reg,
@@ -36,12 +56,18 @@ void wayland_init(WaylandState *wl, WPEDisplayWayland *display)
     wl_display_roundtrip(wl->display);
     wl_registry_destroy(reg);
 
+    if (wl->seat) {
+        wl_seat_add_listener(wl->seat, &seat_listener, wl);
+        wl_display_roundtrip(wl->display);  /* triggers seat_capabilities → wl->pointer */
+    }
+
     if (!wl->subcompositor)
         fprintf(stderr, "surf: wl_subcompositor unavailable\n");
 }
 
 void wayland_finish(WaylandState *wl)
 {
-    if (wl->subcompositor)
-        wl_subcompositor_destroy(wl->subcompositor);
+    if (wl->pointer)      wl_pointer_destroy(wl->pointer);
+    if (wl->seat)         wl_seat_destroy(wl->seat);
+    if (wl->subcompositor) wl_subcompositor_destroy(wl->subcompositor);
 }

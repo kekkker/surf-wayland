@@ -14,6 +14,7 @@ typedef struct {
     ChromePanel       *tabbar;
     ChromePanel       *statusbar;
     CmdBar             cmdbar;
+    TabCloseFn         tab_close_fn;
     GMainLoop         *loop;
     int                fullscreen;
 } AppState;

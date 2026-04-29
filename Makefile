@@ -17,7 +17,7 @@ all: surf
 surf: $(OBJ)
 	$(CC) -o $@ $(OBJ) $(SURFLIBS)
 
-src/main.o:    src/main.c    src/app.h src/input.h src/actions.h src/chrome.h src/tabs.h src/wayland.h config.h config.mk
+src/main.o:    src/main.c    src/app.h src/input.h src/actions.h src/chrome.h src/tabs.h src/wayland.h src/cmdbar.h config.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/main.c
 
 src/wayland.o: src/wayland.c src/wayland.h config.mk

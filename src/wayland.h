@@ -9,6 +9,8 @@ typedef struct {
     struct wl_compositor    *compositor;
     struct wl_subcompositor *subcompositor;
     struct wl_shm           *shm;
+    struct wl_seat          *seat;
+    struct wl_pointer       *pointer;
 } WaylandState;
 
 void wayland_init(WaylandState *wl, WPEDisplayWayland *display);

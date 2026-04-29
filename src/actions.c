@@ -103,7 +103,7 @@ void act_new_tab(const Arg *a)
 {
     (void)a;
     tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), g_app.toplevel,
-        tab_changed_cb, NULL);
+        tab_changed_cb, g_app.tab_close_fn, NULL);
     app_repaint_chrome();
 }
 

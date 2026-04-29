@@ -7,10 +7,13 @@
 /* ── per-tab signal data ─────────────────────────────────────────────────── */
 
 typedef struct {
-    TabArray     *ta;
-    WebKitWebView *wv;   /* stable GObject ref — used to find the Tab */
-    TabChangedFn  on_change;
-    void         *cb_data;
+    TabArray      *ta;
+    WebKitWebView *wv;       /* stable GObject ref — used to find the Tab */
+    WPEDisplay    *display;
+    WPEToplevel   *toplevel;
+    TabChangedFn   on_change;
+    TabCloseFn     on_close;
+    void          *cb_data;
 } TabCBData;
 
 /* Find Tab by wv — safe across realloc because wv pointer is stable. */
@@ -20,6 +23,58 @@ static Tab *find_tab(TabCBData *d)
         if (d->ta->items[i].wv == d->wv)
             return &d->ta->items[i];
     return NULL;
+}
+
+static void on_notify_uri(GObject *obj, GParamSpec *p, gpointer ud)
+{
+    (void)p;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (!t) return;
+    g_free(t->uri);
+    t->uri = g_strdup(webkit_web_view_get_uri(WEBKIT_WEB_VIEW(obj)));
+    d->on_change(d->cb_data);
+}
+
+static WebKitWebView *on_create(WebKitWebView *wv, WebKitNavigationAction *action,
+    gpointer ud)
+{
+    (void)wv; (void)action;
+    TabCBData *d = ud;
+    Tab *t = tabarray_new(d->ta, d->display, d->toplevel,
+        d->on_change, d->on_close, d->cb_data);
+    d->on_change(d->cb_data);
+    return t->wv;
+}
+
+static void on_webview_close(WebKitWebView *wv, gpointer ud)
+{
+    (void)wv;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (!t || !d->on_close) return;
+    d->on_close((int)(t - d->ta->items), d->cb_data);
+}
+
+static void on_mouse_target_changed(WebKitWebView *wv, WebKitHitTestResult *hit,
+    guint mods, gpointer ud)
+{
+    (void)wv; (void)mods;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (!t) return;
+    g_free(t->hover_uri);
+    t->hover_uri = webkit_hit_test_result_context_is_link(hit)
+        ? g_strdup(webkit_hit_test_result_get_link_uri(hit)) : NULL;
+    d->on_change(d->cb_data);
+}
+
+static void on_web_process_terminated(WebKitWebView *wv,
+    WebKitWebProcessTerminationReason reason, gpointer ud)
+{
+    (void)ud;
+    fprintf(stderr, "surf: web process terminated (%d), reloading\n", (int)reason);
+    webkit_web_view_reload(wv);
 }
 
 static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent ev, gpointer ud)
@@ -79,7 +134,7 @@ void tabarray_init(TabArray *ta)
 }
 
 Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
-    TabChangedFn on_change, void *cb_data)
+    TabChangedFn on_change, TabCloseFn on_close, void *cb_data)
 {
     ta->count++;
     ta->items = realloc(ta->items, ta->count * sizeof(Tab));
@@ -101,9 +156,14 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     TabCBData *cbd = g_new(TabCBData, 1);
     cbd->ta        = ta;
     cbd->wv        = t->wv;
+    cbd->display   = display;
+    cbd->toplevel  = toplevel;
     cbd->on_change = on_change;
+    cbd->on_close  = on_close;
     cbd->cb_data   = cb_data;
 
+    g_signal_connect(t->wv, "notify::uri",
+        G_CALLBACK(on_notify_uri), cbd);
     g_signal_connect(t->wv, "load-changed",
         G_CALLBACK(on_load_changed), cbd);
     g_signal_connect(t->wv, "notify::estimated-load-progress",
@@ -112,6 +172,14 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         G_CALLBACK(on_notify_title), cbd);
     g_signal_connect(t->wv, "insecure-content-detected",
         G_CALLBACK(on_insecure_content), cbd);
+    g_signal_connect(t->wv, "create",
+        G_CALLBACK(on_create), cbd);
+    g_signal_connect(t->wv, "close",
+        G_CALLBACK(on_webview_close), cbd);
+    g_signal_connect(t->wv, "mouse-target-changed",
+        G_CALLBACK(on_mouse_target_changed), cbd);
+    g_signal_connect(t->wv, "web-process-terminated",
+        G_CALLBACK(on_web_process_terminated), cbd);
 
     /* Unmap previous active */
     if (ta->active >= 0)
@@ -134,6 +202,7 @@ void tabarray_close(TabArray *ta, int idx,
     g_object_unref(t->wv);
     g_free(t->title);
     g_free(t->uri);
+    g_free(t->hover_uri);
 
     /* Shift array */
     memmove(&ta->items[idx], &ta->items[idx + 1],
@@ -168,6 +237,7 @@ void tabarray_free(TabArray *ta)
         g_object_unref(ta->items[i].wv);
         g_free(ta->items[i].title);
         g_free(ta->items[i].uri);
+        g_free(ta->items[i].hover_uri);
     }
     free(ta->items);
     ta->items = NULL;
