@@ -84,6 +84,12 @@ static void on_view_resized(WPEView *view, gpointer data)
     app_layout_chrome(wpe_view_get_width(view), wpe_view_get_height(view));
 }
 
+static void on_view_closed(WPEView *view, gpointer data)
+{
+    (void)view; (void)data;
+    g_main_loop_quit(g_app.loop);
+}
+
 static void tab_changed_cb(void *d)
 {
     (void)d;
@@ -114,8 +120,8 @@ int main(int argc, char *argv[])
 
     g_signal_connect(first->view, "resized",
         G_CALLBACK(on_view_resized), NULL);
-    g_signal_connect(g_app.toplevel, "closed",
-        G_CALLBACK(g_main_loop_quit), g_app.loop);
+    g_signal_connect(first->view, "closed",
+        G_CALLBACK(on_view_closed), NULL);
 
     input_init(&in, first->view, NULL, NULL);
 
