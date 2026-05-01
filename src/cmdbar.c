@@ -12,6 +12,7 @@ void cmdbar_open(CmdBar *cb, CmdBarMode mode, const char *prefill)
     case CMDBAR_URL:        cb->prompt = " Go: ";   break;
     case CMDBAR_URL_NEWTAB: cb->prompt = " New: ";  break;
     case CMDBAR_SEARCH:     cb->prompt = " Find: "; break;
+    case CMDBAR_DOWNLOAD:   cb->prompt = " Save to: "; break;
     default:                cb->prompt = " : ";     break;
     }
 

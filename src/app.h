@@ -4,6 +4,7 @@
 #include "chrome.h"
 #include "cmdbar.h"
 #include "tabs.h"
+#include "download.h"
 #include <glib.h>
 
 typedef struct {
@@ -13,10 +14,13 @@ typedef struct {
     TabArray           tabs;
     ChromePanel       *tabbar;
     ChromePanel       *statusbar;
+    ChromePanel       *dlbar;        /* below tabbar; created on demand */
     CmdBar             cmdbar;
     TabCloseFn         tab_close_fn;
     GMainLoop         *loop;
     int                fullscreen;
+    DownloadList       dls;
+    char              *dl_pending_uri;  /* URI awaiting path confirmation */
 } AppState;
 
 extern AppState g_app;

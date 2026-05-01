@@ -20,6 +20,14 @@ static const char *certdir     = "~/.surf/certificates/";
 static const char *cachedir    = "~/.surf/cache/";
 static const char *cookiefile  = "~/.surf/cookies.sqlite";
 
+/* External file picker. Replace "{}" with the path the picker writes
+ * selected file paths to (one per line). Empty first element disables. */
+static const char *filepicker_cmd[] = {
+    "foot", "-e", "sh", "-c",
+    "nnn -p '{}'",
+    NULL
+};
+
 /* key bindings
  * mod          key               function          arg
  */
@@ -73,6 +81,9 @@ static Key keys[] = {
     { 0,           WPE_KEY_e,        act_open_bar,     {.i=1}   },
     { SHIFT,       WPE_KEY_O,        act_open_bar,     {.i=2}   },
     { 0,           WPE_KEY_slash,    act_open_search,  {0}      },
+
+    /* downloads */
+    { MODKEY|SHIFT,WPE_KEY_D,        act_dl_clear,     {0}      },
 
     /* quit */
     { MODKEY,      WPE_KEY_q,        act_quit,         {0}      },

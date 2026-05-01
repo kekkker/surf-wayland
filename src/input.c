@@ -4,6 +4,7 @@
 #include "tabs.h"
 #include "cmdbar.h"
 #include "hints.h"
+#include "download.h"
 
 #include <wpe/webkit.h>
 #include <string.h>
@@ -188,6 +189,10 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
             /* Escape */
             if (t->mode == MODE_SEARCH && t->finder)
                 webkit_find_controller_search_finish(t->finder);
+            if (g_app.dl_pending_uri) {
+                g_free(g_app.dl_pending_uri);
+                g_app.dl_pending_uri = NULL;
+            }
             t->mode = MODE_NORMAL;
             cmdbar_close(&g_app.cmdbar);
         } else {
@@ -207,6 +212,13 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
                 Tab *nt = app_active_tab();
                 if (nt) webkit_web_view_load_uri(nt->wv, uri);
                 g_free(uri);
+            } else if (cbmode == CMDBAR_DOWNLOAD) {
+                if (g_app.dl_pending_uri && *text) {
+                    downloads_start_with_path(t->wv,
+                        g_app.dl_pending_uri, text);
+                }
+                g_free(g_app.dl_pending_uri);
+                g_app.dl_pending_uri = NULL;
             }
             /* SEARCH: already live — keep active */
             g_free(text);

@@ -21,6 +21,12 @@ static const char *cookiefile  = "~/.surf/cookies.sqlite";
 
 static const char *searchengine = "https://searx.syscat.org/?q=%s";
 
+static const char *filepicker_cmd[] = {
+    "foot", "-e", "sh", "-c",
+    "nnn -p '{}'",
+    NULL
+};
+
 /* key bindings
  * mod          key               function          arg
  */
@@ -90,6 +96,9 @@ static Key keys[] = {
 
     /* hints */
     { 0,           WPE_KEY_f,        act_hint_start,   {0}      },
+
+    /* downloads */
+    { MODKEY|SHIFT,WPE_KEY_D,        act_dl_clear,     {0}      },
 
     /* quit */
     { MODKEY,      WPE_KEY_q,        act_quit,         {0}      },

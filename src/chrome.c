@@ -21,6 +21,8 @@
 #define COL_STAT_BG      0x000000
 #define COL_STAT_FG      0xffffff
 #define COL_PROG_BAR     0x3a6a9a
+#define COL_DL_BG        0x202028
+#define COL_DL_FG        0xcfcfcf
 
 #define FONT_CHROME "Terminus (TTF) 10"
 
@@ -211,6 +213,33 @@ void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
     set_rgb_hex(cr, COL_STAT_FG);
     cairo_move_to(cr, 8, (p->height - th) / 2);
     pango_cairo_show_layout(cr, layout);
+
+    g_object_unref(layout);
+    cairo_destroy(cr);
+}
+
+void chrome_paint_dlbar(ChromePanel *p, char **lines, int nlines)
+{
+    cairo_t *cr = cairo_create(p->csurf);
+    set_rgb_hex(cr, COL_DL_BG);
+    cairo_paint(cr);
+
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string(FONT_CHROME);
+    pango_layout_set_font_description(layout, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+    pango_layout_set_width(layout, (p->width - 16) * PANGO_SCALE);
+
+    set_rgb_hex(cr, COL_DL_FG);
+    for (int i = 0; i < nlines; i++) {
+        pango_layout_set_text(layout, lines[i], -1);
+        int tw, th;
+        pango_layout_get_pixel_size(layout, &tw, &th);
+        int y = i * CHROME_DLROW_H + (CHROME_DLROW_H - th) / 2;
+        cairo_move_to(cr, 8, y);
+        pango_cairo_show_layout(cr, layout);
+    }
 
     g_object_unref(layout);
     cairo_destroy(cr);

@@ -202,3 +202,19 @@ void act_pin_tab(const Arg *a)
     t->pinned = !t->pinned;
     app_repaint_chrome();
 }
+
+void act_dl_clear(const Arg *a)
+{
+    (void)a;
+    downloads_clear(&g_app.dls);
+    if (g_app.dlbar) {
+        chrome_panel_destroy(g_app.dlbar);
+        g_app.dlbar = NULL;
+    }
+    /* Trigger a re-layout so chrome reclaims the space */
+    Tab *t = app_active_tab();
+    if (t && t->view)
+        app_layout_chrome(wpe_view_get_width(t->view),
+            wpe_view_get_height(t->view));
+    app_repaint_chrome();
+}

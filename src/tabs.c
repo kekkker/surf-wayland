@@ -1,4 +1,5 @@
 #include "tabs.h"
+#include "filepicker.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -243,6 +244,8 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         G_CALLBACK(on_web_process_terminated), cbd);
     g_signal_connect(t->wv, "user-message-received",
         G_CALLBACK(on_user_message), cbd);
+
+    filepicker_install(t->wv);
 
     /* Unmap previous active */
     if (ta->active >= 0)

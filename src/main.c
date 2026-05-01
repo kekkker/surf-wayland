@@ -5,26 +5,48 @@
 #include "tabs.h"
 #include "chrome.h"
 #include "wayland.h"
+#include "download.h"
 
 #include <wpe/webkit.h>
 #include <wpe/wayland/wpe-wayland.h>
 #include <glib.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <linux/input-event-codes.h>
 
 /* ── global app state ────────────────────────────────────────────────────── */
 
 AppState g_app;
 
+/* download.c reads this directly when committing destination */
+char *g_dl_pending_path;
+
 static InputState in;
 
 /* ── chrome ──────────────────────────────────────────────────────────────── */
+
+static void repaint_dlbar(void)
+{
+    if (!g_app.dlbar || g_app.dls.count == 0) return;
+    int n = g_app.dls.count;
+    if (n > CHROME_DLBAR_MAX_ROWS) n = CHROME_DLBAR_MAX_ROWS;
+    char **lines = g_new(char *, n);
+    /* show newest at top */
+    for (int i = 0; i < n; i++)
+        lines[i] = download_format_line(
+            &g_app.dls.items[g_app.dls.count - 1 - i]);
+    chrome_paint_dlbar(g_app.dlbar, lines, n);
+    chrome_panel_commit(g_app.dlbar);
+    for (int i = 0; i < n; i++) g_free(lines[i]);
+    g_free(lines);
+}
 
 void app_repaint_chrome(void)
 {
     if (!g_app.tabbar || !g_app.statusbar || g_app.tabs.count == 0)
         return;
+    repaint_dlbar();
 
     ChromeTab *ctabs = g_new0(ChromeTab, g_app.tabs.count);
     for (int i = 0; i < g_app.tabs.count; i++) {
@@ -69,6 +91,23 @@ void app_layout_chrome(int win_w, int win_h)
         chrome_panel_set_position(g_app.tabbar, 0, 0);
     }
 
+    /* dlbar — created on demand when downloads exist; sized to row count */
+    if (g_app.dls.count > 0) {
+        int rows = g_app.dls.count;
+        if (rows > CHROME_DLBAR_MAX_ROWS) rows = CHROME_DLBAR_MAX_ROWS;
+        int dlh = rows * CHROME_DLROW_H;
+        if (!g_app.dlbar) {
+            g_app.dlbar = chrome_panel_create(&g_app.wl, parent,
+                0, CHROME_TABBAR_H, win_w, dlh);
+        } else {
+            chrome_panel_resize(g_app.dlbar, &g_app.wl, win_w, dlh);
+            chrome_panel_set_position(g_app.dlbar, 0, CHROME_TABBAR_H);
+        }
+    } else if (g_app.dlbar) {
+        chrome_panel_destroy(g_app.dlbar);
+        g_app.dlbar = NULL;
+    }
+
     int sbar_y = win_h - CHROME_STATUSBAR_H;
     if (!g_app.statusbar) {
         g_app.statusbar = chrome_panel_create(&g_app.wl, parent,
@@ -96,6 +135,40 @@ static void on_view_closed(WPEView *view, gpointer data)
 static void tab_changed_cb(void *d)
 {
     (void)d;
+    app_repaint_chrome();
+}
+
+/* ── downloads ───────────────────────────────────────────────────────────── */
+
+static void dl_changed_cb(void *d)
+{
+    (void)d;
+    /* Layout may need to (re)create the dlbar panel based on count */
+    if (g_app.toplevel && WPE_IS_TOPLEVEL_WAYLAND(g_app.toplevel)) {
+        WPEView *v = NULL;
+        Tab *t = app_active_tab();
+        if (t) v = t->view;
+        if (v)
+            app_layout_chrome(wpe_view_get_width(v), wpe_view_get_height(v));
+    }
+    app_repaint_chrome();
+}
+
+static void dl_need_path_cb(const char *uri, const char *suggested, void *d)
+{
+    (void)d;
+    Tab *t = app_active_tab();
+    if (!t) return;
+    g_free(g_app.dl_pending_uri);
+    g_app.dl_pending_uri = g_strdup(uri);
+
+    const char *home = g_get_home_dir();
+    const char *dldir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
+    if (!dldir) dldir = home;
+    char *defpath = g_build_filename(dldir, suggested, NULL);
+    cmdbar_open(&g_app.cmdbar, CMDBAR_DOWNLOAD, defpath);
+    g_free(defpath);
+    t->mode = MODE_COMMAND;
     app_repaint_chrome();
 }
 
@@ -195,6 +268,7 @@ int main(int argc, char *argv[])
         wpe_toplevel_resize(g_app.toplevel, winsize[0], winsize[1]);
 
     tabarray_init(&g_app.tabs);
+    downloads_init(&g_app.dls);
     g_app.tab_close_fn = tab_close_cb;
 
     Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), g_app.toplevel,
@@ -204,6 +278,12 @@ int main(int argc, char *argv[])
         G_CALLBACK(on_view_resized), NULL);
     g_signal_connect(first->view, "closed",
         G_CALLBACK(on_view_closed), NULL);
+
+    /* Wire downloads on this view's NetworkSession (default for now). */
+    WebKitNetworkSession *ns = webkit_web_view_get_network_session(first->wv);
+    if (ns)
+        downloads_attach_session(&g_app.dls, ns,
+            dl_changed_cb, dl_need_path_cb, NULL);
 
     if (g_app.wl.pointer)
         wl_pointer_add_listener(g_app.wl.pointer, &pointer_listener, NULL);
@@ -218,8 +298,11 @@ int main(int argc, char *argv[])
     /* Destroy our Wayland objects before WPE closes the connection */
     if (g_app.tabbar)    chrome_panel_destroy(g_app.tabbar);
     if (g_app.statusbar) chrome_panel_destroy(g_app.statusbar);
+    if (g_app.dlbar)     chrome_panel_destroy(g_app.dlbar);
     wayland_finish(&g_app.wl);
 
+    downloads_free(&g_app.dls);
+    g_free(g_app.dl_pending_uri);
     tabarray_free(&g_app.tabs);
     g_object_unref(g_app.display);
     g_main_loop_unref(g_app.loop);

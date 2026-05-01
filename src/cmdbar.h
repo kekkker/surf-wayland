@@ -10,6 +10,7 @@ typedef enum {
     CMDBAR_URL,       /* o / e — navigate to URL */
     CMDBAR_URL_NEWTAB,/* O — URL in new tab */
     CMDBAR_SEARCH,    /* / — in-page find */
+    CMDBAR_DOWNLOAD,  /* download path prompt */
 } CmdBarMode;
 
 typedef struct {

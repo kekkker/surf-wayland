@@ -48,3 +48,6 @@ void act_hint_start(const Arg *a);
 
 /* Tab misc */
 void act_pin_tab(const Arg *a);
+
+/* Downloads */
+void act_dl_clear(const Arg *a);
