@@ -49,8 +49,10 @@ static void backspace_at(CmdBar *cb)
 gboolean cmdbar_keypress(CmdBar *cb, guint keyval, WPEModifiers mods)
 {
     gboolean ctrl = !!(mods & WPE_MODIFIER_KEYBOARD_CONTROL);
+    gboolean alt = !!(mods & WPE_MODIFIER_KEYBOARD_ALT);
+    gboolean meta = !!(mods & WPE_MODIFIER_KEYBOARD_META);
 
-    if (ctrl) {
+    if (ctrl && !alt && !meta) {
         switch (keyval) {
         case WPE_KEY_a:
             cb->cursor = 0;
@@ -143,9 +145,12 @@ gboolean cmdbar_keypress(CmdBar *cb, guint keyval, WPEModifiers mods)
         return TRUE;
 
     default:
-        if (keyval >= 0x20 && keyval != 0x7f && keyval < 0x110000) {
+        if (keyval >= 0xff00 && keyval <= 0xffff)
+            return TRUE;
+        gunichar ch = (gunichar)wpe_keyval_to_unicode(keyval);
+        if (ch >= 0x20 && ch != 0x7f) {
             char utf8[7];
-            int n = (int)g_unichar_to_utf8((gunichar)keyval, utf8);
+            int n = (int)g_unichar_to_utf8(ch, utf8);
             if (n > 0 && cb->len + n < CMDBAR_MAXLEN - 1) {
                 memmove(cb->buf + cb->cursor + n, cb->buf + cb->cursor,
                     cb->len - cb->cursor + 1);

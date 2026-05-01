@@ -160,6 +160,39 @@ static char *uri_or_search(const char *input)
     return uri;
 }
 
+static gboolean cmdbar_history_key(Tab *t, guint keyval, WPEModifiers mods)
+{
+    gboolean ctrl = !!(mods & WPE_MODIFIER_KEYBOARD_CONTROL);
+    gboolean shift = !!(mods & WPE_MODIFIER_KEYBOARD_SHIFT);
+
+    if (t->mode != MODE_COMMAND)
+        return FALSE;
+    if (g_app.cmdbar.mode != CMDBAR_URL &&
+        g_app.cmdbar.mode != CMDBAR_URL_NEWTAB)
+        return FALSE;
+
+    switch (keyval) {
+    case WPE_KEY_Tab:
+        return app_cmdbar_select_history(shift ? -1 : +1);
+    case WPE_KEY_ISO_Left_Tab:
+    case WPE_KEY_Up:
+        return app_cmdbar_select_history(-1);
+    case WPE_KEY_Down:
+        return app_cmdbar_select_history(+1);
+    case WPE_KEY_n:
+        if (ctrl)
+            return app_cmdbar_select_history(+1);
+        break;
+    case WPE_KEY_p:
+        if (ctrl)
+            return app_cmdbar_select_history(-1);
+        break;
+    default:
+        break;
+    }
+    return FALSE;
+}
+
 static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
 {
     (void)view; (void)data;
@@ -190,8 +223,14 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
 
     /* COMMAND / SEARCH mode: feed to cmdbar */
     if (t->mode == MODE_COMMAND || t->mode == MODE_SEARCH) {
+        if (cmdbar_history_key(t, keyval, mods)) {
+            app_repaint_chrome();
+            return TRUE;
+        }
         gboolean consumed = cmdbar_keypress(&g_app.cmdbar, keyval, mods);
         if (consumed) {
+            if (t->mode == MODE_COMMAND)
+                app_cmdbar_refresh_history();
             if (t->mode == MODE_SEARCH && t->finder) {
                 const char *text = cmdbar_text(&g_app.cmdbar);
                 if (*text) {
@@ -260,12 +299,14 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
                 g_free(g_app.dl_pending_uri);
                 g_app.dl_pending_uri = NULL;
             }
+            app_cmdbar_clear_history();
             t->mode = MODE_NORMAL;
             cmdbar_close(&g_app.cmdbar);
         } else {
             /* Enter — activate */
             CmdBarMode cbmode = g_app.cmdbar.mode;
             char *text = g_strdup(cmdbar_text(&g_app.cmdbar));
+            app_cmdbar_clear_history();
             cmdbar_close(&g_app.cmdbar);
             t->mode = MODE_NORMAL;
             if (cbmode == CMDBAR_URL) {

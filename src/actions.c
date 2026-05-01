@@ -15,6 +15,20 @@
 
 static void tab_changed_cb(void *d) { (void)d; app_repaint_chrome(); }
 
+static char *expand_home_path(const char *path)
+{
+    if (!path || !*path)
+        return NULL;
+    if (path[0] == '~')
+        return g_strconcat(g_get_home_dir(), path + 1, NULL);
+    return g_strdup(path);
+}
+
+static void relayout_active_view(void)
+{
+    app_relayout_active();
+}
+
 /* ── navigation ──────────────────────────────────────────────────────────── */
 
 void act_navigate(const Arg *a)
@@ -221,6 +235,8 @@ void act_normal_mode(const Arg *a)
         if (t->mode == MODE_SEARCH && t->finder)
             webkit_find_controller_search_finish(t->finder);
         if (t->mode == MODE_COMMAND || t->mode == MODE_SEARCH)
+            app_cmdbar_clear_history();
+        if (t->mode == MODE_COMMAND || t->mode == MODE_SEARCH)
             cmdbar_close(&g_app.cmdbar);
         t->mode = MODE_NORMAL;
         wpe_view_focus_in(t->view);
@@ -237,6 +253,8 @@ void act_open_bar(const Arg *a)
     const char *prefill = (a->i == 1) ? t->uri : NULL;
     cmdbar_open(&g_app.cmdbar, mode, prefill);
     t->mode = MODE_COMMAND;
+    app_cmdbar_refresh_history();
+    relayout_active_view();
     app_repaint_chrome();
 }
 
@@ -245,8 +263,10 @@ void act_open_search(const Arg *a)
     (void)a;
     Tab *t = app_active_tab();
     if (!t) return;
+    app_cmdbar_clear_history();
     cmdbar_open(&g_app.cmdbar, CMDBAR_SEARCH, NULL);
     t->mode = MODE_SEARCH;
+    relayout_active_view();
     app_repaint_chrome();
 }
 
@@ -352,9 +372,19 @@ void settings_apply(struct Tab *t)
     /* Cookie accept policy */
     if (ns) {
         WebKitCookieManager *cm = webkit_network_session_get_cookie_manager(ns);
-        if (cm)
+        if (cm) {
+            char *path = expand_home_path(cookiefile);
+            if (path) {
+                char *dir = g_path_get_dirname(path);
+                g_mkdir_with_parents(dir, 0700);
+                g_free(dir);
+                webkit_cookie_manager_set_persistent_storage(cm, path,
+                    WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+                g_free(path);
+            }
             webkit_cookie_manager_set_accept_policy(cm,
                 (WebKitCookieAcceptPolicy)g_app.cookie_policy);
+        }
     }
 
     /* User stylesheets — replace the lot every apply */

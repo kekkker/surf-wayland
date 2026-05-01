@@ -8,6 +8,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <wpe/wayland/wpe-wayland.h>
+#include <wayland-client.h>
 
 /* ── per-tab signal data ─────────────────────────────────────────────────── */
 
@@ -397,12 +399,17 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     input_connect_view(t->view);
 
     /* Unmap previous active */
-    if (ta->active >= 0)
+    if (ta->active >= 0) {
         wpe_view_unmap(ta->items[ta->active].view);
+        wpe_view_set_visible(ta->items[ta->active].view, FALSE);
+        wpe_view_focus_out(ta->items[ta->active].view);
+    }
 
     ta->active = idx;
     wpe_view_map(t->view);
+    wpe_view_set_visible(t->view, TRUE);
     wpe_view_focus_in(t->view);
+    app_raise_chrome();
 
     return t;
 }
@@ -433,6 +440,7 @@ void tabarray_close(TabArray *ta, int idx,
 
     int new_active = idx < ta->count ? idx : ta->count - 1;
     ta->active = new_active;
+    wpe_view_set_visible(ta->items[new_active].view, TRUE);
     wpe_view_map(ta->items[new_active].view);
     wpe_view_focus_in(ta->items[new_active].view);
     app_relayout_active();
@@ -444,10 +452,22 @@ void tabarray_switch(TabArray *ta, int idx)
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
     wpe_view_unmap(ta->items[ta->active].view);
+    wpe_view_set_visible(ta->items[ta->active].view, FALSE);
+    wpe_view_focus_out(ta->items[ta->active].view);
     ta->active = idx;
     wpe_view_map(ta->items[idx].view);
+    wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);
+    app_raise_chrome();
     app_relayout_active();
+
+    /* Commit toplevel to finalize view subsurface state. */
+    if (g_app.toplevel && WPE_IS_TOPLEVEL_WAYLAND(g_app.toplevel)) {
+        struct wl_surface *top = wpe_toplevel_wayland_get_wl_surface(
+            WPE_TOPLEVEL_WAYLAND(g_app.toplevel));
+        if (top)
+            wl_surface_commit(top);
+    }
 }
 
 void tabarray_free(TabArray *ta)

@@ -18,6 +18,9 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/syscall.h>
+#include <linux/memfd.h>
 #include <limits.h>
 #include <linux/input-event-codes.h>
 
@@ -216,6 +219,16 @@ void app_repaint_chrome(void)
     chrome_panel_commit(g_app.statusbar);
 }
 
+void app_raise_chrome(void)
+{
+    if (!g_app.chrome_bg_sub || !g_app.toplevel)
+        return;
+    struct wl_surface *top = wpe_toplevel_wayland_get_wl_surface(
+        WPE_TOPLEVEL_WAYLAND(g_app.toplevel));
+    wl_subsurface_place_above(g_app.chrome_bg_sub, top);
+    wl_surface_commit(g_app.chrome_bg);
+}
+
 void app_layout_chrome(int win_w, int win_h)
 {
     if (!g_app.toplevel || !WPE_IS_TOPLEVEL_WAYLAND(g_app.toplevel))
@@ -231,8 +244,41 @@ void app_layout_chrome(int win_w, int win_h)
     g_app.window_w = win_w;
     g_app.window_h = win_h;
 
-    struct wl_surface *parent =
+    struct wl_surface *top =
         wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(g_app.toplevel));
+
+    /* Create intermediate chrome container surface on first call.
+     * All chrome panels are subsurfaces of chrome_bg, so we commit
+     * chrome_bg (not the toplevel) to apply positions — avoids
+     * corrupting WPE's synchronized view subsurface state. */
+    if (!g_app.chrome_bg) {
+        g_app.chrome_bg = wl_compositor_create_surface(g_app.wl.compositor);
+        g_app.chrome_bg_sub = wl_subcompositor_get_subsurface(
+            g_app.wl.subcompositor, g_app.chrome_bg, top);
+        wl_subsurface_set_desync(g_app.chrome_bg_sub);
+        wl_subsurface_set_position(g_app.chrome_bg_sub, 0, 0);
+
+        /* Attach a 1×1 transparent ARGB buffer so the compositor
+         * accepts commits on this surface. */
+        int fd = (int)syscall(SYS_memfd_create, "chrome-bg", MFD_CLOEXEC);
+        if (ftruncate(fd, 4) < 0) { close(fd); return; }
+        void *px = mmap(NULL, 4, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        memset(px, 0, 4); /* fully transparent */
+        struct wl_shm_pool *pool = wl_shm_create_pool(g_app.wl.shm, fd, 4);
+        struct wl_buffer *buf = wl_shm_pool_create_buffer(pool, 0,
+            1, 1, 4, WL_SHM_FORMAT_ARGB8888);
+        wl_surface_attach(g_app.chrome_bg, buf, 0, 0);
+        wl_surface_commit(g_app.chrome_bg);
+        munmap(px, 4);
+        wl_buffer_destroy(buf);
+        wl_shm_pool_destroy(pool);
+        close(fd);
+    }
+
+    /* Re-raise chrome_bg above any WPE view subsurfaces */
+    wl_subsurface_place_above(g_app.chrome_bg_sub, top);
+
+    struct wl_surface *parent = g_app.chrome_bg;
 
     if (!g_app.tabbar) {
         g_app.tabbar = chrome_panel_create(&g_app.wl, parent,
@@ -295,9 +341,9 @@ void app_layout_chrome(int win_w, int win_h)
     }
 
     app_repaint_chrome();
-    /* Subsurface positions are pending parent state; commit parent so they
-     * take effect even when WebKit has nothing new to render (about:blank). */
-    wl_surface_commit(parent);
+    /* Commit our chrome container — NOT the toplevel — to apply
+     * subsurface positions without interfering with WPE view management. */
+    wl_surface_commit(g_app.chrome_bg);
 }
 
 static void on_view_resized(WPEView *view, gpointer data)
@@ -558,6 +604,8 @@ int main(int argc, char *argv[])
     g_main_loop_run(g_app.loop);
 
     /* Destroy our Wayland objects before WPE closes the connection */
+    if (g_app.chrome_bg_sub) wl_subsurface_destroy(g_app.chrome_bg_sub);
+    if (g_app.chrome_bg)    wl_surface_destroy(g_app.chrome_bg);
     if (g_app.tabbar)    chrome_panel_destroy(g_app.tabbar);
     if (g_app.historybar) chrome_panel_destroy(g_app.historybar);
     if (g_app.statusbar) chrome_panel_destroy(g_app.statusbar);
