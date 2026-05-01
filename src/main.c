@@ -13,6 +13,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <signal.h>
+#include <time.h>
+#include <execinfo.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <limits.h>
 #include <linux/input-event-codes.h>
 
 /* ── global app state ────────────────────────────────────────────────────── */
@@ -23,6 +29,117 @@ AppState g_app;
 char *g_dl_pending_path;
 
 static InputState in;
+
+static char *expand_home_path(const char *path)
+{
+    if (!path || !*path)
+        return NULL;
+    if (path[0] == '~')
+        return g_strconcat(g_get_home_dir(), path + 1, NULL);
+    return g_strdup(path);
+}
+
+static int cmdbar_panel_height(void)
+{
+    if (g_app.cmdbar.mode == CMDBAR_INACTIVE)
+        return CHROME_STATUSBAR_H;
+    return CHROME_CMDROW_H;
+}
+
+static void app_get_layout_size(int *w, int *h)
+{
+    Tab *t = app_active_tab();
+    int ww = g_app.window_w > 0 ? g_app.window_w : winsize[0];
+    int wh = g_app.window_h > 0 ? g_app.window_h : winsize[1];
+
+    if (t && t->view) {
+        int vw = wpe_view_get_width(t->view);
+        int vh = wpe_view_get_height(t->view);
+        if (vw > 100)
+            ww = vw;
+        if (vh > (CHROME_TABBAR_H + CHROME_STATUSBAR_H + 100))
+            wh = vh;
+    }
+    if (g_app.tabbar && g_app.tabbar->width > 0)
+        ww = g_app.tabbar->width;
+
+    *w = ww;
+    *h = wh;
+}
+
+void app_relayout_active(void)
+{
+    int w, h;
+
+    app_get_layout_size(&w, &h);
+    app_layout_chrome(w, h);
+}
+
+static void cmdbar_set_text(const char *text)
+{
+    int n;
+
+    if (!text)
+        text = "";
+    n = (int)strlen(text);
+    if (n >= CMDBAR_MAXLEN)
+        n = CMDBAR_MAXLEN - 1;
+    memcpy(g_app.cmdbar.buf, text, n);
+    g_app.cmdbar.buf[n] = '\0';
+    g_app.cmdbar.len = n;
+    g_app.cmdbar.cursor = n;
+}
+
+void app_cmdbar_clear_history(void)
+{
+    int old_count = g_app.history_match_count;
+
+    g_app.history_match_count = 0;
+    g_app.history_match_selected = -1;
+
+    if (old_count > 0)
+        app_relayout_active();
+}
+
+void app_cmdbar_refresh_history(void)
+{
+    Tab *t = app_active_tab();
+    int old_count = g_app.history_match_count;
+    const char *text = cmdbar_text(&g_app.cmdbar);
+
+    if (!t || t->mode != MODE_COMMAND ||
+        (g_app.cmdbar.mode != CMDBAR_URL &&
+         g_app.cmdbar.mode != CMDBAR_URL_NEWTAB)) {
+        app_cmdbar_clear_history();
+    } else {
+        g_app.history_match_count = history_collect_matches(&g_app.history,
+            text, g_app.history_matches, HISTORY_MAX_MATCHES);
+        g_app.history_match_selected = -1;
+    }
+
+    if (old_count != g_app.history_match_count)
+        app_relayout_active();
+}
+
+gboolean app_cmdbar_select_history(int direction)
+{
+    if (g_app.history_match_count <= 0)
+        return FALSE;
+
+    if (g_app.history_match_selected < 0) {
+        g_app.history_match_selected = direction > 0
+            ? 0 : g_app.history_match_count - 1;
+    } else {
+        g_app.history_match_selected += direction;
+        if (g_app.history_match_selected < 0)
+            g_app.history_match_selected = g_app.history_match_count - 1;
+        if (g_app.history_match_selected >= g_app.history_match_count)
+            g_app.history_match_selected = 0;
+    }
+
+    cmdbar_set_text(g_app.history_matches[g_app.history_match_selected].uri);
+    return TRUE;
+}
 
 /* ── chrome ──────────────────────────────────────────────────────────────── */
 
@@ -62,7 +179,17 @@ void app_repaint_chrome(void)
 
     Tab *at = app_active_tab();
     if (g_app.cmdbar.mode != CMDBAR_INACTIVE) {
-        chrome_paint_cmdbar(g_app.statusbar, &g_app.cmdbar);
+        chrome_paint_cmdbar(g_app.statusbar, &g_app.cmdbar,
+            g_app.history_matches, g_app.history_match_count,
+            g_app.history_match_selected);
+        if (g_app.historybar && g_app.history_match_count > 0) {
+            int visible_rows = g_app.historybar->height / CHROME_CMDROW_H;
+            if (visible_rows > g_app.history_match_count)
+                visible_rows = g_app.history_match_count;
+            chrome_paint_history(g_app.historybar, g_app.history_matches,
+                visible_rows, g_app.history_match_selected);
+            chrome_panel_commit(g_app.historybar);
+        }
     } else {
         const char *uri = at
             ? (at->hover_uri ? at->hover_uri : (at->uri ? at->uri : ""))
@@ -94,6 +221,11 @@ void app_layout_chrome(int win_w, int win_h)
     if (!g_app.toplevel || !WPE_IS_TOPLEVEL_WAYLAND(g_app.toplevel))
         return;
 
+    if (win_w > 100)
+        g_app.window_w = win_w;
+    if (win_h > (CHROME_TABBAR_H + CHROME_STATUSBAR_H + 100))
+        g_app.window_h = win_h;
+
     struct wl_surface *parent =
         wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(g_app.toplevel));
 
@@ -122,16 +254,45 @@ void app_layout_chrome(int win_w, int win_h)
         g_app.dlbar = NULL;
     }
 
-    int sbar_y = win_h - CHROME_STATUSBAR_H;
+    int sbar_h = cmdbar_panel_height();
+    int sbar_y = win_h - sbar_h;
     if (!g_app.statusbar) {
         g_app.statusbar = chrome_panel_create(&g_app.wl, parent,
-            0, sbar_y, win_w, CHROME_STATUSBAR_H);
+            0, sbar_y, win_w, sbar_h);
     } else {
-        chrome_panel_resize(g_app.statusbar, &g_app.wl, win_w, CHROME_STATUSBAR_H);
+        chrome_panel_resize(g_app.statusbar, &g_app.wl, win_w, sbar_h);
         chrome_panel_set_position(g_app.statusbar, 0, sbar_y);
     }
 
+    if (g_app.cmdbar.mode != CMDBAR_INACTIVE && g_app.history_match_count > 0) {
+        int max_rows = sbar_y / CHROME_CMDROW_H;
+        int visible_rows = g_app.history_match_count;
+        if (max_rows < 1)
+            max_rows = 1;
+        if (visible_rows > max_rows)
+            visible_rows = max_rows;
+        int hh = visible_rows * CHROME_CMDROW_H;
+        int hy = sbar_y - hh;
+        if (hy < 0)
+            hy = 0;
+        if (!g_app.historybar) {
+            g_app.historybar = chrome_panel_create(&g_app.wl, parent,
+                0, hy, win_w, hh);
+        } else {
+            chrome_panel_resize(g_app.historybar, &g_app.wl, win_w, hh);
+            chrome_panel_set_position(g_app.historybar, 0, hy);
+        }
+        wl_subsurface_place_above(g_app.historybar->subsurface,
+            g_app.statusbar->surface);
+    } else if (g_app.historybar) {
+        chrome_panel_destroy(g_app.historybar);
+        g_app.historybar = NULL;
+    }
+
     app_repaint_chrome();
+    /* Subsurface positions are pending parent state; commit parent so they
+     * take effect even when WebKit has nothing new to render (about:blank). */
+    wl_surface_commit(parent);
 }
 
 static void on_view_resized(WPEView *view, gpointer data)
@@ -180,6 +341,7 @@ static void dl_need_path_cb(const char *uri, const char *suggested, void *d)
     const char *dldir = g_get_user_special_dir(G_USER_DIRECTORY_DOWNLOAD);
     if (!dldir) dldir = home;
     char *defpath = g_build_filename(dldir, suggested, NULL);
+    app_cmdbar_clear_history();
     cmdbar_open(&g_app.cmdbar, CMDBAR_DOWNLOAD, defpath);
     g_free(defpath);
     t->mode = MODE_COMMAND;
@@ -267,6 +429,49 @@ static const struct wl_pointer_listener pointer_listener = {
     .axis   = ptr_axis,
 };
 
+/* ── crash handler ───────────────────────────────────────────────────────── */
+
+static void crashhandler(int sig, siginfo_t *info, void *ctx)
+{
+    void *frames[64];
+    int nframes, fd;
+    char path[PATH_MAX];
+    char buf[128];
+    const char *home;
+    time_t t;
+    ssize_t wr __attribute__((unused));
+
+    (void)ctx;
+
+    home = getenv("HOME");
+    if (!home)
+        home = "/tmp";
+    snprintf(path, sizeof(path), "%s/.surf/crash.log", home);
+
+    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0)
+        fd = STDERR_FILENO;
+
+    t = time(NULL);
+    snprintf(buf, sizeof(buf), "surf crash: signal %d at %s", sig, ctime(&t));
+    wr = write(fd, buf, strlen(buf));
+
+    if (info && (sig == SIGSEGV || sig == SIGBUS)) {
+        snprintf(buf, sizeof(buf), "fault addr: %p\n", info->si_addr);
+        wr = write(fd, buf, strlen(buf));
+    }
+
+    wr = write(fd, "backtrace:\n", 11);
+    nframes = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, nframes, fd);
+
+    if (fd != STDERR_FILENO)
+        close(fd);
+
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
@@ -283,6 +488,25 @@ int main(int argc, char *argv[])
     WebKitWebContext *ctx = webkit_web_context_get_default();
     webkit_web_context_set_web_process_extensions_directory(ctx, WEBEXTDIR);
 
+    char *cache_path = expand_home_path(cachedir);
+    char *cookie_path = expand_home_path(cookiefile);
+    if (cache_path) {
+        g_mkdir_with_parents(cache_path, 0700);
+        g_app.network_session = webkit_network_session_new(cache_path, cache_path);
+    }
+    if (!g_app.network_session)
+        g_app.network_session = webkit_network_session_get_default();
+    if (cookie_path && g_app.network_session) {
+        char *dir = g_path_get_dirname(cookie_path);
+        g_mkdir_with_parents(dir, 0700);
+        g_free(dir);
+        webkit_cookie_manager_set_persistent_storage(
+            webkit_network_session_get_cookie_manager(g_app.network_session),
+            cookie_path, WEBKIT_COOKIE_PERSISTENT_STORAGE_SQLITE);
+    }
+    g_free(cache_path);
+    g_free(cookie_path);
+
     /* Pre-create the shared toplevel with unlimited views (max_views=0).
      * WPE auto-creates a per-WebView toplevel with max_views=1, which
      * silently rejects wpe_view_set_toplevel when the target is "full". */
@@ -292,6 +516,7 @@ int main(int argc, char *argv[])
 
     tabarray_init(&g_app.tabs);
     downloads_init(&g_app.dls);
+    history_state_init(&g_app.history);
     settings_init();
     g_app.tab_close_fn = tab_close_cb;
 
@@ -303,8 +528,10 @@ int main(int argc, char *argv[])
     g_signal_connect(first->view, "closed",
         G_CALLBACK(on_view_closed), NULL);
 
-    /* Wire downloads on this view's NetworkSession (default for now). */
-    WebKitNetworkSession *ns = webkit_web_view_get_network_session(first->wv);
+    /* Wire downloads on the shared NetworkSession. */
+    WebKitNetworkSession *ns = g_app.network_session
+        ? g_app.network_session
+        : webkit_web_view_get_network_session(first->wv);
     if (ns)
         downloads_attach_session(&g_app.dls, ns,
             dl_changed_cb, dl_need_path_cb, NULL);
@@ -316,18 +543,29 @@ int main(int argc, char *argv[])
 
     webkit_web_view_load_uri(first->wv, url);
 
+    struct sigaction sa = {0};
+    sa.sa_sigaction = crashhandler;
+    sa.sa_flags     = SA_SIGINFO;
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS,  &sa, NULL);
+
     g_app.loop = g_main_loop_new(NULL, FALSE);
     g_main_loop_run(g_app.loop);
 
     /* Destroy our Wayland objects before WPE closes the connection */
     if (g_app.tabbar)    chrome_panel_destroy(g_app.tabbar);
+    if (g_app.historybar) chrome_panel_destroy(g_app.historybar);
     if (g_app.statusbar) chrome_panel_destroy(g_app.statusbar);
     if (g_app.dlbar)     chrome_panel_destroy(g_app.dlbar);
     wayland_finish(&g_app.wl);
 
     downloads_free(&g_app.dls);
+    history_state_free(&g_app.history);
     g_free(g_app.dl_pending_uri);
     tabarray_free(&g_app.tabs);
+    if (g_app.network_session &&
+        g_app.network_session != webkit_network_session_get_default())
+        g_object_unref(g_app.network_session);
     g_object_unref(g_app.display);
     g_main_loop_unref(g_app.loop);
     return 0;
