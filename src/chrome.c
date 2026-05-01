@@ -23,6 +23,12 @@
 #define COL_PROG_BAR     0x3a6a9a
 #define COL_DL_BG        0x202028
 #define COL_DL_FG        0xcfcfcf
+#define COL_CMD_BG       0x101020
+#define COL_CMD_PROMPT   0x88aaff
+#define COL_HIST_BG      0x1a1a1a
+#define COL_HIST_SEL_BG  0x333333
+#define COL_HIST_URI     0x87afd7
+#define COL_HIST_TITLE   0x666666
 
 #define FONT_CHROME "Terminus (TTF) 10"
 
@@ -145,7 +151,6 @@ void chrome_paint_tabbar(ChromePanel *p, ChromeTab *tabs, int n)
     pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
 
     int tab_w = n > 0 ? p->width / n : p->width;
-    if (tab_w > 200) tab_w = 200;
 
     for (int i = 0; i < n; i++) {
         int x = i * tab_w;
@@ -256,11 +261,26 @@ void chrome_paint_dlbar(ChromePanel *p, char **lines, int nlines)
     cairo_destroy(cr);
 }
 
-void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb)
+static void draw_text_line(cairo_t *cr, PangoLayout *layout, int x, int y,
+    unsigned int color, const char *text, int width)
+{
+    set_rgb_hex(cr, color);
+    pango_layout_set_width(layout, width * PANGO_SCALE);
+    pango_layout_set_text(layout, text ? text : "", -1);
+    cairo_move_to(cr, x, y);
+    pango_cairo_show_layout(cr, layout);
+}
+
+void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb,
+    const HistoryMatch *matches, int count, int selected)
 {
     cairo_t *cr = cairo_create(p->csurf);
+    int input_y = p->height - CHROME_CMDROW_H;
+    (void)matches;
+    (void)count;
+    (void)selected;
 
-    set_rgb_hex(cr, 0x101020);
+    set_rgb_hex(cr, COL_CMD_BG);
     cairo_paint(cr);
 
     const char *prompt = cb->prompt ? cb->prompt : "";
@@ -274,10 +294,10 @@ void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb)
     pango_layout_set_text(layout, prompt, -1);
     int pw, ph;
     pango_layout_get_pixel_size(layout, &pw, &ph);
-    int y0 = (p->height - ph) / 2;
+    int y0 = input_y + (CHROME_CMDROW_H - ph) / 2;
     if (y0 < 0) y0 = 0;
 
-    set_rgb_hex(cr, 0x88aaff);
+    set_rgb_hex(cr, COL_CMD_PROMPT);
     cairo_move_to(cr, 4, y0);
     pango_cairo_show_layout(cr, layout);
 
@@ -295,6 +315,39 @@ void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb)
     set_rgb_hex(cr, 0xffffff);
     cairo_rectangle(cr, cx, y0, 2, ph > 0 ? ph : p->height);
     cairo_fill(cr);
+
+    g_object_unref(layout);
+    cairo_destroy(cr);
+}
+
+void chrome_paint_history(ChromePanel *p, const HistoryMatch *matches,
+    int count, int selected)
+{
+    cairo_t *cr = cairo_create(p->csurf);
+    PangoLayout *layout = pango_cairo_create_layout(cr);
+    PangoFontDescription *fd = pango_font_description_from_string(FONT_CHROME);
+    pango_layout_set_font_description(layout, fd);
+    pango_font_description_free(fd);
+    pango_layout_set_ellipsize(layout, PANGO_ELLIPSIZE_END);
+
+    set_rgb_hex(cr, COL_HIST_BG);
+    cairo_paint(cr);
+
+    for (int i = 0; i < count; i++) {
+        int row_y = i * CHROME_CMDROW_H;
+        set_rgb_hex(cr, i == selected ? COL_HIST_SEL_BG : COL_HIST_BG);
+        cairo_rectangle(cr, 0, row_y, p->width, CHROME_CMDROW_H);
+        cairo_fill(cr);
+
+        int text_y = row_y + 3;
+        int title_x = p->width / 2;
+        draw_text_line(cr, layout, 8, text_y, COL_HIST_URI,
+            matches[i].uri, title_x - 16);
+        if (matches[i].title && *matches[i].title) {
+            draw_text_line(cr, layout, title_x, text_y, COL_HIST_TITLE,
+                matches[i].title, p->width - title_x - 8);
+        }
+    }
 
     g_object_unref(layout);
     cairo_destroy(cr);

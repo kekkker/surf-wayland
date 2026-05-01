@@ -221,10 +221,15 @@ void app_layout_chrome(int win_w, int win_h)
     if (!g_app.toplevel || !WPE_IS_TOPLEVEL_WAYLAND(g_app.toplevel))
         return;
 
-    if (win_w > 100)
-        g_app.window_w = win_w;
-    if (win_h > (CHROME_TABBAR_H + CHROME_STATUSBAR_H + 100))
-        g_app.window_h = win_h;
+    /* Fall back to last known good size for spurious zero/tiny events
+     * (e.g. "resized" emitted with 0 dims when a view is unmapped). */
+    if (win_w <= 100)
+        win_w = g_app.window_w > 0 ? g_app.window_w : winsize[0];
+    if (win_h <= CHROME_TABBAR_H + CHROME_STATUSBAR_H + 100)
+        win_h = g_app.window_h > 0 ? g_app.window_h : winsize[1];
+
+    g_app.window_w = win_w;
+    g_app.window_h = win_h;
 
     struct wl_surface *parent =
         wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(g_app.toplevel));

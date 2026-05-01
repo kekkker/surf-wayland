@@ -1,4 +1,5 @@
 #include "tabs.h"
+#include "app.h"
 #include "filepicker.h"
 #include "actions.h"
 #include "input.h"
@@ -7,50 +8,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <glib/gstdio.h>
-
-/* ── history ──────────────────────────────────────────────────────────────── */
-
-static void history_add(const char *uri, const char *title)
-{
-    if (!uri || !*uri) return;
-    if (g_str_has_prefix(uri, "about:") ||
-        g_str_has_prefix(uri, "data:")  ||
-        g_str_has_prefix(uri, "webkit://"))
-        return;
-
-    const char *home = g_get_home_dir();
-    char *path = g_strconcat(home, "/.surf/history", NULL);
-
-    /* Quick dedup: skip if last line matches this URI */
-    GStatBuf st;
-    if (g_stat(path, &st) == 0 && st.st_size > 0) {
-        char *contents = NULL;
-        if (g_file_get_contents(path, &contents, NULL, NULL)) {
-            char *last_nl = strrchr(contents, '\n');
-            if (last_nl && last_nl != contents) {
-                /* last line is after the last newline */
-                char *last_line = last_nl + 1;
-                if (g_str_has_prefix(last_line, uri))
-                    { g_free(contents); g_free(path); return; }
-            }
-            g_free(contents);
-        }
-    }
-
-    /* Strip newlines from title */
-    char *clean_title = g_strdup(title ? title : "");
-    for (char *p = clean_title; *p; p++)
-        if (*p == '\n' || *p == '\r') *p = ' ';
-
-    FILE *f = fopen(path, "a");
-    if (f) {
-        fprintf(f, "%s %s\n", uri, clean_title);
-        fclose(f);
-    }
-    g_free(clean_title);
-    g_free(path);
-}
 
 /* ── per-tab signal data ─────────────────────────────────────────────────── */
 
@@ -217,7 +174,7 @@ static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent ev, gpointer ud)
     if (t->uri && g_str_has_prefix(t->uri, "https://"))
         t->https = 1;
     if (ev == WEBKIT_LOAD_FINISHED)
-        history_add(t->uri, t->title);
+        history_add_visit(&g_app.history, t->uri, t->title);
     d->on_change(d->cb_data);
 }
 
@@ -376,7 +333,14 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     t->progress = 100;
     t->mode     = MODE_NORMAL;
 
-    t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, NULL);
+    if (g_app.network_session) {
+        t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+            "display", display,
+            "network-session", g_app.network_session,
+            NULL);
+    } else {
+        t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, NULL);
+    }
     t->view = webkit_web_view_get_wpe_view(t->wv);
 
     /* Move view to our shared toplevel (max_views=0, unlimited).
@@ -471,6 +435,7 @@ void tabarray_close(TabArray *ta, int idx,
     ta->active = new_active;
     wpe_view_map(ta->items[new_active].view);
     wpe_view_focus_in(ta->items[new_active].view);
+    app_relayout_active();
     on_change(cb_data);
 }
 
@@ -482,6 +447,7 @@ void tabarray_switch(TabArray *ta, int idx)
     ta->active = idx;
     wpe_view_map(ta->items[idx].view);
     wpe_view_focus_in(ta->items[idx].view);
+    app_relayout_active();
 }
 
 void tabarray_free(TabArray *ta)
