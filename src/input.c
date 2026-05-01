@@ -198,6 +198,9 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
                     webkit_find_controller_search(t->finder, text,
                         WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
                         WEBKIT_FIND_OPTIONS_WRAP_AROUND, G_MAXUINT);
+                    webkit_find_controller_count_matches(t->finder, text,
+                        WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
+                        WEBKIT_FIND_OPTIONS_WRAP_AROUND, G_MAXUINT);
                     /* Inject CSS highlight for all matches */
                     char *esc = g_strescape(text, NULL);
                     char *js = g_strdup_printf(
