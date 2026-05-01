@@ -38,7 +38,7 @@ void chrome_panel_destroy(ChromePanel *p);
 
 void chrome_paint_tabbar(ChromePanel *p, ChromeTab *tabs, int n);
 void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
-    int https, int insecure);
+    int https, int insecure, const char *mode, int find_cur, int find_total);
 void chrome_paint_cmdbar(ChromePanel *p, const CmdBar *cb);
 void chrome_paint_dlbar(ChromePanel *p, char **lines, int nlines);
 void chrome_panel_commit(ChromePanel *p);

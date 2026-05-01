@@ -67,10 +67,24 @@ void app_repaint_chrome(void)
         const char *uri = at
             ? (at->hover_uri ? at->hover_uri : (at->uri ? at->uri : ""))
             : "";
+        const char *modestr = "";
+        if (at) {
+            switch (at->mode) {
+            case MODE_INSERT:  modestr = "INSERT"; break;
+            case MODE_COMMAND: modestr = "COMMAND"; break;
+            case MODE_SEARCH:  modestr = "SEARCH"; break;
+            case MODE_HINT:    modestr = "HINT"; break;
+            case MODE_SELECT:  modestr = "SELECT"; break;
+            default: break;
+            }
+        }
         chrome_paint_statusbar(g_app.statusbar, uri,
             at ? at->progress  : 0,
             at ? at->https     : 0,
-            at ? at->insecure  : 0);
+            at ? at->insecure  : 0,
+            modestr,
+            at ? at->find_current_match : 0,
+            at ? at->find_match_count   : 0);
     }
     chrome_panel_commit(g_app.statusbar);
 }

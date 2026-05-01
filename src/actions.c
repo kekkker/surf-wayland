@@ -90,6 +90,66 @@ void act_find_next(const Arg *a)
     app_repaint_chrome();
 }
 
+static void js_eval_simple(WebKitWebView *wv, const char *js)
+{
+    webkit_web_view_evaluate_javascript(wv, js, -1,
+        NULL, NULL, NULL, NULL, NULL);
+}
+
+void find_select_yank_cb(GObject *obj, GAsyncResult *res, gpointer ud)
+{
+    (void)res; (void)ud;
+    GError *err = NULL;
+    webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(obj), res, &err);
+    if (err) { g_error_free(err); }
+    act_find_select_exit(NULL);
+}
+
+void act_find_select_enter(const Arg *a)
+{
+    (void)a;
+    Tab *t = app_active_tab();
+    if (!t || t->find_match_count <= 0) return;
+    t->mode = MODE_SELECT;
+    char js[256];
+    snprintf(js, sizeof js,
+        "if(window._surfFindSelect)_surfFindSelect(%d);",
+        t->find_current_match - 1);
+    js_eval_simple(t->wv, js);
+    app_repaint_chrome();
+}
+
+void act_find_select_line(const Arg *a)
+{
+    (void)a;
+    Tab *t = app_active_tab();
+    if (!t || t->find_match_count <= 0) return;
+    t->mode = MODE_SELECT;
+    char js[512];
+    snprintf(js, sizeof js,
+        "if(window._surfFindSelect){"
+        "_surfFindSelect(%d);"
+        "var s=window.getSelection();"
+        "s.modify('move','backward','lineboundary');"
+        "s.modify('extend','forward','lineboundary');}",
+        t->find_current_match - 1);
+    js_eval_simple(t->wv, js);
+    app_repaint_chrome();
+}
+
+void act_find_select_exit(const Arg *a)
+{
+    (void)a;
+    Tab *t = app_active_tab();
+    if (!t) return;
+    js_eval_simple(t->wv,
+        "window.getSelection().removeAllRanges();"
+        "if(typeof CSS!=='undefined'&&CSS.highlights)"
+        "CSS.highlights.delete('surf-find-sel');");
+    t->mode = MODE_NORMAL;
+    app_repaint_chrome();
+}
+
 /* ── window / tabs ───────────────────────────────────────────────────────── */
 
 void act_fullscreen(const Arg *a)

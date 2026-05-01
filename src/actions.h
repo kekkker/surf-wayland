@@ -27,6 +27,9 @@ void act_zoom(const Arg *a);         /* a.i: +1/-1/0(reset) */
 
 /* Find */
 void act_find_next(const Arg *a);    /* a.i: +1 next / -1 prev */
+void act_find_select_enter(const Arg *a);
+void act_find_select_line(const Arg *a);
+void act_find_select_exit(const Arg *a);
 
 /* Window / tab */
 void act_fullscreen(const Arg *a);

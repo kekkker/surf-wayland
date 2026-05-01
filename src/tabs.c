@@ -185,6 +185,22 @@ static gboolean on_user_message(WebKitWebView *wv, WebKitUserMessage *msg, gpoin
     return FALSE;
 }
 
+static void on_find_counted(WebKitFindController *f, guint count, gpointer ud)
+{
+    (void)f;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (t) { t->find_match_count = (int)count; d->on_change(d->cb_data); }
+}
+
+static void on_find_found(WebKitFindController *f, guint count, gpointer ud)
+{
+    (void)f;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (t) { t->find_current_match = (int)count; d->on_change(d->cb_data); }
+}
+
 static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent ev, gpointer ud)
 {
     TabCBData *d = ud;
@@ -379,6 +395,11 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     cbd->on_change = on_change;
     cbd->on_close  = on_close;
     cbd->cb_data   = cb_data;
+
+    g_signal_connect(t->finder, "counted-matches",
+        G_CALLBACK(on_find_counted), cbd);
+    g_signal_connect(t->finder, "found-text",
+        G_CALLBACK(on_find_found), cbd);
 
     g_signal_connect(t->wv, "notify::uri",
         G_CALLBACK(on_notify_uri), cbd);

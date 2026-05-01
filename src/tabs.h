@@ -11,6 +11,7 @@ typedef enum {
     MODE_COMMAND,
     MODE_SEARCH,
     MODE_HINT,
+    MODE_SELECT,
 } TabMode;
 
 typedef struct Tab Tab;
@@ -29,8 +30,8 @@ struct Tab {
 
     /* find */
     WebKitFindController *finder;
-    int             find_count;
-    int             find_cur;
+    int             find_match_count;
+    int             find_current_match;
 
     /* hover */
     char           *hover_uri;

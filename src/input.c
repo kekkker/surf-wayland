@@ -194,12 +194,56 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
         if (consumed) {
             if (t->mode == MODE_SEARCH && t->finder) {
                 const char *text = cmdbar_text(&g_app.cmdbar);
-                if (*text)
+                if (*text) {
                     webkit_find_controller_search(t->finder, text,
                         WEBKIT_FIND_OPTIONS_CASE_INSENSITIVE |
                         WEBKIT_FIND_OPTIONS_WRAP_AROUND, G_MAXUINT);
-                else
+                    /* Inject CSS highlight for all matches */
+                    char *esc = g_strescape(text, NULL);
+                    char *js = g_strdup_printf(
+                        "(function(){"
+                        "if(!document.getElementById('_surf_find_css')){"
+                        "var s=document.createElement('style');"
+                        "s.id='_surf_find_css';"
+                        "s.textContent="
+                        "'::highlight(surf-find){background:#ff8c00;color:#000;}'"
+                        "+'::highlight(surf-find-sel){background:#fff700;color:#000;"
+                        "outline:2px solid #ff6600;}';"
+                        "(document.head||document.documentElement).appendChild(s);}"
+                        "if(typeof CSS==='undefined'||!CSS.highlights)return;"
+                        "CSS.highlights.delete('surf-find');"
+                        "CSS.highlights.delete('surf-find-sel');"
+                        "var nd='%s',lo=nd.toLowerCase(),len=nd.length;"
+                        "var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null);"
+                        "var rs=[],n,t,lt,i;"
+                        "while((n=w.nextNode())){"
+                        "t=n.textContent;lt=t.toLowerCase();i=0;"
+                        "while((i=lt.indexOf(lo,i))!==-1){"
+                        "var r=new Range();r.setStart(n,i);r.setEnd(n,i+len);"
+                        "rs.push(r);i+=len;}}"
+                        "window._surfFindRanges=rs;"
+                        "window._surfFindSelect=function(idx){"
+                        "var sel=window.getSelection();sel.removeAllRanges();"
+                        "CSS.highlights.delete('surf-find-sel');"
+                        "if(rs[idx]){"
+                        "sel.addRange(rs[idx]);"
+                        "CSS.highlights.set('surf-find-sel',new Highlight(rs[idx]));}"
+                        "};"
+                        "if(rs.length)CSS.highlights.set('surf-find',new Highlight(...rs));"
+                        "})()", esc);
+                    webkit_web_view_evaluate_javascript(t->wv, js, -1,
+                        NULL, NULL, NULL, NULL, NULL);
+                    g_free(js);
+                    g_free(esc);
+                } else {
                     webkit_find_controller_search_finish(t->finder);
+                    webkit_web_view_evaluate_javascript(t->wv,
+                        "window._surfFindRanges=[];"
+                        "if(typeof CSS!=='undefined'&&CSS.highlights){"
+                        "CSS.highlights.delete('surf-find');"
+                        "CSS.highlights.delete('surf-find-sel');}",
+                        -1, NULL, NULL, NULL, NULL, NULL);
+                }
             }
             app_repaint_chrome();
             return TRUE;
@@ -250,6 +294,53 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
     /* HINT mode: consume all keys for hint navigation */
     if (t->mode == MODE_HINT)
         return hint_key(t, keyval);
+
+    /* SELECT mode: vim-style text selection after search */
+    if (t->mode == MODE_SELECT) {
+        switch (keyval) {
+        case WPE_KEY_Escape:
+            act_find_select_exit(NULL);
+            return TRUE;
+        case WPE_KEY_e:
+            act_find_next(&((Arg){.i = +1}));
+            if (t->find_current_match > 0) {
+                char js[128];
+                snprintf(js, sizeof js,
+                    "if(window._surfFindSelect)_surfFindSelect(%d);",
+                    t->find_current_match - 1);
+                webkit_web_view_evaluate_javascript(t->wv, js, -1,
+                    NULL, NULL, NULL, NULL, NULL);
+            }
+            return TRUE;
+        case WPE_KEY_V:
+            webkit_web_view_evaluate_javascript(t->wv,
+                "var s=window.getSelection();"
+                "s.modify('move','backward','lineboundary');"
+                "s.modify('extend','forward','lineboundary');",
+                -1, NULL, NULL, NULL, NULL, NULL);
+            return TRUE;
+        case WPE_KEY_w:
+            webkit_web_view_evaluate_javascript(t->wv,
+                "window.getSelection().modify('extend','forward','word');",
+                -1, NULL, NULL, NULL, NULL, NULL);
+            return TRUE;
+        case WPE_KEY_b:
+            webkit_web_view_evaluate_javascript(t->wv,
+                "window.getSelection().modify('extend','backward','word');",
+                -1, NULL, NULL, NULL, NULL, NULL);
+            return TRUE;
+        case WPE_KEY_y: {
+            /* Copy selection to clipboard via DOM execCommand, then also
+             * grab it via wl-copy for Wayland clipboard */
+            webkit_web_view_evaluate_javascript(t->wv,
+                "document.execCommand('copy')", -1,
+                NULL, NULL, NULL, NULL, NULL);
+            act_find_select_exit(NULL);
+            return TRUE;
+        }
+        }
+        return TRUE;
+    }
 
     /* NORMAL mode: dispatch through keys[] table */
     for (guint i = 0; i < NKEYS; i++) {

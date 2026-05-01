@@ -87,6 +87,8 @@ static Key keys[] = {
     /* find */
     { MODKEY,      WPE_KEY_n,        act_find_next,    {.i=+1}  },
     { MODKEY|SHIFT,WPE_KEY_N,        act_find_next,    {.i=-1}  },
+    { 0,           WPE_KEY_v,        act_find_select_enter, {0} },
+    { SHIFT,       WPE_KEY_V,        act_find_select_line,  {0} },
 
     /* full screen */
     { 0,           WPE_KEY_F11,      act_fullscreen,   {0}      },

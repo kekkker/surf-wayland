@@ -174,7 +174,7 @@ void chrome_paint_tabbar(ChromePanel *p, ChromeTab *tabs, int n)
 }
 
 void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
-    int https, int insecure)
+    int https, int insecure, const char *mode, int find_cur, int find_total)
 {
     cairo_t *cr = cairo_create(p->csurf);
 
@@ -190,10 +190,21 @@ void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
         cairo_fill(cr);
     }
 
-    /* TLS indicator */
-    const char *prefix = "";
-    if (https && !insecure) prefix = "🔒 ";
-    else if (insecure)      prefix = "⚠ ";
+    /* TLS indicator + mode + find count */
+    char prefix[128];
+    prefix[0] = '\0';
+    if (https && !insecure) strcat(prefix, "[S] ");
+    else if (insecure)      strcat(prefix, "[!] ");
+    if (mode && *mode) {
+        strcat(prefix, "[");
+        strcat(prefix, mode);
+        strcat(prefix, "] ");
+    }
+    if (find_total > 0) {
+        char fc[32];
+        snprintf(fc, sizeof fc, "[%d/%d] ", find_cur, find_total);
+        strcat(prefix, fc);
+    }
 
     /* text */
     PangoLayout *layout = pango_cairo_create_layout(cr);
