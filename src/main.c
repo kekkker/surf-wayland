@@ -191,9 +191,18 @@ static int ptr_x;
 static void ptr_enter(void *d, struct wl_pointer *p, uint32_t ser,
     struct wl_surface *surf, wl_fixed_t x, wl_fixed_t y)
 {
-    (void)d; (void)p; (void)ser; (void)y;
+    (void)d; (void)y;
     ptr_surface = surf;
     ptr_x = wl_fixed_to_int(x);
+    /* Set cursor: default on chrome surfaces, text on page */
+    if (g_app.tabbar && surf == g_app.tabbar->surface)
+        wayland_set_cursor(&g_app.wl, p, ser, "default");
+    else if (g_app.statusbar && surf == g_app.statusbar->surface)
+        wayland_set_cursor(&g_app.wl, p, ser, "default");
+    else if (g_app.dlbar && surf == g_app.dlbar->surface)
+        wayland_set_cursor(&g_app.wl, p, ser, "default");
+    else
+        wayland_set_cursor(&g_app.wl, p, ser, "text");
 }
 
 static void ptr_leave(void *d, struct wl_pointer *p, uint32_t ser,

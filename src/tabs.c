@@ -6,6 +6,50 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <glib/gstdio.h>
+
+/* ── history ──────────────────────────────────────────────────────────────── */
+
+static void history_add(const char *uri, const char *title)
+{
+    if (!uri || !*uri) return;
+    if (g_str_has_prefix(uri, "about:") ||
+        g_str_has_prefix(uri, "data:")  ||
+        g_str_has_prefix(uri, "webkit://"))
+        return;
+
+    const char *home = g_get_home_dir();
+    char *path = g_strconcat(home, "/.surf/history", NULL);
+
+    /* Quick dedup: skip if last line matches this URI */
+    GStatBuf st;
+    if (g_stat(path, &st) == 0 && st.st_size > 0) {
+        char *contents = NULL;
+        if (g_file_get_contents(path, &contents, NULL, NULL)) {
+            char *last_nl = strrchr(contents, '\n');
+            if (last_nl && last_nl != contents) {
+                /* last line is after the last newline */
+                char *last_line = last_nl + 1;
+                if (g_str_has_prefix(last_line, uri))
+                    { g_free(contents); g_free(path); return; }
+            }
+            g_free(contents);
+        }
+    }
+
+    /* Strip newlines from title */
+    char *clean_title = g_strdup(title ? title : "");
+    for (char *p = clean_title; *p; p++)
+        if (*p == '\n' || *p == '\r') *p = ' ';
+
+    FILE *f = fopen(path, "a");
+    if (f) {
+        fprintf(f, "%s %s\n", uri, clean_title);
+        fclose(f);
+    }
+    g_free(clean_title);
+    g_free(path);
+}
 
 /* ── per-tab signal data ─────────────────────────────────────────────────── */
 
@@ -153,6 +197,10 @@ static void on_load_changed(WebKitWebView *wv, WebKitLoadEvent ev, gpointer ud)
     }
     g_free(t->uri);
     t->uri = g_strdup(webkit_web_view_get_uri(wv));
+    if (t->uri && g_str_has_prefix(t->uri, "https://"))
+        t->https = 1;
+    if (ev == WEBKIT_LOAD_FINISHED)
+        history_add(t->uri, t->title);
     d->on_change(d->cb_data);
 }
 
@@ -185,6 +233,126 @@ static void on_insecure_content(WebKitWebView *wv,
     TabCBData *d = ud;
     Tab *t = find_tab(d);
     if (t) { t->insecure = 1; d->on_change(d->cb_data); }
+}
+
+/* ── decide-policy ────────────────────────────────────────────────────────── */
+
+static void on_decide_policy(WebKitWebView *wv, WebKitPolicyDecision *dec,
+    WebKitPolicyDecisionType dtype, gpointer ud)
+{
+    (void)wv;
+
+    switch (dtype) {
+    case WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION: {
+        WebKitNavigationAction *a =
+            webkit_navigation_policy_decision_get_navigation_action(
+                WEBKIT_NAVIGATION_POLICY_DECISION(dec));
+        /* If targeted at a named frame/iframe, ignore — don't navigate main page */
+        if (webkit_navigation_action_get_frame_name(a))
+            webkit_policy_decision_ignore(dec);
+        else
+            webkit_policy_decision_use(dec);
+        break;
+    }
+    case WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION: {
+        WebKitNavigationAction *a =
+            webkit_navigation_policy_decision_get_navigation_action(
+                WEBKIT_NAVIGATION_POLICY_DECISION(dec));
+        WebKitNavigationType nt =
+            webkit_navigation_action_get_navigation_type(a);
+        if (nt == WEBKIT_NAVIGATION_TYPE_LINK_CLICKED ||
+            nt == WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED ||
+            nt == WEBKIT_NAVIGATION_TYPE_BACK_FORWARD ||
+            nt == WEBKIT_NAVIGATION_TYPE_RELOAD ||
+            nt == WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED) {
+            const char *uri = webkit_uri_request_get_uri(
+                webkit_navigation_action_get_request(a));
+            TabCBData *d = ud;
+            tabarray_new(d->ta, d->display, d->toplevel,
+                d->on_change, d->on_close, d->cb_data);
+            Tab *nt_tab = &d->ta->items[d->ta->count - 1];
+            if (nt_tab) webkit_web_view_load_uri(nt_tab->wv, uri);
+        }
+        webkit_policy_decision_ignore(dec);
+        break;
+    }
+    case WEBKIT_POLICY_DECISION_TYPE_RESPONSE: {
+        WebKitResponsePolicyDecision *r =
+            WEBKIT_RESPONSE_POLICY_DECISION(dec);
+        if (webkit_response_policy_decision_is_mime_type_supported(r))
+            webkit_policy_decision_use(dec);
+        else
+            webkit_policy_decision_download(dec);
+        break;
+    }
+    default:
+        webkit_policy_decision_ignore(dec);
+        break;
+    }
+}
+
+/* ── permission-request ───────────────────────────────────────────────────── */
+
+static gboolean on_permission_request(WebKitWebView *wv,
+    WebKitPermissionRequest *req, gpointer ud)
+{
+    (void)wv; (void)ud;
+
+    if (WEBKIT_IS_GEOLOCATION_PERMISSION_REQUEST(req)) {
+        if (g_settings[SET_GEOLOCATION])
+            webkit_permission_request_allow(req);
+        else
+            webkit_permission_request_deny(req);
+        return TRUE;
+    }
+    /* Deny media, notifications, XR, etc. */
+    webkit_permission_request_deny(req);
+    return TRUE;
+}
+
+/* ── TLS errors ───────────────────────────────────────────────────────────── */
+
+static gboolean on_tls_error(WebKitWebView *wv, gchar *uri,
+    GTlsCertificate *cert, GTlsCertificateFlags err, gpointer ud)
+{
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (!t) return FALSE;
+
+    t->https = 0;
+
+    GString *msg = g_string_new(NULL);
+    if (err & G_TLS_CERTIFICATE_UNKNOWN_CA)
+        g_string_append(msg, "The signing certificate authority is not known.<br>");
+    if (err & G_TLS_CERTIFICATE_BAD_IDENTITY)
+        g_string_append(msg, "The certificate does not match the expected identity.<br>");
+    if (err & G_TLS_CERTIFICATE_NOT_ACTIVATED)
+        g_string_append(msg, "The certificate's activation time is in the future.<br>");
+    if (err & G_TLS_CERTIFICATE_EXPIRED)
+        g_string_append(msg, "The certificate has expired.<br>");
+    if (err & G_TLS_CERTIFICATE_REVOKED)
+        g_string_append(msg, "The certificate has been revoked.<br>");
+    if (err & G_TLS_CERTIFICATE_INSECURE)
+        g_string_append(msg, "The certificate's algorithm is considered insecure.<br>");
+    if (err & G_TLS_CERTIFICATE_GENERIC_ERROR)
+        g_string_append(msg, "Some error occurred validating the certificate.<br>");
+
+    gchar *pem = NULL;
+    g_object_get(cert, "certificate-pem", &pem, NULL);
+    char *html = g_strdup_printf(
+        "<html><body style='font-family:sans-serif;padding:2em'>"
+        "<h2>TLS Error</h2>"
+        "<p>Could not validate TLS for <b>%s</b></p>"
+        "<p>%s</p>"
+        "<p>Inspect certificate with Ctrl+Shift+X.</p>"
+        "<pre>%s</pre></body></html>",
+        uri, msg->str, pem ? pem : "");
+    g_free(pem);
+    g_string_free(msg, TRUE);
+
+    webkit_web_view_load_alternate_html(wv, html, uri, NULL);
+    g_free(html);
+    return TRUE;
 }
 
 /* ── public ──────────────────────────────────────────────────────────────── */
@@ -247,6 +415,12 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         G_CALLBACK(on_web_process_terminated), cbd);
     g_signal_connect(t->wv, "user-message-received",
         G_CALLBACK(on_user_message), cbd);
+    g_signal_connect(t->wv, "decide-policy",
+        G_CALLBACK(on_decide_policy), cbd);
+    g_signal_connect(t->wv, "permission-request",
+        G_CALLBACK(on_permission_request), cbd);
+    g_signal_connect(t->wv, "load-failed-with-tls-errors",
+        G_CALLBACK(on_tls_error), cbd);
 
     filepicker_install(t->wv);
     settings_apply(t);
