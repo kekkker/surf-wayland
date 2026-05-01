@@ -44,10 +44,44 @@ void act_open_bar(const Arg *a);     /* a.i: 0=open, 1=edit current URL, 2=new-t
 void act_open_search(const Arg *a);
 
 /* Hints */
-void act_hint_start(const Arg *a);
+void act_hint_start(const Arg *a);   /* a.i: 0=open, 1=new tab, 2=yank URL */
+
+/* Helper for non-action callers (e.g. hints yank) */
+void clipboard_set(const char *text);
 
 /* Tab misc */
 void act_pin_tab(const Arg *a);
 
 /* Downloads */
 void act_dl_clear(const Arg *a);
+
+/* Settings / toggles */
+typedef enum {
+    SET_JAVASCRIPT = 0,
+    SET_IMAGES,
+    SET_CARET,
+    SET_DARK,
+    SET_STYLE,
+    SET_SCROLLBARS,
+    SET_STRICT_TLS,
+    SET_GEOLOCATION,
+    SET_LAST,
+} SettingId;
+
+extern int g_settings[SET_LAST];
+
+struct Tab;
+void settings_init(void);             /* defaults */
+void settings_apply(struct Tab *t);   /* apply current settings to one tab */
+void settings_apply_all(void);
+
+void act_toggle_setting(const Arg *a);  /* a.i: SettingId */
+void act_toggle_cookies(const Arg *a);
+
+/* Clipboard / external */
+void act_clipboard(const Arg *a);       /* a.i: 0=yank URL, 1=paste-and-go */
+void act_print(const Arg *a);
+void act_inspector(const Arg *a);
+void act_show_instance_id(const Arg *a);
+void act_reload_userscripts(const Arg *a);
+void act_show_cert(const Arg *a);

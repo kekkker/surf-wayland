@@ -40,6 +40,7 @@ struct Tab {
     int             hint_count;
     char            hint_buf[8];
     int             hint_len;
+    int             hint_mode;     /* 0=open, 1=new tab, 2=yank URL */
 };
 
 typedef struct {

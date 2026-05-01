@@ -53,21 +53,40 @@ static Key keys[] = {
     /* vertical scroll */
     { 0,           WPE_KEY_j,        act_scrollv,      {.i=+10} },
     { 0,           WPE_KEY_k,        act_scrollv,      {.i=-10} },
+    { MODKEY,      WPE_KEY_j,        act_scrollv,      {.i=+10} },  /* main */
+    { MODKEY,      WPE_KEY_k,        act_scrollv,      {.i=-10} },  /* main */
     { MODKEY,      WPE_KEY_d,        act_scrollv,      {.i=+50} },
-    { MODKEY,      WPE_KEY_u,        act_scrollv,      {.i=-50} },
     { MODKEY,      WPE_KEY_space,    act_scrollv,      {.i=+50} },
     { MODKEY,      WPE_KEY_b,        act_scrollv,      {.i=-50} },
     /* top / bottom */
     { 0,           WPE_KEY_g,        act_scrollv,      {.i=-1000000} },
     { SHIFT,       WPE_KEY_G,        act_scrollv,      {.i=+1000000} },
 
+    /* vim-style half-page (Ctrl+u up, Ctrl+d down) */
+    { MODKEY,      WPE_KEY_u,        act_scrollv,      {.i=-50} },
     /* horizontal scroll */
     { MODKEY,      WPE_KEY_i,        act_scrollh,      {.i=+10} },
+    { ALT,         WPE_KEY_h,        act_scrollh,      {.i=-10} },
+    { ALT,         WPE_KEY_l,        act_scrollh,      {.i=+10} },
 
     /* zoom */
     { 0,           WPE_KEY_minus,    act_zoom,         {.i=-1}  },
     { SHIFT,       WPE_KEY_plus,     act_zoom,         {.i=+1}  },
     { 0,           WPE_KEY_equal,    act_zoom,         {.i=0}   },
+    { MODKEY,      WPE_KEY_minus,    act_zoom,         {.i=-1}  },
+    { MODKEY,      WPE_KEY_plus,     act_zoom,         {.i=+1}  },
+    { MODKEY|SHIFT,WPE_KEY_J,        act_zoom,         {.i=-1}  },
+    { MODKEY|SHIFT,WPE_KEY_K,        act_zoom,         {.i=+1}  },
+    { MODKEY|SHIFT,WPE_KEY_Q,        act_zoom,         {.i=0}   },
+
+    /* clipboard / yank
+     *   y      = hint-yank (pick a link, copy its URL)
+     *   Y      = yank current page URL
+     *   p / P  = paste-and-go */
+    { MODKEY,      WPE_KEY_y,        act_clipboard,    {.i=0}   },
+    { SHIFT,       WPE_KEY_Y,        act_clipboard,    {.i=0}   },
+    { 0,           WPE_KEY_p,        act_clipboard,    {.i=1}   },
+    { MODKEY,      WPE_KEY_p,        act_clipboard,    {.i=1}   },
 
     /* find */
     { MODKEY,      WPE_KEY_n,        act_find_next,    {.i=+1}  },
@@ -75,10 +94,9 @@ static Key keys[] = {
 
     /* full screen */
     { 0,           WPE_KEY_F11,      act_fullscreen,   {0}      },
+    { MODKEY|SHIFT,WPE_KEY_F,        act_fullscreen,   {0}      },
 
-    /* tabs — switch */
-    { MODKEY,      WPE_KEY_j,        act_switch_tab,   {.i=+1}  },
-    { MODKEY,      WPE_KEY_k,        act_switch_tab,   {.i=-1}  },
+    /* tabs — switch (no Ctrl+j/k — those are scroll) */
     { SHIFT,       WPE_KEY_J,        act_switch_tab,   {.i=+1}  },
     { SHIFT,       WPE_KEY_K,        act_switch_tab,   {.i=-1}  },
     { MODKEY,      WPE_KEY_Tab,      act_switch_tab,   {.i=+1}  },
@@ -91,17 +109,42 @@ static Key keys[] = {
     { MODKEY,      WPE_KEY_w,        act_close_tab,    {0}      },
     { SHIFT,       WPE_KEY_P,        act_pin_tab,      {0}      },
 
-    /* command bar */
+    /* command bar (main: Ctrl+g URL, Ctrl+f/Ctrl+/ find) */
     { 0,           WPE_KEY_o,        act_open_bar,     {.i=0}   },
     { 0,           WPE_KEY_e,        act_open_bar,     {.i=1}   },
     { SHIFT,       WPE_KEY_O,        act_open_bar,     {.i=2}   },
+    { MODKEY,      WPE_KEY_g,        act_open_bar,     {.i=0}   },
     { 0,           WPE_KEY_slash,    act_open_search,  {0}      },
+    { MODKEY,      WPE_KEY_f,        act_open_search,  {0}      },
+    { MODKEY,      WPE_KEY_slash,    act_open_search,  {0}      },
 
-    /* hints */
-    { 0,           WPE_KEY_f,        act_hint_start,   {0}      },
+    /* hints
+     *   f / F / y = open / new tab / yank URL */
+    { 0,           WPE_KEY_f,        act_hint_start,   {.i=0}   },
+    { SHIFT,       WPE_KEY_F,        act_hint_start,   {.i=1}   },
+    { 0,           WPE_KEY_y,        act_hint_start,   {.i=2}   },
 
-    /* downloads */
-    { MODKEY|SHIFT,WPE_KEY_D,        act_dl_clear,     {0}      },
+    /* settings toggles (main MODKEY|SHIFT scheme) */
+    { MODKEY|SHIFT,WPE_KEY_S,        act_toggle_setting, {.i=SET_JAVASCRIPT} },
+    { MODKEY|SHIFT,WPE_KEY_I,        act_toggle_setting, {.i=SET_IMAGES}     },
+    { MODKEY|SHIFT,WPE_KEY_C,        act_toggle_setting, {.i=SET_CARET}      },
+    { MODKEY|SHIFT,WPE_KEY_D,        act_toggle_setting, {.i=SET_DARK}       },
+    { MODKEY|SHIFT,WPE_KEY_M,        act_toggle_setting, {.i=SET_STYLE}      },
+    { MODKEY|SHIFT,WPE_KEY_B,        act_toggle_setting, {.i=SET_SCROLLBARS} },
+    { MODKEY|SHIFT,WPE_KEY_T,        act_toggle_setting, {.i=SET_STRICT_TLS} },
+    { MODKEY|SHIFT,WPE_KEY_G,        act_toggle_setting, {.i=SET_GEOLOCATION}},
+    { MODKEY|SHIFT,WPE_KEY_A,        act_toggle_cookies, {0}      },
+    { MODKEY|SHIFT,WPE_KEY_U,        act_reload_userscripts, {0}  },
+
+    /* misc actions */
+    { MODKEY|SHIFT,WPE_KEY_P,        act_print,        {0}      },
+    { MODKEY|SHIFT,WPE_KEY_O,        act_inspector,    {0}      },
+    { MODKEY,      WPE_KEY_F1,       act_show_instance_id, {0}  },
+    { 0,           WPE_KEY_F1,       act_show_instance_id, {0}  },
+    { MODKEY|SHIFT,WPE_KEY_X,        act_show_cert,    {0}      },
+
+    /* downloads (moved off Ctrl+Shift+D — that's DarkMode now) */
+    { MODKEY|SHIFT,WPE_KEY_Z,        act_dl_clear,     {0}      },
 
     /* quit */
     { MODKEY,      WPE_KEY_q,        act_quit,         {0}      },

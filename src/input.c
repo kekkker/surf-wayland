@@ -9,6 +9,7 @@
 #include <wpe/webkit.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 /* keys[], hintkeys, etc. */
 #include "../config.h"
@@ -47,19 +48,38 @@ static void hints_execute(Tab *t, HintItem *h)
     webkit_web_view_send_message_to_page(t->wv,
         webkit_user_message_new("hints-clear", NULL), NULL, NULL, NULL);
 
-    if (strncmp(h->url, "[elem:", 6) == 0 || strncmp(h->url, "[input:", 7) == 0) {
-        const char *p = strchr(h->url, ':');
+    int mode = t->hint_mode;
+    char *url = g_strdup(h->url);
+    int is_elem = strncmp(url, "[elem:", 6) == 0 ||
+                  strncmp(url, "[input:", 7) == 0;
+
+    /* Tear down hint state on the originating tab BEFORE any action that
+     * may realloc tabs.items (act_new_tab) and invalidate `t`. */
+    hints_free(t);
+    t->hint_mode = 0;
+    t->mode = MODE_NORMAL;
+    wpe_view_focus_in(t->view);
+
+    if (mode == 2 && !is_elem) {
+        /* yank URL */
+        clipboard_set(url);
+    } else if (is_elem) {
+        /* Buttons/inputs always click in current tab */
+        const char *p = strchr(url, ':');
         unsigned int eid = p ? (unsigned int)atoi(p + 1) : 0;
         webkit_web_view_send_message_to_page(t->wv,
             webkit_user_message_new("hints-click", g_variant_new("(u)", eid)),
             NULL, NULL, NULL);
+    } else if (mode == 1) {
+        Arg a = {0};
+        act_new_tab(&a);    /* invalidates t */
+        Tab *nt = app_active_tab();
+        if (nt) webkit_web_view_load_uri(nt->wv, url);
     } else {
-        webkit_web_view_load_uri(t->wv, h->url);
+        webkit_web_view_load_uri(t->wv, url);
     }
 
-    hints_free(t);
-    t->mode = MODE_NORMAL;
-    wpe_view_focus_in(t->view);
+    g_free(url);
 }
 
 static void hints_cancel(Tab *t)

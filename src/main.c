@@ -269,6 +269,7 @@ int main(int argc, char *argv[])
 
     tabarray_init(&g_app.tabs);
     downloads_init(&g_app.dls);
+    settings_init();
     g_app.tab_close_fn = tab_close_cb;
 
     Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), g_app.toplevel,

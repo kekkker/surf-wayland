@@ -249,6 +249,7 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         G_CALLBACK(on_user_message), cbd);
 
     filepicker_install(t->wv);
+    settings_apply(t);
 
     /* Unmap previous active */
     if (ta->active >= 0)

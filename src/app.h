@@ -21,6 +21,7 @@ typedef struct {
     int                fullscreen;
     DownloadList       dls;
     char              *dl_pending_uri;  /* URI awaiting path confirmation */
+    int                cookie_policy;   /* WebKitCookieAcceptPolicy */
 } AppState;
 
 extern AppState g_app;
