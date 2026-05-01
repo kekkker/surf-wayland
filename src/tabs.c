@@ -1,6 +1,7 @@
 #include "tabs.h"
 #include "filepicker.h"
 #include "actions.h"
+#include "input.h"
 #include "../config.h"
 
 #include <stdlib.h>
@@ -237,7 +238,7 @@ static void on_insecure_content(WebKitWebView *wv,
 
 /* ── decide-policy ────────────────────────────────────────────────────────── */
 
-static void on_decide_policy(WebKitWebView *wv, WebKitPolicyDecision *dec,
+static gboolean on_decide_policy(WebKitWebView *wv, WebKitPolicyDecision *dec,
     WebKitPolicyDecisionType dtype, gpointer ud)
 {
     (void)wv;
@@ -255,25 +256,8 @@ static void on_decide_policy(WebKitWebView *wv, WebKitPolicyDecision *dec,
         break;
     }
     case WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION: {
-        WebKitNavigationAction *a =
-            webkit_navigation_policy_decision_get_navigation_action(
-                WEBKIT_NAVIGATION_POLICY_DECISION(dec));
-        WebKitNavigationType nt =
-            webkit_navigation_action_get_navigation_type(a);
-        if (nt == WEBKIT_NAVIGATION_TYPE_LINK_CLICKED ||
-            nt == WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED ||
-            nt == WEBKIT_NAVIGATION_TYPE_BACK_FORWARD ||
-            nt == WEBKIT_NAVIGATION_TYPE_RELOAD ||
-            nt == WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED) {
-            const char *uri = webkit_uri_request_get_uri(
-                webkit_navigation_action_get_request(a));
-            TabCBData *d = ud;
-            tabarray_new(d->ta, d->display, d->toplevel,
-                d->on_change, d->on_close, d->cb_data);
-            Tab *nt_tab = &d->ta->items[d->ta->count - 1];
-            if (nt_tab) webkit_web_view_load_uri(nt_tab->wv, uri);
-        }
-        webkit_policy_decision_ignore(dec);
+        /* Let WebKit call on_create to get a new WebView */
+        webkit_policy_decision_use(dec);
         break;
     }
     case WEBKIT_POLICY_DECISION_TYPE_RESPONSE: {
@@ -289,6 +273,7 @@ static void on_decide_policy(WebKitWebView *wv, WebKitPolicyDecision *dec,
         webkit_policy_decision_ignore(dec);
         break;
     }
+    return TRUE;
 }
 
 /* ── permission-request ───────────────────────────────────────────────────── */
@@ -424,6 +409,7 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
 
     filepicker_install(t->wv);
     settings_apply(t);
+    input_connect_view(t->view);
 
     /* Unmap previous active */
     if (ta->active >= 0)

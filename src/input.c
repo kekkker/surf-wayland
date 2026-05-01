@@ -15,6 +15,8 @@
 #include "../config.h"
 #define NKEYS (sizeof keys / sizeof keys[0])
 
+static InputState *g_input;
+
 /* ── hint helpers ────────────────────────────────────────────────────────── */
 
 static void hints_send_update(Tab *t)
@@ -265,5 +267,12 @@ void input_init(InputState *in, WPEView *view, KeyFn handler, gpointer data)
     in->view    = view;
     in->handler = handler;
     in->data    = data;
+    g_input = in;
     g_signal_connect(view, "event", G_CALLBACK(on_event), in);
+}
+
+void input_connect_view(WPEView *view)
+{
+    if (g_input)
+        g_signal_connect(view, "event", G_CALLBACK(on_event), g_input);
 }
