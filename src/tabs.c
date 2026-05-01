@@ -1,5 +1,7 @@
 #include "tabs.h"
 #include "filepicker.h"
+#include "actions.h"
+#include "../config.h"
 
 #include <stdlib.h>
 #include <string.h>
@@ -107,7 +109,8 @@ static gboolean on_user_message(WebKitWebView *wv, WebKitUserMessage *msg, gpoin
                     t->hints[i].url = g_strdup(url);
                     t->hints[i].x = x; t->hints[i].y = y;
                     t->hints[i].w = w; t->hints[i].h = h;
-                    hints_gen_label(i, t->hints[i].label, sizeof(t->hints[i].label));
+                    hints_gen_label(i, (int)n, hintkeys,
+                        t->hints[i].label, sizeof(t->hints[i].label));
                     i++;
                 }
                 t->hint_count = i;

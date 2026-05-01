@@ -10,6 +10,10 @@
 #include <string.h>
 #include <stdlib.h>
 
+/* keys[], hintkeys, etc. */
+#include "../config.h"
+#define NKEYS (sizeof keys / sizeof keys[0])
+
 /* ── hint helpers ────────────────────────────────────────────────────────── */
 
 static void hints_send_update(Tab *t)
@@ -81,7 +85,7 @@ static gboolean hint_key(Tab *t, guint keyval)
         }
         return TRUE;
     }
-    if (keyval < WPE_KEY_a || keyval > WPE_KEY_z)
+    if (keyval > 0x7f || !strchr(hintkeys, (char)keyval))
         return TRUE;
 
     if (t->hint_len < (int)sizeof(t->hint_buf) - 1) {
@@ -112,12 +116,6 @@ static gboolean hint_key(Tab *t, guint keyval)
     hints_send_update(t);
     return TRUE;
 }
-
-/* keys[] table lives in config.h (copied from config.def.h) */
-#ifndef NKEYS
-#include "../config.h"
-#define NKEYS (sizeof keys / sizeof keys[0])
-#endif
 
 /* ── URL / search normalizer ─────────────────────────────────────────────── */
 

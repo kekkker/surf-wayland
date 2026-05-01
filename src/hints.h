@@ -1,25 +1,34 @@
 #pragma once
 
+#include <string.h>
+
 typedef struct {
     char *url;
     int   x, y, w, h;
     char  label[8];
 } HintItem;
 
-/* Bijective base-26 label: 0→"a", 25→"z", 26→"aa", ... */
-static inline void hints_gen_label(int idx, char *out, int out_size)
+/* Smallest digit count needed so charset^digits >= total. */
+static inline int hints_label_length(int total, const char *charset)
 {
-    char tmp[8];
-    int len = 0;
-    int n = idx + 1;
-    while (n > 0 && len < (int)sizeof(tmp) - 1) {
-        n--;
-        tmp[len++] = 'a' + (n % 26);
-        n /= 26;
+    int base = (int)strlen(charset);
+    int digits = 1;
+    int cap = base;
+    while (cap < total) { digits++; cap *= base; }
+    return digits;
+}
+
+/* Fixed-length label over `charset`. All hints share the same length →
+ * no label is a prefix of another. */
+static inline void hints_gen_label(int idx, int total, const char *charset,
+                                   char *out, int out_size)
+{
+    int base = (int)strlen(charset);
+    int digits = hints_label_length(total, charset);
+    if (digits > out_size - 1) digits = out_size - 1;
+    for (int i = digits - 1; i >= 0; i--) {
+        out[i] = charset[idx % base];
+        idx /= base;
     }
-    if (len == 0) { out[0] = 'a'; out[1] = '\0'; return; }
-    int w = len < out_size - 1 ? len : out_size - 1;
-    for (int i = 0; i < w; i++)
-        out[i] = tmp[w - 1 - i];
-    out[w] = '\0';
+    out[digits] = '\0';
 }

@@ -20,6 +20,9 @@ static const char *certdir     = "~/.surf/certificates/";
 static const char *cachedir    = "~/.surf/cache/";
 static const char *cookiefile  = "~/.surf/cookies.sqlite";
 
+/* Charset for follow-hint labels. Home-row keys are easy to type. */
+static const char *hintkeys = "asdfghjkl";
+
 /* External file picker. Replace "{}" with the path the picker writes
  * selected file paths to (one per line). Empty first element disables. */
 static const char *filepicker_cmd[] = {

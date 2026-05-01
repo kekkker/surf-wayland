@@ -21,6 +21,9 @@ static const char *cookiefile  = "~/.surf/cookies.sqlite";
 
 static const char *searchengine = "https://searx.syscat.org/?q=%s";
 
+/* Charset for follow-hint labels. Home-row keys are easy to type. */
+static const char *hintkeys = "asdfghjkl";
+
 static const char *filepicker_cmd[] = {
     "foot", "-e", "sh", "-c",
     "nnn -p '{}'",
