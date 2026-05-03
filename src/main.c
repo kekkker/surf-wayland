@@ -219,6 +219,18 @@ void app_repaint_chrome(void)
     chrome_panel_commit(g_app.statusbar);
 }
 
+/* Return active view's wl_surface as place_above sibling, or NULL.
+ * chrome_bg and WPE view subsurfaces are siblings under the toplevel surface;
+ * place_above(view_surf) keeps chrome above the view regardless of tab count.
+ * Falls back to NULL so callers can use the parent surface instead. */
+static struct wl_surface *active_view_wl_surface(void)
+{
+    Tab *t = app_active_tab();
+    if (!t || !t->view || !WPE_IS_VIEW_WAYLAND(t->view))
+        return NULL;
+    return wpe_view_wayland_get_wl_surface(WPE_VIEW_WAYLAND(t->view));
+}
+
 void app_raise_chrome(void)
 {
     if (!g_app.chrome_bg_sub || !g_app.toplevel)
@@ -247,10 +259,6 @@ void app_layout_chrome(int win_w, int win_h)
     struct wl_surface *top =
         wpe_toplevel_wayland_get_wl_surface(WPE_TOPLEVEL_WAYLAND(g_app.toplevel));
 
-    /* Create intermediate chrome container surface on first call.
-     * All chrome panels are subsurfaces of chrome_bg, so we commit
-     * chrome_bg (not the toplevel) to apply positions — avoids
-     * corrupting WPE's synchronized view subsurface state. */
     if (!g_app.chrome_bg) {
         g_app.chrome_bg = wl_compositor_create_surface(g_app.wl.compositor);
         g_app.chrome_bg_sub = wl_subcompositor_get_subsurface(
@@ -258,18 +266,20 @@ void app_layout_chrome(int win_w, int win_h)
         wl_subsurface_set_desync(g_app.chrome_bg_sub);
         wl_subsurface_set_position(g_app.chrome_bg_sub, 0, 0);
 
-        /* Attach a 1×1 transparent ARGB buffer so the compositor
-         * accepts commits on this surface. */
+        /* Attach a full-window transparent ARGB buffer so the compositor
+         * does not clip child subsurfaces to a tiny parent buffer area. */
+        int bg_stride = win_w * 4;
+        int bg_size = bg_stride * win_h;
         int fd = (int)syscall(SYS_memfd_create, "chrome-bg", MFD_CLOEXEC);
-        if (ftruncate(fd, 4) < 0) { close(fd); return; }
-        void *px = mmap(NULL, 4, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        memset(px, 0, 4); /* fully transparent */
-        struct wl_shm_pool *pool = wl_shm_create_pool(g_app.wl.shm, fd, 4);
+        if (ftruncate(fd, bg_size) < 0) { close(fd); return; }
+        void *px = mmap(NULL, bg_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        memset(px, 0, bg_size); /* fully transparent */
+        struct wl_shm_pool *pool = wl_shm_create_pool(g_app.wl.shm, fd, bg_size);
         struct wl_buffer *buf = wl_shm_pool_create_buffer(pool, 0,
-            1, 1, 4, WL_SHM_FORMAT_ARGB8888);
+            win_w, win_h, bg_stride, WL_SHM_FORMAT_ARGB8888);
         wl_surface_attach(g_app.chrome_bg, buf, 0, 0);
         wl_surface_commit(g_app.chrome_bg);
-        munmap(px, 4);
+        munmap(px, bg_size);
         wl_buffer_destroy(buf);
         wl_shm_pool_destroy(pool);
         close(fd);

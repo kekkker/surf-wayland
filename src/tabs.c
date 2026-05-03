@@ -345,9 +345,7 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     }
     t->view = webkit_web_view_get_wpe_view(t->wv);
 
-    /* Move view to our shared toplevel (max_views=0, unlimited).
-     * The auto-created per-view toplevel (max_views=1) loses its last
-     * ref here and is destroyed, closing the ghost window. */
+    /* Move view to our shared toplevel (max_views=0, unlimited). */
     if (toplevel)
         wpe_view_set_toplevel(t->view, toplevel);
 

@@ -2,6 +2,7 @@
 #include "app.h"
 #include "tabs.h"
 #include "cmdbar.h"
+#include "chrome.h"
 #include "../config.h"
 
 #include <wpe/webkit.h>
@@ -397,6 +398,15 @@ void settings_apply(struct Tab *t)
     if (g_settings[SET_DARK]) {
         g_string_append(css,
             "html{color-scheme:dark !important;background:#111;color:#ddd;}\n");
+    }
+    /* Top-frame-only: padding so page content doesn't hide behind
+     * the tabbar and statusbar (which overlap the WPE view). */
+    {
+        char pad_css[128];
+        snprintf(pad_css, sizeof(pad_css),
+            "html{padding-top:%dpx !important;padding-bottom:%dpx !important;}\n",
+            CHROME_TABBAR_H, CHROME_STATUSBAR_H);
+        g_string_append(css, pad_css);
     }
     if (!g_settings[SET_SCROLLBARS]) {
         g_string_append(css,
