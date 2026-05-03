@@ -108,6 +108,7 @@ static Key keys[] = {
 	{MODKEY, WPE_KEY_t, act_new_tab, {0}},
 	{0, WPE_KEY_d, act_close_tab, {0}},
 	{MODKEY, WPE_KEY_w, act_close_tab, {0}},
+	{0, WPE_KEY_u, act_tab_reopen, {0}},
 	{SHIFT, WPE_KEY_P, act_pin_tab, {0}},
 
 	/* command bar (main: Ctrl+g URL, Ctrl+f/Ctrl+/ find) */

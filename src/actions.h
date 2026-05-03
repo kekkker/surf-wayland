@@ -35,6 +35,7 @@ void act_find_select_exit(const Arg *a);
 void act_fullscreen(const Arg *a);
 void act_new_tab(const Arg *a);
 void act_close_tab(const Arg *a);
+void act_tab_reopen(const Arg *a);
 void act_switch_tab(const Arg *a);   /* a.i: delta (+1/-1) */
 void act_quit(const Arg *a);
 

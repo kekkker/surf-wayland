@@ -418,6 +418,9 @@ void tabarray_close(TabArray *ta, int idx,
     if (ta->count == 0 || idx < 0 || idx >= ta->count) return;
 
     Tab *t = &ta->items[idx];
+    /* Push closed tab URI onto the LIFO stack */
+    if (t->uri && g_app.closed_tab_top < 32)
+        g_app.closed_tabs[g_app.closed_tab_top++] = g_strdup(t->uri);
     wpe_view_unmap(t->view);
     g_object_unref(t->wv);
     g_free(t->title);

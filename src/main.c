@@ -219,18 +219,6 @@ void app_repaint_chrome(void)
     chrome_panel_commit(g_app.statusbar);
 }
 
-/* Return active view's wl_surface as place_above sibling, or NULL.
- * chrome_bg and WPE view subsurfaces are siblings under the toplevel surface;
- * place_above(view_surf) keeps chrome above the view regardless of tab count.
- * Falls back to NULL so callers can use the parent surface instead. */
-static struct wl_surface *active_view_wl_surface(void)
-{
-    Tab *t = app_active_tab();
-    if (!t || !t->view || !WPE_IS_VIEW_WAYLAND(t->view))
-        return NULL;
-    return wpe_view_wayland_get_wl_surface(WPE_VIEW_WAYLAND(t->view));
-}
-
 void app_raise_chrome(void)
 {
     if (!g_app.chrome_bg_sub || !g_app.toplevel)
@@ -264,7 +252,7 @@ void app_layout_chrome(int win_w, int win_h)
         g_app.chrome_bg_sub = wl_subcompositor_get_subsurface(
             g_app.wl.subcompositor, g_app.chrome_bg, top);
         wl_subsurface_set_desync(g_app.chrome_bg_sub);
-        wl_subsurface_set_position(g_app.chrome_bg_sub, 0, 0);
+        wl_subsurface_set_position(g_app.chrome_bg_sub, 0, -CHROME_TABBAR_H);
 
         /* Attach a 1×1 transparent ARGB buffer so the compositor
          * accepts commits on this surface.  Set an empty input region
@@ -361,7 +349,8 @@ void app_layout_chrome(int win_w, int win_h)
 static void on_view_resized(WPEView *view, gpointer data)
 {
     (void)data;
-    app_layout_chrome(wpe_view_get_width(view), wpe_view_get_height(view));
+    app_layout_chrome(wpe_view_get_width(view),
+        wpe_view_get_height(view) + CHROME_TABBAR_H);
 }
 
 static void on_view_closed(WPEView *view, gpointer data)
@@ -575,7 +564,8 @@ int main(int argc, char *argv[])
      * silently rejects wpe_view_set_toplevel when the target is "full". */
     g_app.toplevel = wpe_display_create_toplevel(WPE_DISPLAY(g_app.display), 0);
     if (g_app.toplevel)
-        wpe_toplevel_resize(g_app.toplevel, winsize[0], winsize[1]);
+        wpe_toplevel_resize(g_app.toplevel, winsize[0],
+            winsize[1] - CHROME_TABBAR_H);
 
     tabarray_init(&g_app.tabs);
     downloads_init(&g_app.dls);

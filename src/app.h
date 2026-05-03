@@ -36,6 +36,8 @@ typedef struct {
     HistoryMatch       history_matches[HISTORY_MAX_MATCHES];
     int                history_match_count;
     int                history_match_selected;
+    char              *closed_tabs[32]; /* LIFO stack of closed tab URIs */
+    int                closed_tab_top;
 } AppState;
 
 extern AppState g_app;
