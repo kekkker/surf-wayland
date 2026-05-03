@@ -407,7 +407,7 @@ settings_init(void)
 	g_settings[SET_JAVASCRIPT] = 1;
 	g_settings[SET_IMAGES] = 1;
 	g_settings[SET_CARET] = 0;
-	g_settings[SET_DARK] = 0;
+	g_settings[SET_DARK] = 1;
 	g_settings[SET_STYLE] = 1;
 	g_settings[SET_SCROLLBARS] = 1;
 	g_settings[SET_STRICT_TLS] = 1;
@@ -478,8 +478,13 @@ settings_apply(struct Tab *t)
 
 	GString *css = g_string_new(NULL);
 	if (g_settings[SET_DARK]) {
-		g_string_append(css,
-						"html{color-scheme:dark !important;background:#111;color:#ddd;}\n");
+		WebKitColor bg;
+		webkit_color_parse(&bg, "#1a1a1a");
+		webkit_web_view_set_background_color(t->wv, &bg);
+	} else {
+		WebKitColor bg;
+		webkit_color_parse(&bg, "#ffffff");
+		webkit_web_view_set_background_color(t->wv, &bg);
 	}
 	/* Statusbar overlaps bottom of the view — push web content up. */
 	{
