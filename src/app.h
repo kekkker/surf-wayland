@@ -38,6 +38,8 @@ typedef struct {
     int                history_match_selected;
     char              *closed_tabs[32]; /* LIFO stack of closed tab URIs */
     int                closed_tab_top;
+    char              *fifo_path;       /* $XDG_RUNTIME_DIR/surf-fifo-$pid */
+    GIOChannel        *fifo_chan;
 } AppState;
 
 extern AppState g_app;

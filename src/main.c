@@ -18,6 +18,8 @@
 #include <execinfo.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <errno.h>
+#include <sys/stat.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <linux/memfd.h>
@@ -524,6 +526,103 @@ static void crashhandler(int sig, siginfo_t *info, void *ctx)
     raise(sig);
 }
 
+/* ── FIFO ────────────────────────────────────────────────────────────────── */
+
+static void
+eval_on_active(const char *js)
+{
+    Tab *t = app_active_tab();
+    if (t && js && *js)
+        webkit_web_view_evaluate_javascript(t->wv, js, -1,
+                                            NULL, NULL, NULL, NULL, NULL);
+}
+
+static gboolean
+fifo_read(GIOChannel *chan, GIOCondition cond, gpointer data)
+{
+    (void)cond; (void)data;
+    gchar *line = NULL;
+    gsize len;
+    GError *err = NULL;
+
+    if (g_io_channel_read_line(chan, &line, &len, NULL, &err)
+        != G_IO_STATUS_NORMAL) {
+        if (err) g_error_free(err);
+        return TRUE;
+    }
+    if (!line) return TRUE;
+    g_strstrip(line);
+
+    if (g_str_has_prefix(line, "open ")) {
+        const char *url = line + 5;
+        gboolean new_tab = FALSE;
+        while (*url == '-') {
+            if (g_str_has_prefix(url, "-t"))
+                new_tab = TRUE;
+            while (*url && *url != ' ') url++;
+            while (*url == ' ') url++;
+        }
+        if (*url) {
+            if (new_tab) {
+                act_new_tab(NULL);
+                Tab *t = app_active_tab();
+                if (t) webkit_web_view_load_uri(t->wv, url);
+            } else {
+                Tab *t = app_active_tab();
+                if (t) webkit_web_view_load_uri(t->wv, url);
+            }
+        }
+    } else if (g_str_has_prefix(line, "jseval ")) {
+        eval_on_active(line + 7);
+    } else if (g_str_has_prefix(line, "message-error ")) {
+        fprintf(stderr, "surf fifo: %s\n", line + 14);
+    } else if (g_str_has_prefix(line, "message-info ")) {
+        fprintf(stderr, "surf fifo: %s\n", line + 13);
+    }
+
+    g_free(line);
+    return TRUE;
+}
+
+static void
+setup_fifo(void)
+{
+    const char *runtime_dir = getenv("XDG_RUNTIME_DIR");
+    if (!runtime_dir || !*runtime_dir)
+        runtime_dir = "/tmp";
+
+    g_app.fifo_path = g_strdup_printf("%s/surf-fifo-%d",
+        runtime_dir, (int)getpid());
+    unlink(g_app.fifo_path);
+
+    if (mkfifo(g_app.fifo_path, 0600) != 0) {
+        fprintf(stderr, "surf: mkfifo %s: %s\n",
+            g_app.fifo_path, g_strerror(errno));
+        g_free(g_app.fifo_path);
+        g_app.fifo_path = NULL;
+        return;
+    }
+
+    int fd = open(g_app.fifo_path, O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        fprintf(stderr, "surf: open fifo: %s\n", g_strerror(errno));
+        unlink(g_app.fifo_path);
+        g_free(g_app.fifo_path);
+        g_app.fifo_path = NULL;
+        return;
+    }
+
+    g_app.fifo_chan = g_io_channel_unix_new(fd);
+    g_io_channel_set_encoding(g_app.fifo_chan, NULL, NULL);
+    g_io_channel_set_flags(g_app.fifo_chan,
+        g_io_channel_get_flags(g_app.fifo_chan) | G_IO_FLAG_NONBLOCK, NULL);
+    g_io_channel_set_close_on_unref(g_app.fifo_chan, TRUE);
+    g_io_add_watch(g_app.fifo_chan, G_IO_IN, fifo_read, NULL);
+
+    setenv("SURF_FIFO", g_app.fifo_path, 1);
+    fprintf(stderr, "surf: fifo at %s\n", g_app.fifo_path);
+}
+
 /* ── main ────────────────────────────────────────────────────────────────── */
 
 int main(int argc, char *argv[])
@@ -594,6 +693,7 @@ int main(int argc, char *argv[])
 
     input_init(&in, first->view, NULL, NULL);
 
+    setup_fifo();
     webkit_web_view_load_uri(first->wv, url);
 
     struct sigaction sa = {0};
@@ -613,6 +713,9 @@ int main(int argc, char *argv[])
     if (g_app.statusbar) chrome_panel_destroy(g_app.statusbar);
     if (g_app.dlbar)     chrome_panel_destroy(g_app.dlbar);
     wayland_finish(&g_app.wl);
+
+    if (g_app.fifo_chan) g_io_channel_unref(g_app.fifo_chan);
+    if (g_app.fifo_path) { unlink(g_app.fifo_path); g_free(g_app.fifo_path); }
 
     downloads_free(&g_app.dls);
     history_state_free(&g_app.history);

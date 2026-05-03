@@ -88,4 +88,5 @@ void act_print(const Arg *a);
 void act_inspector(const Arg *a);
 void act_show_instance_id(const Arg *a);
 void act_reload_userscripts(const Arg *a);
+void userscripts_apply(struct Tab *t);
 void act_show_cert(const Arg *a);

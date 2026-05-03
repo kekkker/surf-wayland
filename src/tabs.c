@@ -394,6 +394,7 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
 
     filepicker_install(t->wv);
     settings_apply(t);
+    userscripts_apply(t);
     input_connect_view(t->view);
 
     /* Unmap previous active */

@@ -615,18 +615,9 @@ void
 act_inspector(const Arg *a)
 {
 	(void)a;
-	/* WPE has no embedded inspector. To use it, restart with
-	 * WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9222 then point a browser
-	 * at http://127.0.0.1:9222/ */
-	if (!g_getenv("WEBKIT_INSPECTOR_HTTP_SERVER")) {
-		fprintf(stderr,
-				"surf: inspector not enabled. Restart with "
-				"WEBKIT_INSPECTOR_HTTP_SERVER=127.0.0.1:9222\n");
-	} else {
-		fprintf(stderr,
-				"surf: open http://%s/ in another browser to inspect\n",
-				g_getenv("WEBKIT_INSPECTOR_HTTP_SERVER"));
-	}
+	Tab *t = app_active_tab();
+	if (!t) return;
+	webkit_web_view_toggle_inspector(t->wv);
 }
 
 void
@@ -642,9 +633,13 @@ act_show_instance_id(const Arg *a)
 
 /* ── userscripts ─────────────────────────────────────────────────────────── */
 
-static void
-load_userscripts_into(WebKitUserContentManager *ucm)
+void
+userscripts_apply(struct Tab *t)
 {
+	if (!t || !t->wv)
+		return;
+	WebKitUserContentManager *ucm =
+		webkit_web_view_get_user_content_manager(t->wv);
 	if (!ucm)
 		return;
 	webkit_user_content_manager_remove_all_scripts(ucm);
@@ -696,12 +691,8 @@ void
 act_reload_userscripts(const Arg *a)
 {
 	(void)a;
-	for (int i = 0; i < g_app.tabs.count; i++) {
-		Tab *t = &g_app.tabs.items[i];
-		WebKitUserContentManager *ucm =
-			webkit_web_view_get_user_content_manager(t->wv);
-		load_userscripts_into(ucm);
-	}
+	for (int i = 0; i < g_app.tabs.count; i++)
+		userscripts_apply(&g_app.tabs.items[i]);
 	Tab *t = app_active_tab();
 	if (t)
 		webkit_web_view_reload(t->wv);
