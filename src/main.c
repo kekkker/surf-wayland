@@ -266,22 +266,24 @@ void app_layout_chrome(int win_w, int win_h)
         wl_subsurface_set_desync(g_app.chrome_bg_sub);
         wl_subsurface_set_position(g_app.chrome_bg_sub, 0, 0);
 
-        /* Attach a full-window transparent ARGB buffer so the compositor
-         * does not clip child subsurfaces to a tiny parent buffer area. */
-        int bg_stride = win_w * 4;
-        int bg_size = bg_stride * win_h;
+        /* Attach a 1×1 transparent ARGB buffer so the compositor
+         * accepts commits on this surface.  Set an empty input region
+         * so pointer events pass through to the WPE view below. */
         int fd = (int)syscall(SYS_memfd_create, "chrome-bg", MFD_CLOEXEC);
-        if (ftruncate(fd, bg_size) < 0) { close(fd); return; }
-        void *px = mmap(NULL, bg_size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        memset(px, 0, bg_size); /* fully transparent */
-        struct wl_shm_pool *pool = wl_shm_create_pool(g_app.wl.shm, fd, bg_size);
+        if (ftruncate(fd, 4) < 0) { close(fd); return; }
+        void *px = mmap(NULL, 4, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        memset(px, 0, 4);
+        struct wl_shm_pool *pool = wl_shm_create_pool(g_app.wl.shm, fd, 4);
         struct wl_buffer *buf = wl_shm_pool_create_buffer(pool, 0,
-            win_w, win_h, bg_stride, WL_SHM_FORMAT_ARGB8888);
+            1, 1, 4, WL_SHM_FORMAT_ARGB8888);
         wl_surface_attach(g_app.chrome_bg, buf, 0, 0);
+        struct wl_region *empty = wl_compositor_create_region(g_app.wl.compositor);
+        wl_surface_set_input_region(g_app.chrome_bg, empty);
         wl_surface_commit(g_app.chrome_bg);
-        munmap(px, bg_size);
+        munmap(px, 4);
         wl_buffer_destroy(buf);
         wl_shm_pool_destroy(pool);
+        wl_region_destroy(empty);
         close(fd);
     }
 
