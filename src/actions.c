@@ -520,8 +520,10 @@ settings_apply(struct Tab *t)
 void
 settings_apply_all(void)
 {
-	for (int i = 0; i < g_app.tabs.count; i++)
+	for (int i = 0; i < g_app.tabs.count; i++) {
 		settings_apply(&g_app.tabs.items[i]);
+		userscripts_apply(&g_app.tabs.items[i]);
+	}
 }
 
 void
@@ -634,53 +636,118 @@ act_show_instance_id(const Arg *a)
 
 /* ── userscripts ─────────────────────────────────────────────────────────── */
 
-void
-userscripts_apply(struct Tab *t)
+static void
+userscripts_add_gm_shims(GString *out)
 {
-	if (!t || !t->wv)
-		return;
-	WebKitUserContentManager *ucm =
-		webkit_web_view_get_user_content_manager(t->wv);
-	if (!ucm)
-		return;
-	webkit_user_content_manager_remove_all_scripts(ucm);
+	g_string_append(out,
+		"(function() {\n"
+		"'use strict';\n"
+		"var unsafeWindow=window;\n"
+		"var GM_info={script:{name:'userscript',version:'1.0'},scriptHandler:'Surf'};\n"
+		"function GM_getValue(k,d){try{var v=localStorage.getItem('_gm_'+k);return v!==null?JSON.parse(v):d;}catch(e){return d;}}\n"
+		"function GM_setValue(k,v){try{localStorage.setItem('_gm_'+k,JSON.stringify(v));}catch(e){}}\n"
+		"function GM_deleteValue(k){try{localStorage.removeItem('_gm_'+k);}catch(e){}}\n"
+		"function GM_addStyle(c){var s=document.createElement('style');s.textContent=c;(document.head||document.documentElement).appendChild(s);}\n"
+		"function GM_xmlhttpRequest(d){var x=new XMLHttpRequest();x.open(d.method||'GET',d.url,true);x.onload=function(){if(d.onload)d.onload({responseText:x.responseText,status:x.status});};x.send(d.data||null);}\n"
+		"var GM={getValue:function(k,d){return Promise.resolve(GM_getValue(k,d));},setValue:function(k,v){GM_setValue(k,v);return Promise.resolve();}};\n");
+}
 
+static gchar *
+preprocess_userscript(const gchar *script)
+{
+	GString *out = g_string_new(NULL);
+	userscripts_add_gm_shims(out);
+	g_string_append(out, "\n/* --- User Script --- */\n");
+	g_string_append(out, script);
+	g_string_append(out, "\n})();\n");
+	return g_string_free(out, FALSE);
+}
+
+static void
+load_userscripts_into_ucm(WebKitUserContentManager *cm)
+{
+	if (!cm) return;
+	webkit_user_content_manager_remove_all_scripts(cm);
+
+	/* Main scriptfile */
 	char *dir = NULL;
-	if (scriptfile && scriptfile[0] == '~') {
+	if (scriptfile && scriptfile[0] == '~')
 		dir = g_strconcat(g_get_home_dir(), scriptfile + 1, NULL);
-	} else {
+	else
 		dir = g_strdup(scriptfile);
-	}
-	/* scriptfile is the user's main script; also scan
-	 * ~/.surf/userscripts/ for additional .js files */
 	char *contents = NULL;
 	if (g_file_get_contents(dir, &contents, NULL, NULL)) {
 		WebKitUserScript *s = webkit_user_script_new(contents,
-													 WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-													 WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END, NULL, NULL);
-		webkit_user_content_manager_add_script(ucm, s);
+			WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+			WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END, NULL, NULL);
+		webkit_user_content_manager_add_script(cm, s);
 		webkit_user_script_unref(s);
 		g_free(contents);
+		fprintf(stderr, "surf: loaded scriptfile %s\n", dir);
 	}
 	g_free(dir);
 
+	/* ~/.surf/userscripts/*.user.js with @match/@include filtering */
 	char *udir = g_strconcat(g_get_home_dir(), "/.surf/userscripts", NULL);
 	GDir *d = g_dir_open(udir, 0, NULL);
 	if (d) {
 		const char *name;
 		while ((name = g_dir_read_name(d))) {
-			if (!g_str_has_suffix(name, ".js"))
+			if (!g_str_has_suffix(name, ".user.js") && !g_str_has_suffix(name, ".js"))
 				continue;
 			char *path = g_build_filename(udir, name, NULL);
-			char *src = NULL;
-			if (g_file_get_contents(path, &src, NULL, NULL)) {
-				WebKitUserScript *s = webkit_user_script_new(src,
-															 WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
-															 WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END, NULL, NULL);
-				webkit_user_content_manager_add_script(ucm, s);
-				webkit_user_script_unref(s);
-				g_free(src);
+			gchar *src = NULL;
+			gsize len;
+			if (!g_file_get_contents(path, &src, &len, NULL) || !len) {
+				g_free(path);
+				continue;
 			}
+
+			gboolean is_doc_start = (strstr(src, "@run-at") &&
+									 strstr(src, "document-start"));
+			gboolean has_meta = (strstr(src, "// ==UserScript==") &&
+								 strstr(src, "// ==/UserScript=="));
+
+			/* Parse @match/@include for allow list */
+			GPtrArray *allow = g_ptr_array_new_with_free_func(g_free);
+			gboolean has_patterns = FALSE;
+			if (has_meta) {
+				char **lines = g_strsplit(src, "\n", -1);
+				for (int i = 0; lines[i]; i++) {
+					char *line = g_strstrip(lines[i]);
+					if (g_str_has_prefix(line, "// ==/UserScript=="))
+						break;
+					if (g_str_has_prefix(line, "// @match ")) {
+						g_ptr_array_add(allow, g_strstrip(g_strdup(line + 10)));
+						has_patterns = TRUE;
+					} else if (g_str_has_prefix(line, "// @include ")) {
+						g_ptr_array_add(allow, g_strstrip(g_strdup(line + 12)));
+						has_patterns = TRUE;
+					}
+				}
+				g_strfreev(lines);
+			}
+			g_ptr_array_add(allow, NULL);
+
+			gchar *processed = preprocess_userscript(src);
+			WebKitUserScriptInjectionTime when = is_doc_start
+				? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
+				: WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
+
+			const char *const *al = has_patterns
+				? (const char *const *)allow->pdata : NULL;
+
+			WebKitUserScript *us = webkit_user_script_new(processed,
+				WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES, when, al, NULL);
+			webkit_user_content_manager_add_script(cm, us);
+			webkit_user_script_unref(us);
+			g_free(processed);
+
+			fprintf(stderr, "surf: userscript %s%s\n", name,
+				is_doc_start ? " (document-start)" : "");
+
+			g_ptr_array_free(allow, TRUE);
+			g_free(src);
 			g_free(path);
 		}
 		g_dir_close(d);
@@ -689,16 +756,34 @@ userscripts_apply(struct Tab *t)
 }
 
 void
+userscripts_apply(struct Tab *t)
+{
+	if (!t || !t->wv) return;
+	WebKitUserContentManager *cm =
+		webkit_web_view_get_user_content_manager(t->wv);
+	load_userscripts_into_ucm(cm);
+}
+
+void
+userscripts_inject(struct Tab *t)
+{
+	(void)t;
+	/* No-op: UCM handles injection on page load */
+}
+
+void
 act_reload_userscripts(const Arg *a)
 {
 	(void)a;
-	for (int i = 0; i < g_app.tabs.count; i++)
-		userscripts_apply(&g_app.tabs.items[i]);
+	for (int i = 0; i < g_app.tabs.count; i++) {
+		WebKitUserContentManager *cm =
+			webkit_web_view_get_user_content_manager(g_app.tabs.items[i].wv);
+		load_userscripts_into_ucm(cm);
+	}
 	Tab *t = app_active_tab();
 	if (t)
 		webkit_web_view_reload(t->wv);
 }
-
 /* ── show cert ───────────────────────────────────────────────────────────── */
 
 void
