@@ -23,7 +23,7 @@
 #define COL_PROG_BAR     0x3a6a9a
 #define COL_DL_BG        0x202028
 #define COL_DL_FG        0xcfcfcf
-#define COL_CMD_BG       0x101020
+#define COL_CMD_BG       0x000000
 #define COL_CMD_PROMPT   0x88aaff
 #define COL_HIST_BG      0x1a1a1a
 #define COL_HIST_SEL_BG  0x333333
@@ -183,8 +183,25 @@ void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
 {
     cairo_t *cr = cairo_create(p->csurf);
 
+    /* Mode-dependent colors */
+    unsigned int bg = COL_STAT_BG;
+    unsigned int fg = COL_STAT_FG;
+    if (mode) {
+        if (strcmp(mode, "INSERT") == 0) {
+            bg = 0x005f00; fg = 0xffffff;
+        } else if (strcmp(mode, "COMMAND") == 0) {
+            bg = 0x1a1a1a; fg = 0x87afd7;
+        } else if (strcmp(mode, "SEARCH") == 0) {
+            bg = 0x1a1a1a; fg = 0xd7af5f;
+        } else if (strcmp(mode, "HINT") == 0) {
+            bg = 0x5f5f00; fg = 0xffffff;
+        } else if (strcmp(mode, "SELECT") == 0) {
+            bg = 0x005f5f; fg = 0xffffff;
+        }
+    }
+
     /* background */
-    set_rgb_hex(cr, COL_STAT_BG);
+    set_rgb_hex(cr, bg);
     cairo_paint(cr);
 
     /* progress bar (thin line at very top of statusbar) */
@@ -226,7 +243,7 @@ void chrome_paint_statusbar(ChromePanel *p, const char *text, int progress,
     int tw, th;
     pango_layout_get_pixel_size(layout, &tw, &th);
 
-    set_rgb_hex(cr, COL_STAT_FG);
+    set_rgb_hex(cr, fg);
     cairo_move_to(cr, 8, (p->height - th) / 2);
     pango_cairo_show_layout(cr, layout);
 

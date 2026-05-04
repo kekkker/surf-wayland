@@ -304,8 +304,9 @@ act_normal_mode(const Arg *a)
 		t->mode = MODE_NORMAL;
 		wpe_view_focus_in(t->view);
 		app_repaint_chrome();
+	} else {
+		webkit_web_view_stop_loading(t->wv);
 	}
-	webkit_web_view_stop_loading(t->wv);
 }
 
 void
