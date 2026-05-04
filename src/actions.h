@@ -90,3 +90,5 @@ void act_show_instance_id(const Arg *a);
 void act_reload_userscripts(const Arg *a);
 void userscripts_apply(struct Tab *t);
 void act_show_cert(const Arg *a);
+void act_spawn_userscript(const Arg *a); /* a.v: shell command path */
+void act_tab_move(const Arg *a);         /* a.i: +1 right / -1 left */

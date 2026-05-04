@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/types.h>
 #include <wpe/webkit.h>
 #include <wpe/wpe-platform.h>
 
@@ -731,4 +732,50 @@ act_show_cert(const Arg *a)
 	g_free(path);
 	g_free(cdir);
 	g_free(host);
+}
+
+/* ── spawn userscript ─────────────────────────────────────────────────────── */
+
+void
+act_spawn_userscript(const Arg *a)
+{
+	const char *cmd = a->v;
+	if (!cmd || !*cmd)
+		return;
+	Tab *t = app_active_tab();
+	const char *uri = (t && t->uri) ? t->uri : "";
+
+	pid_t pid = fork();
+	if (pid < 0)
+		return;
+	if (pid == 0) {
+		long maxfd = sysconf(_SC_OPEN_MAX);
+		for (long fd = 3; fd < maxfd; fd++)
+			close(fd);
+		setenv("SURF_URI", uri, 1);
+		setenv("SURF_URL", uri, 1);
+		if (g_app.fifo_path)
+			setenv("SURF_FIFO", g_app.fifo_path, 1);
+		execl("/bin/sh", "sh", "-c", cmd, NULL);
+		_exit(127);
+	}
+}
+
+/* ── tab reorder ──────────────────────────────────────────────────────────── */
+
+void
+act_tab_move(const Arg *a)
+{
+	TabArray *ta = &g_app.tabs;
+	int cur = ta->active;
+	if (cur < 0 || ta->count <= 1)
+		return;
+	int dst = cur + a->i;
+	if (dst < 0 || dst >= ta->count)
+		return;
+	Tab tmp = ta->items[cur];
+	ta->items[cur] = ta->items[dst];
+	ta->items[dst] = tmp;
+	ta->active = dst;
+	app_repaint_chrome();
 }

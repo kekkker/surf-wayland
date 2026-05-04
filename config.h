@@ -26,7 +26,7 @@ static const char *hintkeys = "asdfg";
 
 static const char *filepicker_cmd[] = {
 	"foot", "-e", "sh", "-c",
-	"nnn -p '{}'",
+	"NNN_PLUG='p:preview-tui' NNN_PREVIEWIMGPROG='/home/kek/.bin/nnn-img2sixel' nnn -a -p '{}'",
 	NULL};
 
 /* key bindings
@@ -52,8 +52,6 @@ static Key keys[] = {
 	/* vertical scroll */
 	{0, WPE_KEY_j, act_scrollv, {.i = +10}},
 	{0, WPE_KEY_k, act_scrollv, {.i = -10}},
-	{MODKEY, WPE_KEY_j, act_scrollv, {.i = +10}}, /* main */
-	{MODKEY, WPE_KEY_k, act_scrollv, {.i = -10}}, /* main */
 	{MODKEY, WPE_KEY_d, act_scrollv, {.i = +50}},
 	{MODKEY, WPE_KEY_space, act_scrollv, {.i = +50}},
 	{MODKEY, WPE_KEY_b, act_scrollv, {.i = -50}},
@@ -81,10 +79,11 @@ static Key keys[] = {
 	/* clipboard / yank
 	 *   y      = hint-yank (pick a link, copy its URL)
 	 *   Y      = yank current page URL
-	 *   p / P  = paste-and-go */
+	 *   p      = surf-pass userscript
+	 *   Ctrl+p = paste-and-go */
 	{MODKEY, WPE_KEY_y, act_clipboard, {.i = 0}},
 	{SHIFT, WPE_KEY_Y, act_clipboard, {.i = 0}},
-	{0, WPE_KEY_p, act_clipboard, {.i = 1}},
+	{0, WPE_KEY_p, act_spawn_userscript, {.v = "$HOME/.surf/userscripts/surf-pass"}},
 	{MODKEY, WPE_KEY_p, act_clipboard, {.i = 1}},
 
 	/* find */
@@ -97,15 +96,17 @@ static Key keys[] = {
 	{0, WPE_KEY_F11, act_fullscreen, {0}},
 	{MODKEY | SHIFT, WPE_KEY_F, act_fullscreen, {0}},
 
-	/* tabs — switch (no Ctrl+j/k — those are scroll) */
+	/* tabs — switch + reorder */
 	{SHIFT, WPE_KEY_J, act_switch_tab, {.i = +1}},
 	{SHIFT, WPE_KEY_K, act_switch_tab, {.i = -1}},
+	{MODKEY, WPE_KEY_j, act_tab_move, {.i = +1}},
+	{MODKEY, WPE_KEY_k, act_tab_move, {.i = -1}},
 	{MODKEY, WPE_KEY_Tab, act_switch_tab, {.i = +1}},
 	{MODKEY | SHIFT, WPE_KEY_Tab, act_switch_tab, {.i = -1}},
 
 	/* tabs — open / close / pin */
 	{0, WPE_KEY_t, act_new_tab, {0}},
-	{MODKEY, WPE_KEY_t, act_new_tab, {0}},
+	{MODKEY, WPE_KEY_t, act_show_cert, {0}},
 	{0, WPE_KEY_d, act_close_tab, {0}},
 	{MODKEY, WPE_KEY_w, act_close_tab, {0}},
 	{0, WPE_KEY_u, act_tab_reopen, {0}},
@@ -140,12 +141,14 @@ static Key keys[] = {
 
 	/* misc actions */
 	{MODKEY | SHIFT, WPE_KEY_P, act_print, {0}},
+	{MODKEY, WPE_KEY_o, act_inspector, {0}},
 	{MODKEY | SHIFT, WPE_KEY_O, act_inspector, {0}},
 	{MODKEY, WPE_KEY_F1, act_show_instance_id, {0}},
 	{0, WPE_KEY_F1, act_show_instance_id, {0}},
 	{MODKEY | SHIFT, WPE_KEY_X, act_show_cert, {0}},
 
-	/* downloads (moved off Ctrl+Shift+D — that's DarkMode now) */
+	/* downloads */
+	{MODKEY, WPE_KEY_s, act_dl_clear, {0}},
 	{MODKEY | SHIFT, WPE_KEY_Z, act_dl_clear, {0}},
 
 	/* quit */
