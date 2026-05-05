@@ -70,6 +70,13 @@ static void on_wl_buffer_release(void *data, struct wl_buffer *wl_buf)
     if (!priv->buffer_map)
         return;
 
+    /* If this view has no surface (inactive tab), suppress the release.
+     * Otherwise WebKit's AcceleratedBackingStore would tell the web process
+     * to reuse the buffer, which triggers another render, which fails
+     * (no surface), which completes instantly → infinite render loop. */
+    if (!priv->surface)
+        return;
+
     /* Check if the WPEBuffer is still alive and we still track it */
     if (entry->wpe_buffer && WPE_IS_BUFFER(entry->wpe_buffer) &&
         g_hash_table_contains(priv->buffer_map, entry->wpe_buffer)) {
@@ -311,7 +318,6 @@ void surf_view_set_wl_surface(SurfView *view,
                               struct wl_subsurface *subsurface)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
-
     priv->surface = surface;
     priv->subsurface = subsurface;
 }
