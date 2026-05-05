@@ -29,8 +29,13 @@ typedef struct {
 static void buffer_entry_free(BufferEntry *entry)
 {
     if (!entry) return;
-    if (entry->wl_buffer)
+    /* Null the back-pointer first so any in-flight wl_buffer.release
+     * callback that races with our destruction will bail out safely. */
+    entry->view = NULL;
+    if (entry->wl_buffer) {
         wl_buffer_destroy(entry->wl_buffer);
+        entry->wl_buffer = NULL;
+    }
     if (entry->shm_data && entry->shm_size > 0)
         munmap(entry->shm_data, entry->shm_size);
     if (entry->shm_fd >= 0)
@@ -54,13 +59,16 @@ G_DEFINE_TYPE_WITH_PRIVATE(SurfView, surf_view, WPE_TYPE_VIEW)
 static void on_wl_buffer_release(void *data, struct wl_buffer *wl_buf)
 {
     (void)wl_buf;
-    /* data is the BufferEntry — always valid since we own it */
     BufferEntry *entry = data;
 
+    /* Bail out if the entry is being freed (view nulled by buffer_entry_free)
+     * or if the buffer_map was already destroyed (dispose path). */
     if (!entry->view)
         return;
 
     SurfViewPrivate *priv = surf_view_get_instance_private(entry->view);
+    if (!priv->buffer_map)
+        return;
 
     /* Check if the WPEBuffer is still alive and we still track it */
     if (entry->wpe_buffer && WPE_IS_BUFFER(entry->wpe_buffer) &&
@@ -176,6 +184,8 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(SURF_VIEW(view));
     if (!priv->surface) {
+        /* Expected when this view is inactive (surface handed to another tab).
+         * Return FALSE so WebKit backs off gracefully. */
         g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
             "No wl_surface attached to view");
         return FALSE;
@@ -301,8 +311,50 @@ void surf_view_set_wl_surface(SurfView *view,
                               struct wl_subsurface *subsurface)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
+
+    /* If reconnecting to the same surface, clear stale buffer entries
+     * so they get re-imported fresh. */
+    if (priv->surface == surface && surface != NULL)
+        g_hash_table_remove_all(priv->buffer_map);
+
     priv->surface = surface;
     priv->subsurface = subsurface;
+}
+
+void surf_view_clear_wl_surface(SurfView *view)
+{
+    SurfViewPrivate *priv = surf_view_get_instance_private(view);
+
+    /* Destroy pending frame callback */
+    if (priv->frame_callback) {
+        wl_callback_destroy(priv->frame_callback);
+        priv->frame_callback = NULL;
+    }
+
+    /* Remove all imported wl_buffers — the next tab that gets this
+     * surface will import its own buffers fresh. */
+    g_hash_table_remove_all(priv->buffer_map);
+
+    /* Hide the old tab's last frame from the compositor immediately.
+     * Attach NULL + damage + commit tells the compositor to show nothing
+     * until the new tab's web process renders its first frame. */
+    if (priv->surface) {
+        wl_surface_attach(priv->surface, NULL, 0, 0);
+        wl_surface_damage(priv->surface, 0, 0, 0x7fffffff, 0x7fffffff);
+        wl_surface_commit(priv->surface);
+    }
+
+    priv->surface = NULL;
+    priv->subsurface = NULL;
+}
+
+void surf_view_invalidate_surface(SurfView *view)
+{
+    SurfViewPrivate *priv = surf_view_get_instance_private(view);
+    if (!priv->surface) return;
+    wl_surface_attach(priv->surface, NULL, 0, 0);
+    wl_surface_damage(priv->surface, 0, 0, 0x7fffffff, 0x7fffffff);
+    wl_surface_commit(priv->surface);
 }
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view)

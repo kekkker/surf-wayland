@@ -55,6 +55,7 @@ typedef void (*TabCloseFn)(int idx, void *data);
 
 void tabarray_init(TabArray *ta);
 Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
+    WebKitWebView *related_view,
     TabChangedFn on_change, TabCloseFn on_close, void *cb_data);
 void tabarray_close(TabArray *ta, int index,
     TabChangedFn on_change, void *cb_data);

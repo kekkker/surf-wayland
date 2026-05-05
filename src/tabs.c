@@ -46,9 +46,10 @@ static void on_notify_uri(GObject *obj, GParamSpec *p, gpointer ud)
 static WebKitWebView *on_create(WebKitWebView *wv, WebKitNavigationAction *action,
     gpointer ud)
 {
-    (void)wv; (void)action;
+    (void)action;
     TabCBData *d = ud;
     Tab *t = tabarray_new(d->ta, d->display, d->toplevel,
+        wv, /* related_view — so WebKit propagates WindowFeatures */
         d->on_change, d->on_close, d->cb_data);
     d->on_change(d->cb_data);
     return t->wv;
@@ -324,6 +325,7 @@ void tabarray_init(TabArray *ta)
 }
 
 Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
+    WebKitWebView *related_view,
     TabChangedFn on_change, TabCloseFn on_close, void *cb_data)
 {
     ta->count++;
@@ -334,7 +336,20 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     t->progress = 100;
     t->mode     = MODE_NORMAL;
 
-    if (g_app.network_session) {
+    /* When related_view is set (i.e. we're inside the "create" signal),
+     * pass it as "related-view" so WebKit propagates the stashed
+     * PageConfiguration (including WindowFeatures) to the new view.
+     * Without this, WebKit ASSERT-fails on windowFeatures(). */
+    if (related_view && g_app.network_session) {
+        t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+            "related-view", related_view,
+            "network-session", g_app.network_session,
+            NULL);
+    } else if (related_view) {
+        t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+            "related-view", related_view,
+            NULL);
+    } else if (g_app.network_session) {
         t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
             "display", display,
             "network-session", g_app.network_session,
@@ -343,6 +358,14 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW, "display", display, NULL);
     }
     t->view = webkit_web_view_get_wpe_view(t->wv);
+
+    /* Disconnect the previous active tab from the shared wl_surface
+     * so its render_buffer won't fight the new tab for the surface. */
+    if (ta->active >= 0) {
+        Tab *old = &ta->items[ta->active];
+        if (SURF_IS_VIEW(old->view))
+            surf_view_clear_wl_surface(SURF_VIEW(old->view));
+    }
 
     /* Wire the SurfView's wl_surface to our view subsurface.
      * Must happen before wpe_view_map, which checks can_be_mapped(). */
@@ -434,6 +457,11 @@ void tabarray_close(TabArray *ta, int idx,
     /* Push closed tab URI onto the LIFO stack */
     if (t->uri && g_app.closed_tab_top < 32)
         g_app.closed_tabs[g_app.closed_tab_top++] = g_strdup(t->uri);
+
+    /* Disconnect this tab from the shared wl_surface before destroying */
+    if (SURF_IS_VIEW(t->view))
+        surf_view_clear_wl_surface(SURF_VIEW(t->view));
+
     wpe_view_unmap(t->view);
     g_object_unref(t->wv);
     g_free(t->title);
@@ -454,6 +482,14 @@ void tabarray_close(TabArray *ta, int idx,
 
     int new_active = idx < ta->count ? idx : ta->count - 1;
     ta->active = new_active;
+
+    /* Reconnect the shared wl_surface to the new active tab */
+    if (g_app.view_surface && g_app.view_subsurface &&
+        SURF_IS_VIEW(ta->items[new_active].view)) {
+        surf_view_set_wl_surface(SURF_VIEW(ta->items[new_active].view),
+            g_app.view_surface, g_app.view_subsurface);
+    }
+
     wpe_view_set_visible(ta->items[new_active].view, TRUE);
     wpe_view_map(ta->items[new_active].view);
     wpe_view_focus_in(ta->items[new_active].view);
@@ -465,10 +501,23 @@ void tabarray_switch(TabArray *ta, int idx)
 {
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
+    /* Disconnect old tab from the shared wl_surface */
+    if (SURF_IS_VIEW(ta->items[ta->active].view))
+        surf_view_clear_wl_surface(SURF_VIEW(ta->items[ta->active].view));
+
     wpe_view_unmap(ta->items[ta->active].view);
     wpe_view_set_visible(ta->items[ta->active].view, FALSE);
     wpe_view_focus_out(ta->items[ta->active].view);
+
     ta->active = idx;
+
+    /* Connect new tab to the shared wl_surface */
+    if (g_app.view_surface && g_app.view_subsurface &&
+        SURF_IS_VIEW(ta->items[idx].view)) {
+        surf_view_set_wl_surface(SURF_VIEW(ta->items[idx].view),
+            g_app.view_surface, g_app.view_subsurface);
+    }
+
     wpe_view_map(ta->items[idx].view);
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);

@@ -1104,7 +1104,7 @@ int main(int argc, char *argv[])
     /* 12. Create first tab — WebKit will call our SurfDisplay::create_view
      * which returns a SurfView. We then wire its wl_surface to our subsurface. */
     Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay),
-        g_app.toplevel, tab_changed_cb, tab_close_cb, NULL);
+        g_app.toplevel, NULL /* related_view */, tab_changed_cb, tab_close_cb, NULL);
 
     /* Surface wiring already done inside tabarray_new via surf_view_set_wl_surface */
 
