@@ -195,11 +195,23 @@ void app_repaint_chrome(void)
             at ? at->find_match_count   : 0);
     }
     chrome_panel_commit(g_app.statusbar);
+    app_raise_chrome();
 }
 
-/* No-op now — we don't use chrome_bg or place_above anymore */
 void app_raise_chrome(void)
 {
+    /* Re-stack all chrome panels above the WPE view subsurface.
+     * Without this the web content (created after chrome) overlaps chrome. */
+    struct wl_surface *ref = g_app.view_surface;
+    if (!ref) return;
+    ChromePanel *panels[] = { g_app.tabbar, g_app.statusbar,
+                              g_app.dlbar, g_app.historybar };
+    for (int i = 0; i < 4; i++) {
+        if (panels[i] && panels[i]->subsurface) {
+            wl_subsurface_place_above(panels[i]->subsurface, ref);
+            ref = panels[i]->surface;
+        }
+    }
 }
 
 /* ── root surface buffer ─────────────────────────────────────────────────── */
