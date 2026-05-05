@@ -3,12 +3,12 @@
 #include "filepicker.h"
 #include "actions.h"
 #include "input.h"
+#include "wlplatform/view.h"
 #include "../config.h"
 
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-#include <wpe/wayland/wpe-wayland.h>
 #include <wayland-client.h>
 
 /* ── per-tab signal data ─────────────────────────────────────────────────── */
@@ -80,7 +80,6 @@ static void on_web_process_terminated(WebKitWebView *wv,
     WebKitWebProcessTerminationReason reason, gpointer ud)
 {
     (void)ud;
-    fprintf(stderr, "surf: web process terminated (%d), reloading\n", (int)reason);
     webkit_web_view_reload(wv);
 }
 
@@ -345,9 +344,17 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     }
     t->view = webkit_web_view_get_wpe_view(t->wv);
 
+    /* Wire the SurfView's wl_surface to our view subsurface.
+     * Must happen before wpe_view_map, which checks can_be_mapped(). */
+    if (g_app.view_surface && g_app.view_subsurface && SURF_IS_VIEW(t->view)) {
+        surf_view_set_wl_surface(SURF_VIEW(t->view),
+            g_app.view_surface, g_app.view_subsurface);
+    }
+
     /* Move view to our shared toplevel (max_views=0, unlimited). */
-    if (toplevel)
+    if (toplevel) {
         wpe_view_set_toplevel(t->view, toplevel);
+    }
 
     t->finder = webkit_web_view_get_find_controller(t->wv);
 
@@ -405,10 +412,15 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     }
 
     ta->active = idx;
+    /* Tell the view its size before mapping — the toplevel already knows */
+    {
+        int vw = g_app.view_w > 0 ? g_app.view_w : 800;
+        int vh = g_app.view_h > 0 ? g_app.view_h : 600;
+        wpe_view_resized(t->view, vw, vh);
+    }
     wpe_view_map(t->view);
     wpe_view_set_visible(t->view, TRUE);
     wpe_view_focus_in(t->view);
-    app_raise_chrome();
 
     return t;
 }
@@ -460,16 +472,7 @@ void tabarray_switch(TabArray *ta, int idx)
     wpe_view_map(ta->items[idx].view);
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);
-    app_raise_chrome();
     app_relayout_active();
-
-    /* Commit toplevel to finalize view subsurface state. */
-    if (g_app.toplevel && WPE_IS_TOPLEVEL_WAYLAND(g_app.toplevel)) {
-        struct wl_surface *top = wpe_toplevel_wayland_get_wl_surface(
-            WPE_TOPLEVEL_WAYLAND(g_app.toplevel));
-        if (top)
-            wl_surface_commit(top);
-    }
 }
 
 void tabarray_free(TabArray *ta)

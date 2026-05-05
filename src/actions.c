@@ -224,7 +224,7 @@ void
 act_new_tab(const Arg *a)
 {
 	(void)a;
-	tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display), g_app.toplevel,
+	tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay), g_app.toplevel,
 				 tab_changed_cb, g_app.tab_close_fn, NULL);
 	app_repaint_chrome();
 }
@@ -258,7 +258,7 @@ act_tab_reopen(const Arg *a)
 	if (g_app.closed_tab_top == 0)
 		return;
 	char *uri = g_app.closed_tabs[--g_app.closed_tab_top];
-	Tab *t = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.display),
+	Tab *t = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay),
 						  g_app.toplevel, tab_changed_cb, g_app.tab_close_fn, NULL);
 	if (t && uri)
 		webkit_web_view_load_uri(t->wv, uri);
@@ -391,10 +391,7 @@ act_dl_clear(const Arg *a)
 		g_app.dlbar = NULL;
 	}
 	/* Trigger a re-layout so chrome reclaims the space */
-	Tab *t = app_active_tab();
-	if (t && t->view)
-		app_layout_chrome(wpe_view_get_width(t->view),
-						  wpe_view_get_height(t->view));
+	app_relayout_active();
 	app_repaint_chrome();
 }
 
