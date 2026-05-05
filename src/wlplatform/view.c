@@ -17,6 +17,8 @@
 
 typedef struct {
     struct wl_buffer *wl_buffer;
+    WPEBuffer        *wpe_buffer;  /* weak ref — may be stale */
+    SurfView         *view;        /* owning view */
     /* For DMA-BUF: we create params each time, no need to cache them */
     /* For SHM: pool + mapped data */
     int    shm_fd;
@@ -52,12 +54,19 @@ G_DEFINE_TYPE_WITH_PRIVATE(SurfView, surf_view, WPE_TYPE_VIEW)
 static void on_wl_buffer_release(void *data, struct wl_buffer *wl_buf)
 {
     (void)wl_buf;
-    /* data is the WPEBuffer — tell WPE we're done with it */
-    WPEBuffer *buffer = WPE_BUFFER(data);
-    /* Find the view that owns this buffer — we store view in buffer user_data */
-    SurfView *view = SURF_VIEW(wpe_buffer_get_user_data(buffer));
-    if (view)
-        wpe_view_buffer_released(WPE_VIEW(view), buffer);
+    /* data is the BufferEntry — always valid since we own it */
+    BufferEntry *entry = data;
+
+    if (!entry->view)
+        return;
+
+    SurfViewPrivate *priv = surf_view_get_instance_private(entry->view);
+
+    /* Check if the WPEBuffer is still alive and we still track it */
+    if (entry->wpe_buffer && WPE_IS_BUFFER(entry->wpe_buffer) &&
+        g_hash_table_contains(priv->buffer_map, entry->wpe_buffer)) {
+        wpe_view_buffer_released(WPE_VIEW(entry->view), entry->wpe_buffer);
+    }
 }
 
 static const struct wl_buffer_listener buffer_listener = {
@@ -194,10 +203,12 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
         entry = g_new0(BufferEntry, 1);
         entry->wl_buffer = wl_buf;
         entry->shm_fd = -1;
+        entry->view = SURF_VIEW(view);
+        entry->wpe_buffer = buffer;
 
         /* Store view pointer in buffer user_data so release callback can find it */
         wpe_buffer_set_user_data(buffer, SURF_VIEW(view), NULL);
-        wl_buffer_add_listener(wl_buf, &buffer_listener, buffer);
+        wl_buffer_add_listener(wl_buf, &buffer_listener, entry);
 
         g_hash_table_insert(priv->buffer_map, buffer, entry);
     }
