@@ -460,10 +460,8 @@ void tabarray_close(TabArray *ta, int idx,
 
     /* Disconnect from the shared wl_surface and destroy imported
      * wl_buffers — the WPEBuffers they wrap die with the WebView. */
-    if (SURF_IS_VIEW(t->view)) {
-        surf_view_destroy_buffers(SURF_VIEW(t->view));
+    if (SURF_IS_VIEW(t->view))
         surf_view_clear_wl_surface(SURF_VIEW(t->view));
-    }
 
     wpe_view_unmap(t->view);
     g_object_unref(t->wv);

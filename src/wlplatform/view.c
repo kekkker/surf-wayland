@@ -323,11 +323,8 @@ void surf_view_set_wl_surface(SurfView *view,
 }
 
 /* Disconnect this view from the shared wl_surface so another tab
- * can take ownership.  Keeps imported wl_buffers alive so the
- * compositor continues showing the old tab's last frame until the
- * new tab overwrites it — avoids background-flash on rapid switches.
- * Buffers are destroyed in surf_view_destroy_buffers() when the
- * tab is actually closed. */
+ * can take ownership.  Destroys all imported wl_buffers, clears the
+ * compositor surface (NULL attach), and nulls the surface pointer. */
 void surf_view_clear_wl_surface(SurfView *view)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
@@ -338,17 +335,19 @@ void surf_view_clear_wl_surface(SurfView *view)
         priv->frame_callback = NULL;
     }
 
+    /* Destroy all imported wl_buffers so the compositor can't reference
+     * stale DMA-BUFs / SHM pools from this tab. */
+    g_hash_table_remove_all(priv->buffer_map);
+
+    /* Clear the compositor surface so it stops showing old content. */
+    if (priv->surface) {
+        wl_surface_attach(priv->surface, NULL, 0, 0);
+        wl_surface_damage(priv->surface, 0, 0, 0x7fffffff, 0x7fffffff);
+        wl_surface_commit(priv->surface);
+    }
+
     priv->surface = NULL;
     priv->subsurface = NULL;
-}
-
-/* Destroy all imported wl_buffers.  Called when a tab is being
- * closed (not on switch) because the WPEBuffers they wrap are
- * about to be freed by WebKit. */
-void surf_view_destroy_buffers(SurfView *view)
-{
-    SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    g_hash_table_remove_all(priv->buffer_map);
 }
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view)
