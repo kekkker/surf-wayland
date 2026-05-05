@@ -343,6 +343,11 @@ void app_layout(int W, int H)
     g_app.view_w = view_w;
     g_app.view_h = view_h;
 
+    /* Resize the active WPE view so web content re-renders */
+    Tab *at = app_active_tab();
+    if (at && at->view)
+        wpe_view_resized(at->view, view_w, view_h);
+
     app_repaint_chrome();
     wl_surface_commit(g_app.root_surface);
 }
