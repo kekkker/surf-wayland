@@ -18,13 +18,8 @@ void surf_view_set_wl_surface(SurfView *view,
 
 /* Disconnect this view from the Wayland surface. Clears all pending
  * frame callbacks and imported wl_buffers so the surface can be
- * handed to another tab without conflicts. Also attaches a NULL
- * buffer to hide the old tab's content immediately. */
+ * handed to another tab without conflicts. */
 void surf_view_clear_wl_surface(SurfView *view);
-
-/* Clear the compositor's current buffer on the shared wl_surface
- * (attach NULL + commit) so the old tab's last frame disappears. */
-void surf_view_invalidate_surface(SurfView *view);
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view);
 struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view);

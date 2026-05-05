@@ -332,29 +332,14 @@ void surf_view_clear_wl_surface(SurfView *view)
     }
 
     /* Remove all imported wl_buffers — the next tab that gets this
-     * surface will import its own buffers fresh. */
+     * surface will import its own buffers fresh.  Do NOT attach NULL
+     * to the wl_surface here: the old tab's last frame stays visible
+     * as a placeholder until the new tab's web process renders and
+     * overwrites it with its own buffer. */
     g_hash_table_remove_all(priv->buffer_map);
-
-    /* Hide the old tab's last frame from the compositor immediately.
-     * Attach NULL + damage + commit tells the compositor to show nothing
-     * until the new tab's web process renders its first frame. */
-    if (priv->surface) {
-        wl_surface_attach(priv->surface, NULL, 0, 0);
-        wl_surface_damage(priv->surface, 0, 0, 0x7fffffff, 0x7fffffff);
-        wl_surface_commit(priv->surface);
-    }
 
     priv->surface = NULL;
     priv->subsurface = NULL;
-}
-
-void surf_view_invalidate_surface(SurfView *view)
-{
-    SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    if (!priv->surface) return;
-    wl_surface_attach(priv->surface, NULL, 0, 0);
-    wl_surface_damage(priv->surface, 0, 0, 0x7fffffff, 0x7fffffff);
-    wl_surface_commit(priv->surface);
 }
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view)
