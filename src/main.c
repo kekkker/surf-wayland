@@ -304,7 +304,10 @@ void app_layout(int W, int H)
 
     int bottom = sbar_h;
 
-    /* Historybar — conditional, above statusbar */
+    /* Historybar — conditional, above statusbar. Drawn as an OVERLAY on top
+     * of the page subsurface (not subtracted from view_h) so opening cmdbar
+     * with `o` doesn't trigger a wpe_view_resized → WebKit re-render → the
+     * brief blank/jump frame the user sees as flicker. */
     if (g_app.cmdbar.mode != CMDBAR_INACTIVE && g_app.history_match_count > 0) {
         int max_rows = sbar_y / CHROME_CMDROW_H;
         int visible_rows = g_app.history_match_count;
@@ -320,7 +323,6 @@ void app_layout(int W, int H)
             chrome_panel_resize(g_app.historybar, &g_app.wl, W, hh);
             chrome_panel_set_position(g_app.historybar, 0, hy);
         }
-        bottom += hh;
     } else if (g_app.historybar) {
         chrome_panel_destroy(g_app.historybar);
         g_app.historybar = NULL;
@@ -334,22 +336,28 @@ void app_layout(int W, int H)
     if (g_app.view_subsurface)
         wl_subsurface_set_position(g_app.view_subsurface, view_x, view_y);
 
-    /* Tell WPE its new drawing area */
-    if (g_app.toplevel)
-        wpe_toplevel_resized(g_app.toplevel, view_w, view_h);
+    int size_changed = (view_w != g_app.view_w) || (view_h != g_app.view_h);
 
     g_app.view_x = view_x;
     g_app.view_y = view_y;
     g_app.view_w = view_w;
     g_app.view_h = view_h;
 
-    /* Resize the active WPE view so web content re-renders */
-    Tab *at = app_active_tab();
-    if (at && at->view)
-        wpe_view_resized(at->view, view_w, view_h);
-
+    /* Paint chrome and commit the parent FIRST so the new view-subsurface
+     * position is live before WebKit's async re-render lands. */
     app_repaint_chrome();
     wl_surface_commit(g_app.root_surface);
+
+    /* Only tell WPE the view changed when dimensions actually changed.
+     * Cmdbar/historybar now overlay the page subsurface, so opening the
+     * cmdbar doesn't change view_w/view_h and we skip the re-render. */
+    if (size_changed) {
+        if (g_app.toplevel)
+            wpe_toplevel_resized(g_app.toplevel, view_w, view_h);
+        Tab *at = app_active_tab();
+        if (at && at->view)
+            wpe_view_resized(at->view, view_w, view_h);
+    }
 }
 
 /* Legacy compat — just delegates to app_layout */
