@@ -1073,7 +1073,9 @@ int main(int argc, char *argv[])
 
     /* 10. WebKit/Network session setup */
     WebKitWebContext *ctx = webkit_web_context_get_default();
-    webkit_web_context_set_web_process_extensions_directory(ctx, WEBEXTDIR);
+    const char *webextdir = g_getenv("SURF_WEBEXTDIR");
+    if (!webextdir) webextdir = WEBEXTDIR;
+    webkit_web_context_set_web_process_extensions_directory(ctx, webextdir);
 
     char *cache_path = expand_home_path(cachedir);
     char *cookie_path = expand_home_path(cookiefile);
