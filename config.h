@@ -37,8 +37,13 @@ static Key keys[] = {
 	{0, WPE_KEY_Escape, act_normal_mode, {0}},
 	{0, WPE_KEY_i, act_insert_mode, {0}},
 
-	/* stop / reload */
-	{MODKEY, WPE_KEY_c, act_stop, {0}},
+	/* clipboard (browser-standard Ctrl+A / Ctrl+C / Ctrl+V) */
+	{MODKEY, WPE_KEY_a, act_select_all, {0}},
+	{MODKEY, WPE_KEY_c, act_copy, {0}},
+	{MODKEY, WPE_KEY_v, act_paste, {0}},
+
+	/* stop / reload — Ctrl+Shift+C now stops load (Ctrl+C is copy) */
+	{MODKEY | SHIFT, WPE_KEY_C, act_stop, {0}},
 	{0, WPE_KEY_r, act_reload, {.i = 0}},
 	{MODKEY, WPE_KEY_r, act_reload, {.i = 0}},
 	{MODKEY | SHIFT, WPE_KEY_R, act_reload, {.i = 1}},

@@ -98,6 +98,13 @@ static void registry_global(void *data, struct wl_registry *reg,
         wl->seat = wl_registry_bind(reg, name, &wl_seat_interface, 7);
     else if (!strcmp(iface, wl_shm_interface.name))
         wl->shm = wl_registry_bind(reg, name, &wl_shm_interface, 1);
+    else if (!strcmp(iface, wl_data_device_manager_interface.name)) {
+        /* v3 brings selection roles + dnd actions; v1 is enough for
+         * regular copy/paste. Pick the highest the compositor offers. */
+        uint32_t v = version >= 3 ? 3 : 1;
+        wl->data_device_manager = wl_registry_bind(reg, name,
+            &wl_data_device_manager_interface, v);
+    }
     else if (!strcmp(iface, xdg_wm_base_interface.name))
         wl->wm_base = wl_registry_bind(reg, name, &xdg_wm_base_interface, 2);
     else if (!strcmp(iface, zwp_linux_dmabuf_v1_interface.name))

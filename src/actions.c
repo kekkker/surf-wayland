@@ -597,6 +597,40 @@ act_clipboard(const Arg *a)
 	}
 }
 
+/* WebKit editing-command shortcuts. WebKit-WPE has no built-in keymap
+ * for SelectAll/Copy/Paste — we wire them explicitly. */
+void
+act_select_all(const Arg *a)
+{
+	(void)a;
+	Tab *t = app_active_tab();
+	if (!t || !t->wv) return;
+	webkit_web_view_execute_editing_command(t->wv,
+	    WEBKIT_EDITING_COMMAND_SELECT_ALL);
+}
+
+void
+act_copy(const Arg *a)
+{
+	(void)a;
+	Tab *t = app_active_tab();
+	if (!t || !t->wv) return;
+	webkit_web_view_execute_editing_command(t->wv,
+	    WEBKIT_EDITING_COMMAND_COPY);
+}
+
+void
+act_paste(const Arg *a)
+{
+	(void)a;
+	Tab *t = app_active_tab();
+	if (!t || !t->wv) return;
+	/* WebKit only pastes when the focused element is editable; for plain
+	 * pages this is a no-op, which is the same behavior as Chromium. */
+	webkit_web_view_execute_editing_command(t->wv,
+	    WEBKIT_EDITING_COMMAND_PASTE);
+}
+
 /* ── print / inspector / instance id ─────────────────────────────────────── */
 
 void

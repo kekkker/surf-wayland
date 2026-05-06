@@ -5,6 +5,7 @@
 #include "tabs.h"
 #include "chrome.h"
 #include "wayland.h"
+#include "clipboard.h"
 #include "download.h"
 #include "wlplatform/display.h"
 #include "wlplatform/view.h"
@@ -785,7 +786,11 @@ static void kb_keymap(void *data, struct wl_keyboard *kb,
 static void kb_enter(void *data, struct wl_keyboard *kb,
     uint32_t serial, struct wl_surface *surf, struct wl_array *keys)
 {
-    (void)data; (void)kb; (void)serial; (void)keys;
+    (void)data; (void)kb; (void)keys;
+    /* wl_data_device.set_selection requires a recent input-event serial
+     * to prove keyboard focus. Capture every kb.enter — the compositor
+     * sends one whenever we (re)gain focus. */
+    clipboard_set_serial(serial);
     if (!is_chrome_surface(surf)) {
         Tab *t = app_active_tab();
         if (t && t->view)
@@ -807,7 +812,10 @@ static void kb_leave(void *data, struct wl_keyboard *kb,
 static void kb_key(void *data, struct wl_keyboard *kb,
     uint32_t serial, uint32_t time, uint32_t key, uint32_t state)
 {
-    (void)data; (void)kb; (void)serial;
+    (void)data; (void)kb;
+    /* Refresh stored serial so set_selection() right after Ctrl+C uses
+     * the most recent input event the compositor saw. */
+    clipboard_set_serial(serial);
     Tab *t = app_active_tab();
     if (!t || !t->view) return;
 
@@ -1040,6 +1048,7 @@ int main(int argc, char *argv[])
 
     /* 1. Open our own Wayland connection and bind globals */
     wayland_connect(&g_app.wl);
+    clipboard_init(&g_app.wl);
 
     /* 2. Create our xdg_toplevel */
     g_app.root_surface = wl_compositor_create_surface(g_app.wl.compositor);
@@ -1232,6 +1241,7 @@ int main(int argc, char *argv[])
     if (g_app.toplevel)     g_object_unref(g_app.toplevel);
     if (g_app.sdisplay)     g_object_unref(g_app.sdisplay);
 
+    clipboard_finish(&g_app.wl);
     wayland_finish(&g_app.wl);
 
     if (g_app.fifo_chan) g_io_channel_unref(g_app.fifo_chan);

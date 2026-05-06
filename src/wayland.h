@@ -20,6 +20,12 @@ typedef struct {
     struct xdg_wm_base       *wm_base;
     struct zwp_linux_dmabuf_v1 *dmabuf;
 
+    /* Clipboard (regular = wl_data_device). Owned here, plumbing in
+     * clipboard.c. data_device may be NULL if the manager isn't
+     * advertised by the compositor. */
+    struct wl_data_device_manager *data_device_manager;
+    struct wl_data_device         *data_device;
+
     /* primary wl_output (first one advertised) */
     struct wl_output         *output;
     int                       out_width;       /* px in compositor units */

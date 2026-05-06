@@ -84,6 +84,9 @@ void act_toggle_cookies(const Arg *a);
 
 /* Clipboard / external */
 void act_clipboard(const Arg *a);       /* a.i: 0=yank URL, 1=paste-and-go */
+void act_select_all(const Arg *a);
+void act_copy(const Arg *a);
+void act_paste(const Arg *a);
 void act_print(const Arg *a);
 void act_inspector(const Arg *a);
 void act_show_instance_id(const Arg *a);

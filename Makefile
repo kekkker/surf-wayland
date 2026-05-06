@@ -5,11 +5,13 @@
 include config.mk
 
 SRC  = src/main.c src/wayland.c src/input.c src/chrome.c src/tabs.c \
-       src/actions.c src/cmdbar.c src/download.c src/filepicker.c src/history.c
+       src/actions.c src/cmdbar.c src/download.c src/filepicker.c src/history.c \
+       src/clipboard.c
 OBJ  = $(SRC:.c=.o)
 
 # Custom WPE platform (wlplatform)
-WPSRC = src/wlplatform/display.c src/wlplatform/view.c src/wlplatform/toplevel.c src/wlplatform/screen.c
+WPSRC = src/wlplatform/display.c src/wlplatform/view.c src/wlplatform/toplevel.c \
+        src/wlplatform/screen.c src/wlplatform/clipboard.c
 WPOBJ = $(WPSRC:.c=.o)
 
 # Protocol headers (generated from wayland-protocols XML)
@@ -84,6 +86,9 @@ src/cmdbar.o: src/cmdbar.c src/cmdbar.h config.mk
 src/history.o: src/history.c src/history.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/history.c
 
+src/clipboard.o: src/clipboard.c src/clipboard.h src/wayland.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/clipboard.c
+
 # ── wlplatform (custom WPE platform) ─────────────────────────────────────
 
 src/wlplatform/display.o: src/wlplatform/display.c src/wlplatform/display.h \
@@ -104,6 +109,10 @@ src/wlplatform/view.o: src/wlplatform/view.c src/wlplatform/view.h \
 src/wlplatform/toplevel.o: src/wlplatform/toplevel.c src/wlplatform/toplevel.h \
                             src/wlplatform/display.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/toplevel.c
+
+src/wlplatform/clipboard.o: src/wlplatform/clipboard.c src/wlplatform/clipboard.h \
+                             src/clipboard.h src/wayland.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/clipboard.c
 
 # ── web extension ────────────────────────────────────────────────────────
 

@@ -19,6 +19,7 @@
 /* ── Forward declarations for our subclasses ──────────────────────────── */
 #include "view.h"
 #include "toplevel.h"
+#include "clipboard.h"
 
 /* ── Private instance data ────────────────────────────────────────────── */
 
@@ -39,6 +40,9 @@ typedef struct _SurfDisplayPrivate {
 
     /* Screen */
     WPEScreen *screen;
+
+    /* System clipboard bridge — created lazily on first get_clipboard() */
+    WPEClipboard *clipboard;
 
     /* Pending screen info captured from wl_output before connect() */
     int pending_width;
@@ -338,6 +342,15 @@ static WPEBufferFormats *surf_display_get_preferred_buffer_formats(WPEDisplay *d
     return wpe_buffer_formats_builder_end(builder);
 }
 
+static WPEClipboard *
+surf_display_get_clipboard(WPEDisplay *display)
+{
+    SurfDisplayPrivate *priv = surf_display_get_instance_private(SURF_DISPLAY(display));
+    if (!priv->clipboard)
+        priv->clipboard = WPE_CLIPBOARD(surf_clipboard_new(display));
+    return priv->clipboard;
+}
+
 static guint surf_display_get_n_screens(WPEDisplay *display)
 {
     (void)display;
@@ -366,6 +379,7 @@ static void surf_display_dispose(GObject *object)
     g_clear_pointer(&priv->drm_device, wpe_drm_device_unref);
 
     g_clear_object(&priv->screen);
+    g_clear_object(&priv->clipboard);
 
     /* Do NOT destroy wl_display, compositor, etc — WaylandState owns them */
 
@@ -386,6 +400,7 @@ static void surf_display_class_init(SurfDisplayClass *klass)
     dclass->get_n_screens = surf_display_get_n_screens;
     dclass->get_screen = surf_display_get_screen;
     dclass->get_drm_device = surf_display_get_drm_device;
+    dclass->get_clipboard = surf_display_get_clipboard;
 }
 
 static void surf_display_init(SurfDisplay *self)
