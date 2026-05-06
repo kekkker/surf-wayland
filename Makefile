@@ -9,7 +9,7 @@ SRC  = src/main.c src/wayland.c src/input.c src/chrome.c src/tabs.c \
 OBJ  = $(SRC:.c=.o)
 
 # Custom WPE platform (wlplatform)
-WPSRC = src/wlplatform/display.c src/wlplatform/view.c src/wlplatform/toplevel.c
+WPSRC = src/wlplatform/display.c src/wlplatform/view.c src/wlplatform/toplevel.c src/wlplatform/screen.c
 WPOBJ = $(WPSRC:.c=.o)
 
 # Protocol headers (generated from wayland-protocols XML)
@@ -88,9 +88,13 @@ src/history.o: src/history.c src/history.h config.mk
 
 src/wlplatform/display.o: src/wlplatform/display.c src/wlplatform/display.h \
                            src/wlplatform/view.h src/wlplatform/toplevel.h \
+                           src/wlplatform/screen.h \
                            src/protocols/xdg-shell-client-protocol.h \
                            src/protocols/linux-dmabuf-v1-client-protocol.h config.mk
 	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/display.c
+
+src/wlplatform/screen.o: src/wlplatform/screen.c src/wlplatform/screen.h config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/screen.c
 
 src/wlplatform/view.o: src/wlplatform/view.c src/wlplatform/view.h \
                         src/wlplatform/display.h \

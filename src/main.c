@@ -1064,6 +1064,12 @@ int main(int argc, char *argv[])
         g_app.wl.wm_base,
         g_app.wl.dmabuf);
 
+    /* Seed real screen info from wl_output (refresh rate drives WebKit's
+     * requestAnimationFrame, CSS animations, smooth scroll velocity). */
+    surf_display_set_screen_info(g_app.sdisplay,
+        g_app.wl.out_width, g_app.wl.out_height,
+        g_app.wl.out_refresh_mhz, g_app.wl.out_scale);
+
     /* Connect the display — this sets up GLib main loop integration and
      * collects DMA-BUF formats */
     GError *err = NULL;

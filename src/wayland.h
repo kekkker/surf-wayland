@@ -20,6 +20,13 @@ typedef struct {
     struct xdg_wm_base       *wm_base;
     struct zwp_linux_dmabuf_v1 *dmabuf;
 
+    /* primary wl_output (first one advertised) */
+    struct wl_output         *output;
+    int                       out_width;       /* px in compositor units */
+    int                       out_height;
+    int                       out_refresh_mhz; /* mHz, 0 if unknown */
+    int                       out_scale;       /* integer scale, default 1 */
+
     /* cursors */
     struct wl_cursor_theme   *cursor_theme;
     struct wl_cursor         *cursor_default;

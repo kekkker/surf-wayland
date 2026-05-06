@@ -34,3 +34,10 @@ struct xdg_wm_base      *surf_display_get_xdg_wm_base(SurfDisplay *d);
 struct zwp_linux_dmabuf_v1 *surf_display_get_dmabuf(SurfDisplay *d);
 
 void surf_display_update_screen_size(SurfDisplay *d, int width, int height);
+
+/* Seed screen geometry/refresh from a wl_output mode event. Call after
+ * surf_display_new() but before wpe_display_connect() so the values are
+ * applied when the WPEScreen is created. Pass refresh_mhz=0 to keep the
+ * default; scale<=0 is treated as 1. */
+void surf_display_set_screen_info(SurfDisplay *d,
+    int width, int height, int refresh_mhz, int scale);

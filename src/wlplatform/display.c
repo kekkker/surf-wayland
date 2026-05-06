@@ -1,4 +1,5 @@
 #include "display.h"
+#include "screen.h"
 #include "../protocols/xdg-shell-client-protocol.h"
 #include "../protocols/linux-dmabuf-v1-client-protocol.h"
 
@@ -38,6 +39,12 @@ typedef struct _SurfDisplayPrivate {
 
     /* Screen */
     WPEScreen *screen;
+
+    /* Pending screen info captured from wl_output before connect() */
+    int pending_width;
+    int pending_height;
+    int pending_refresh_mhz;
+    int pending_scale;
 
     /* GLib main loop integration */
     GSource  *event_source;
@@ -206,12 +213,22 @@ static gboolean surf_display_connect(WPEDisplay *display, GError **error)
 
     priv->event_source = create_event_source(SURF_DISPLAY(display));
 
-    /* Create a default screen (use WPEScreenWayland — base WPEScreen is abstract) */
-    priv->screen = WPE_SCREEN(g_object_new(WPE_TYPE_SCREEN_WAYLAND, "id", 1, NULL));
-    wpe_screen_set_size(priv->screen, 1920, 1080);
-    wpe_screen_set_physical_size(priv->screen, 508, 285); /* ~96 DPI */
-    wpe_screen_set_scale(priv->screen, 1.0);
-    wpe_screen_set_refresh_rate(priv->screen, 60000); /* 60 Hz in mHz */
+    /* Create a default screen (use WPEScreenWayland — base WPEScreen is abstract).
+     * Use values seeded from wl_output if available; otherwise fall back to
+     * 1920x1080 @ 60 Hz so WebKit always has sane numbers. */
+    int sw = priv->pending_width  > 0 ? priv->pending_width  : 1920;
+    int sh = priv->pending_height > 0 ? priv->pending_height : 1080;
+    int refresh = priv->pending_refresh_mhz > 0 ? priv->pending_refresh_mhz : 60000;
+    int scale = priv->pending_scale > 0 ? priv->pending_scale : 1;
+
+    /* Use our own SurfScreen subclass — WPEScreenWayland doesn't provide
+     * a sync observer, which forces WebKit to fall back to a 60 Hz timer. */
+    priv->screen = surf_screen_new(1);
+    wpe_screen_set_size(priv->screen, sw, sh);
+    /* Approx physical size at 96 DPI — compositor doesn't always report real one */
+    wpe_screen_set_physical_size(priv->screen, sw * 254 / 960, sh * 254 / 960);
+    wpe_screen_set_scale(priv->screen, (gdouble)scale);
+    wpe_screen_set_refresh_rate(priv->screen, refresh);
     wpe_display_screen_added(display, priv->screen);
 
     return TRUE;
@@ -442,4 +459,28 @@ void surf_display_update_screen_size(SurfDisplay *d, int width, int height)
     /* Assume 96 DPI for physical size */
     wpe_screen_set_physical_size(priv->screen, width * 254 / 960, height * 254 / 960);
     wpe_screen_invalidate(priv->screen);
+}
+
+void surf_display_set_screen_info(SurfDisplay *d,
+    int width, int height, int refresh_mhz, int scale)
+{
+    SurfDisplayPrivate *priv = surf_display_get_instance_private(d);
+    if (width  > 0) priv->pending_width  = width;
+    if (height > 0) priv->pending_height = height;
+    if (refresh_mhz > 0) priv->pending_refresh_mhz = refresh_mhz;
+    if (scale > 0) priv->pending_scale = scale;
+
+    /* If the screen already exists (called after connect), apply live. */
+    if (priv->screen) {
+        if (width > 0 && height > 0) {
+            wpe_screen_set_size(priv->screen, width, height);
+            wpe_screen_set_physical_size(priv->screen,
+                width * 254 / 960, height * 254 / 960);
+        }
+        if (refresh_mhz > 0)
+            wpe_screen_set_refresh_rate(priv->screen, refresh_mhz);
+        if (scale > 0)
+            wpe_screen_set_scale(priv->screen, (gdouble)scale);
+        wpe_screen_invalidate(priv->screen);
+    }
 }

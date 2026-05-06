@@ -41,6 +41,45 @@ static const struct xdg_wm_base_listener wm_base_listener = {
     .ping = wm_base_ping,
 };
 
+/* ── wl_output listener ───────────────────────────────────────────────── */
+
+static void output_geometry(void *data, struct wl_output *output,
+    int32_t x, int32_t y, int32_t pw, int32_t ph, int32_t subpixel,
+    const char *make, const char *model, int32_t transform)
+{
+    (void)data; (void)output; (void)x; (void)y;
+    (void)pw; (void)ph; (void)subpixel; (void)make; (void)model; (void)transform;
+}
+
+static void output_mode(void *data, struct wl_output *output,
+    uint32_t flags, int32_t width, int32_t height, int32_t refresh)
+{
+    WaylandState *wl = data;
+    (void)output;
+    if (flags & WL_OUTPUT_MODE_CURRENT) {
+        wl->out_width = width;
+        wl->out_height = height;
+        wl->out_refresh_mhz = refresh;
+    }
+}
+
+static void output_done(void *data, struct wl_output *output)
+{ (void)data; (void)output; }
+
+static void output_scale(void *data, struct wl_output *output, int32_t factor)
+{
+    WaylandState *wl = data;
+    (void)output;
+    if (factor > 0) wl->out_scale = factor;
+}
+
+static const struct wl_output_listener output_listener = {
+    .geometry = output_geometry,
+    .mode     = output_mode,
+    .done     = output_done,
+    .scale    = output_scale,
+};
+
 /* ── Registry listener ────────────────────────────────────────────────── */
 
 static void registry_global(void *data, struct wl_registry *reg,
@@ -64,6 +103,12 @@ static void registry_global(void *data, struct wl_registry *reg,
     else if (!strcmp(iface, zwp_linux_dmabuf_v1_interface.name))
         wl->dmabuf = wl_registry_bind(reg, name,
             &zwp_linux_dmabuf_v1_interface, 4);
+    else if (!strcmp(iface, wl_output_interface.name) && !wl->output) {
+        /* v2 gives us the mode event with refresh rate; v3 adds scale */
+        uint32_t v = version >= 3 ? 3 : (version >= 2 ? 2 : 1);
+        wl->output = wl_registry_bind(reg, name, &wl_output_interface, v);
+        wl_output_add_listener(wl->output, &output_listener, wl);
+    }
 }
 
 static void registry_global_remove(void *data, struct wl_registry *reg,
@@ -82,6 +127,7 @@ static const struct wl_registry_listener registry_listener = {
 void wayland_connect(WaylandState *wl)
 {
     memset(wl, 0, sizeof *wl);
+    wl->out_scale = 1;
 
     wl->display = wl_display_connect(NULL);
     if (!wl->display)
@@ -95,6 +141,11 @@ void wayland_connect(WaylandState *wl)
         wl_seat_add_listener(wl->seat, &seat_listener, wl);
         wl_display_roundtrip(wl->display);
     }
+
+    /* Second roundtrip so wl_output mode/scale events arrive before we
+     * construct SurfDisplay (caller queries refresh rate). */
+    if (wl->output)
+        wl_display_roundtrip(wl->display);
 
     if (wl->wm_base)
         xdg_wm_base_add_listener(wl->wm_base, &wm_base_listener, NULL);
@@ -143,6 +194,7 @@ void wayland_finish(WaylandState *wl)
     if (wl->keyboard)       wl_keyboard_destroy(wl->keyboard);
     if (wl->pointer)        wl_pointer_destroy(wl->pointer);
     if (wl->seat)           wl_seat_destroy(wl->seat);
+    if (wl->output)         wl_output_destroy(wl->output);
     if (wl->dmabuf)         zwp_linux_dmabuf_v1_destroy(wl->dmabuf);
     if (wl->wm_base)        xdg_wm_base_destroy(wl->wm_base);
     if (wl->subcompositor)  wl_subcompositor_destroy(wl->subcompositor);

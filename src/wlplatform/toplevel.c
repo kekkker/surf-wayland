@@ -25,9 +25,12 @@ static void surf_toplevel_set_title(WPEToplevel *toplevel, const char *title)
 
 static WPEScreen *surf_toplevel_get_screen(WPEToplevel *toplevel)
 {
-    /* TODO: track wl_output */
-    (void)toplevel;
-    return NULL;
+    /* Return the (only) screen on our display so WebKit's
+     * DisplayRefreshMonitor uses the real wl_output refresh rate
+     * for requestAnimationFrame and CSS animation pacing. */
+    WPEDisplay *display = wpe_toplevel_get_display(toplevel);
+    if (!display) return NULL;
+    return wpe_display_get_screen(display, 0);
 }
 
 static gboolean surf_toplevel_resize(WPEToplevel *toplevel, int w, int h)
