@@ -41,78 +41,31 @@ src/protocols/linux-dmabuf-v1-client-protocol.h: $(WLPROTOCOLS_DIR)/stable/linux
 src/protocols/linux-dmabuf-v1.c: $(WLPROTOCOLS_DIR)/stable/linux-dmabuf/linux-dmabuf-v1.xml
 	$(WAYLAND_SCANNER) public-code $< $@
 
-src/protocols/xdg-shell.o: src/protocols/xdg-shell.c config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ $<
+# ── pattern rule with auto-generated header deps ────────────────────────
+#
+# `-MMD -MP` emits a `.d` file alongside each `.o` listing every header
+# the source pulled in. Including those `.d` files below makes header
+# changes propagate without us hand-listing deps per target — without
+# this, adding a field to e.g. wayland.h silently leaves stale .o files
+# whose struct layouts no longer match the rest of the binary.
 
-src/protocols/linux-dmabuf-v1.o: src/protocols/linux-dmabuf-v1.c config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ $<
+DEPS = $(OBJ:.o=.d) $(WPOBJ:.o=.d) $(PROTO_OBJ:.o=.d)
 
-# ── main sources ─────────────────────────────────────────────────────────
+%.o: %.c config.mk
+	$(CC) $(SURFCFLAGS) -Isrc -MMD -MP -c -o $@ $<
 
-src/main.o: src/main.c src/app.h src/input.h src/actions.h src/chrome.h \
-            src/tabs.h src/hints.h src/wayland.h src/cmdbar.h src/download.h \
-            src/history.h src/wlplatform/display.h src/wlplatform/view.h \
-            src/wlplatform/toplevel.h config.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/main.c
+src/protocols/xdg-shell.o: src/protocols/xdg-shell.c
+src/protocols/linux-dmabuf-v1.o: src/protocols/linux-dmabuf-v1.c
 
-src/download.o: src/download.c src/download.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/download.c
-
-src/wayland.o: src/wayland.c src/wayland.h config.mk \
-               src/protocols/xdg-shell-client-protocol.h \
+src/main.o: src/protocols/xdg-shell-client-protocol.h \
+            src/protocols/linux-dmabuf-v1-client-protocol.h
+src/wayland.o: src/protocols/xdg-shell-client-protocol.h \
                src/protocols/linux-dmabuf-v1-client-protocol.h
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wayland.c
+src/wlplatform/display.o: src/protocols/xdg-shell-client-protocol.h \
+                          src/protocols/linux-dmabuf-v1-client-protocol.h
+src/wlplatform/view.o: src/protocols/linux-dmabuf-v1-client-protocol.h
 
-src/chrome.o: src/chrome.c src/chrome.h src/cmdbar.h src/history.h src/wayland.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/chrome.c
-
-src/tabs.o: src/tabs.c src/tabs.h src/app.h src/hints.h src/filepicker.h src/history.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/tabs.c
-
-src/filepicker.o: src/filepicker.c src/filepicker.h config.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/filepicker.c
-
-src/actions.o: src/actions.c src/actions.h src/app.h src/tabs.h src/hints.h \
-               src/cmdbar.h src/download.h src/history.h config.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/actions.c
-
-src/input.o: src/input.c src/input.h src/app.h src/actions.h src/hints.h \
-             src/cmdbar.h src/download.h src/history.h config.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/input.c
-
-src/cmdbar.o: src/cmdbar.c src/cmdbar.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/cmdbar.c
-
-src/history.o: src/history.c src/history.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/history.c
-
-src/clipboard.o: src/clipboard.c src/clipboard.h src/wayland.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/clipboard.c
-
-# ── wlplatform (custom WPE platform) ─────────────────────────────────────
-
-src/wlplatform/display.o: src/wlplatform/display.c src/wlplatform/display.h \
-                           src/wlplatform/view.h src/wlplatform/toplevel.h \
-                           src/wlplatform/screen.h \
-                           src/protocols/xdg-shell-client-protocol.h \
-                           src/protocols/linux-dmabuf-v1-client-protocol.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/display.c
-
-src/wlplatform/screen.o: src/wlplatform/screen.c src/wlplatform/screen.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/screen.c
-
-src/wlplatform/view.o: src/wlplatform/view.c src/wlplatform/view.h \
-                        src/wlplatform/display.h \
-                        src/protocols/linux-dmabuf-v1-client-protocol.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/view.c
-
-src/wlplatform/toplevel.o: src/wlplatform/toplevel.c src/wlplatform/toplevel.h \
-                            src/wlplatform/display.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/toplevel.c
-
-src/wlplatform/clipboard.o: src/wlplatform/clipboard.c src/wlplatform/clipboard.h \
-                             src/clipboard.h src/wayland.h config.mk
-	$(CC) $(SURFCFLAGS) -Isrc -c -o $@ src/wlplatform/clipboard.c
+-include $(DEPS)
 
 # ── web extension ────────────────────────────────────────────────────────
 
@@ -123,7 +76,7 @@ $(WOBJ): $(WSRC)
 	$(CC) $(WEXTCFLAGS) -c $(WSRC)
 
 clean:
-	rm -f surf $(OBJ) $(WPOBJ) $(WLIB) $(WOBJ) $(PROTO_SRC)
+	rm -f surf $(OBJ) $(WPOBJ) $(WLIB) $(WOBJ) $(PROTO_SRC) $(DEPS)
 
 install: all
 	mkdir -p $(DESTDIR)$(PREFIX)/bin
