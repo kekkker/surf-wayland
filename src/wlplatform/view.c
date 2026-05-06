@@ -17,6 +17,8 @@
 
 typedef struct {
     struct wl_buffer *wl_buffer;
+    SurfView         *view;
+    GWeakRef          buffer_ref;   /* weak ref to WPEBuffer; NULLs out when WebKit frees it */
     /* For DMA-BUF: we create params each time, no need to cache them */
     /* For SHM: pool + mapped data */
     int    shm_fd;
@@ -27,6 +29,7 @@ typedef struct {
 static void buffer_entry_free(BufferEntry *entry)
 {
     if (!entry) return;
+    g_weak_ref_clear(&entry->buffer_ref);
     if (entry->wl_buffer)
         wl_buffer_destroy(entry->wl_buffer);
     if (entry->shm_data && entry->shm_size > 0)
@@ -52,12 +55,15 @@ G_DEFINE_TYPE_WITH_PRIVATE(SurfView, surf_view, WPE_TYPE_VIEW)
 static void on_wl_buffer_release(void *data, struct wl_buffer *wl_buf)
 {
     (void)wl_buf;
-    /* data is the WPEBuffer — tell WPE we're done with it */
-    WPEBuffer *buffer = WPE_BUFFER(data);
-    /* Find the view that owns this buffer — we store view in buffer user_data */
-    SurfView *view = SURF_VIEW(wpe_buffer_get_user_data(buffer));
-    if (view)
-        wpe_view_buffer_released(WPE_VIEW(view), buffer);
+    /* WebKit can free the WPEBuffer before the compositor sends release.
+     * Resolve the weak ref — if it's NULL, the buffer is gone and there's
+     * nothing to ack. */
+    BufferEntry *entry = data;
+    WPEBuffer *buffer = g_weak_ref_get(&entry->buffer_ref);
+    if (!buffer) return;
+    if (entry->view)
+        wpe_view_buffer_released(WPE_VIEW(entry->view), buffer);
+    g_object_unref(buffer);
 }
 
 static const struct wl_buffer_listener buffer_listener = {
@@ -194,10 +200,10 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
         entry = g_new0(BufferEntry, 1);
         entry->wl_buffer = wl_buf;
         entry->shm_fd = -1;
+        entry->view = SURF_VIEW(view);
+        g_weak_ref_init(&entry->buffer_ref, buffer);
 
-        /* Store view pointer in buffer user_data so release callback can find it */
-        wpe_buffer_set_user_data(buffer, SURF_VIEW(view), NULL);
-        wl_buffer_add_listener(wl_buf, &buffer_listener, buffer);
+        wl_buffer_add_listener(wl_buf, &buffer_listener, entry);
 
         g_hash_table_insert(priv->buffer_map, buffer, entry);
     }
