@@ -73,10 +73,16 @@ static void hints_execute(Tab *t, HintItem *h)
             webkit_user_message_new("hints-click", g_variant_new("(u)", eid)),
             NULL, NULL, NULL);
     } else if (mode == 1) {
+        /* Open in a background tab — keep focus on the current tab. */
+        int prev_active = g_app.tabs.active;
         Arg a = {0};
-        act_new_tab(&a);    /* invalidates t */
+        act_new_tab(&a);    /* invalidates t, switches active to new tab */
         Tab *nt = app_active_tab();
         if (nt) webkit_web_view_load_uri(nt->wv, url);
+        if (prev_active >= 0 && prev_active < g_app.tabs.count) {
+            tabarray_switch(&g_app.tabs, prev_active);
+            app_repaint_chrome();
+        }
     } else {
         webkit_web_view_load_uri(t->wv, url);
     }

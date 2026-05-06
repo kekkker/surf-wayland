@@ -475,6 +475,13 @@ static struct wl_surface *ptr_surface;
 static int ptr_x, ptr_y;
 static uint32_t ptr_serial;
 
+void app_set_cursor(const char *name)
+{
+    if (!name || !g_app.wl.pointer || !ptr_serial)
+        return;
+    wayland_set_cursor(&g_app.wl, g_app.wl.pointer, ptr_serial, name);
+}
+
 /* Check if a surface belongs to our chrome (tabbar, statusbar, dlbar, historybar) */
 static gboolean is_chrome_surface(struct wl_surface *surf)
 {
@@ -492,9 +499,11 @@ static void forward_pointer_event(WPEEventType type, uint32_t time,
 {
     Tab *t = app_active_tab();
     if (!t || !t->view) return;
-    /* Coordinates relative to the view subsurface */
-    double vx = ptr_x - g_app.view_x;
-    double vy = ptr_y - g_app.view_y;
+    /* wl_pointer events report coords relative to the surface that received
+     * pointer.enter — for web content that's view_surface, so coords are
+     * already view-local. No view_x/view_y subtraction needed. */
+    double vx = ptr_x;
+    double vy = ptr_y;
 
     WPEEvent *ev;
     if (type == WPE_EVENT_SCROLL) {
@@ -538,12 +547,10 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t ser,
         wayland_set_cursor(&g_app.wl, p, ser, "default");
         Tab *t = app_active_tab();
         if (t && t->view) {
-            double vx = ptr_x - g_app.view_x;
-            double vy = ptr_y - g_app.view_y;
             WPEEvent *ev = wpe_event_pointer_move_new(
                 WPE_EVENT_POINTER_ENTER, t->view,
                 WPE_INPUT_SOURCE_MOUSE, 0, get_pointer_mods(),
-                vx, vy, 0, 0);
+                ptr_x, ptr_y, 0, 0);
             wpe_view_event(t->view, ev);
             wpe_event_unref(ev);
         }
@@ -631,15 +638,20 @@ static void ptr_axis(void *d, struct wl_pointer *p, uint32_t t,
     Tab *tab = app_active_tab();
     if (!tab || !tab->view) return;
 
+    /* wl_pointer.axis reports ~10.0 (libinput convention) per wheel notch.
+     * With is_precise=FALSE, WPE/WebKit treats dy as a line/notch count, so
+     * dy=10 = 10 notches per event — way too fast. Normalize one notch =
+     * one unit. */
     double dx = 0, dy = 0;
     /* axis 0 = WL_POINTER_AXIS_VERTICAL_SCROLL, 1 = HORIZONTAL */
     if (axis == 0)
-        dy = -wl_fixed_to_double(v);
+        dy = -wl_fixed_to_double(v) / 10.0;
     else
-        dx = -wl_fixed_to_double(v);
+        dx = -wl_fixed_to_double(v) / 10.0;
 
-    double vx = ptr_x - g_app.view_x;
-    double vy = ptr_y - g_app.view_y;
+    /* See forward_pointer_event: coords are already view-local. */
+    double vx = ptr_x;
+    double vy = ptr_y;
 
     WPEEvent *ev = wpe_event_scroll_new(tab->view,
         WPE_INPUT_SOURCE_MOUSE, t, get_pointer_mods(),

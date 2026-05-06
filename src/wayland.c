@@ -172,16 +172,48 @@ void wayland_connect(WaylandState *wl)
 void wayland_set_cursor(WaylandState *wl, struct wl_pointer *ptr,
     uint32_t serial, const char *name)
 {
+    /* "none" hides the cursor. */
+    if (name && strcmp(name, "none") == 0) {
+        wl_pointer_set_cursor(ptr, serial, NULL, 0, 0);
+        return;
+    }
+
     if (!wl->cursor_theme || !wl->cursor_surface) return;
+
     struct wl_cursor *c = NULL;
-    if (strcmp(name, "text") == 0)        c = wl->cursor_text;
-    else if (strcmp(name, "pointer") == 0) c = wl->cursor_pointer;
-    else                                   c = wl->cursor_default;
+    if (name)
+        c = wl_cursor_theme_get_cursor(wl->cursor_theme, name);
+
+    /* Common CSS-name → xcursor-name aliases for themes that don't carry
+     * the modern names. */
+    if (!c && name) {
+        const char *alt = NULL;
+        if      (strcmp(name, "pointer") == 0) alt = "hand2";
+        else if (strcmp(name, "default") == 0) alt = "left_ptr";
+        else if (strcmp(name, "text")    == 0) alt = "xterm";
+        else if (strcmp(name, "wait")    == 0) alt = "watch";
+        else if (strcmp(name, "progress")== 0) alt = "left_ptr_watch";
+        else if (strcmp(name, "help")    == 0) alt = "question_arrow";
+        else if (strcmp(name, "move")    == 0) alt = "fleur";
+        else if (strcmp(name, "not-allowed") == 0 ||
+                 strcmp(name, "no-drop") == 0) alt = "crossed_circle";
+        else if (strcmp(name, "grab")    == 0) alt = "openhand";
+        else if (strcmp(name, "grabbing")== 0) alt = "closedhand";
+        else if (strcmp(name, "ew-resize") == 0 ||
+                 strcmp(name, "col-resize") == 0) alt = "sb_h_double_arrow";
+        else if (strcmp(name, "ns-resize") == 0 ||
+                 strcmp(name, "row-resize") == 0) alt = "sb_v_double_arrow";
+        if (alt)
+            c = wl_cursor_theme_get_cursor(wl->cursor_theme, alt);
+    }
     if (!c) c = wl->cursor_default;
     if (!c) return;
+
     struct wl_cursor_image *img = c->images[0];
     wl_surface_attach(wl->cursor_surface,
         wl_cursor_image_get_buffer(img), 0, 0);
+    wl_surface_damage_buffer(wl->cursor_surface, 0, 0,
+        (int)img->width, (int)img->height);
     wl_surface_commit(wl->cursor_surface);
     wl_pointer_set_cursor(ptr, serial, wl->cursor_surface,
         (int32_t)img->hotspot_x, (int32_t)img->hotspot_y);

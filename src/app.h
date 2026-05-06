@@ -72,6 +72,11 @@ static inline Tab *app_active_tab(void)
 void app_repaint_chrome(void);
 void app_layout(int w, int h);
 void app_relayout_active(void);
+
+/* Set the pointer cursor by name (CSS cursor names — "pointer", "text",
+ * "default", "wait", "crosshair", "grab", "none", etc). No-op if pointer
+ * isn't currently over any of our surfaces (no valid serial). */
+void app_set_cursor(const char *name);
 void app_cmdbar_refresh_history(void);
 void app_cmdbar_clear_history(void);
 gboolean app_cmdbar_select_history(int direction);

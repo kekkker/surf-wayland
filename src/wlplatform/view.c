@@ -1,5 +1,6 @@
 #include "view.h"
 #include "display.h"
+#include "../app.h"
 #include "../protocols/linux-dmabuf-v1-client-protocol.h"
 
 #include <wpe/wpe-platform.h>
@@ -241,8 +242,10 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
 
 static void surf_view_set_cursor_from_name(WPEView *view, const char *name)
 {
-    (void)view; (void)name;
-    /* Cursor is handled by our own wl_pointer listener in main.c */
+    (void)view;
+    /* WebKit calls this on hover state changes (link, text input, etc).
+     * Forward the CSS cursor name to our wl_pointer cursor surface. */
+    app_set_cursor(name);
 }
 
 /* ── WPEView::can_be_mapped vfunc ─────────────────────────────────────── */
