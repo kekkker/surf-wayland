@@ -947,9 +947,19 @@ static void kb_modifiers(void *data, struct wl_keyboard *kb,
     uint32_t mods_locked, uint32_t group)
 {
     (void)data; (void)kb; (void)serial;
-    if (!xkb_st) return;
-    xkb_state_update_mask(xkb_st, mods_depressed, mods_latched,
-        mods_locked, 0, 0, group);
+    if (xkb_st)
+        xkb_state_update_mask(xkb_st, mods_depressed, mods_latched,
+            mods_locked, 0, 0, group);
+    /* Mirror into WPE's keymap state too — WebKit reads keysyms via
+     * its own xkb_state for IME / text input, and without the group
+     * update Cyrillic / non-ASCII layouts always return the US keysym
+     * regardless of the user's actual layout. */
+    if (wpe_kmap) {
+        struct xkb_state *wpe_st = wpe_keymap_xkb_get_xkb_state(wpe_kmap);
+        if (wpe_st)
+            xkb_state_update_mask(wpe_st, mods_depressed, mods_latched,
+                mods_locked, 0, 0, group);
+    }
 }
 
 static void kb_repeat_info(void *data, struct wl_keyboard *kb,
