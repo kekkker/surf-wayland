@@ -203,8 +203,23 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
 {
     (void)view; (void)data;
 
-    if (wpe_event_get_event_type(event) != WPE_EVENT_KEYBOARD_KEY_DOWN)
-        return FALSE;
+    WPEEventType etype = wpe_event_get_event_type(event);
+    gboolean is_down = (etype == WPE_EVENT_KEYBOARD_KEY_DOWN);
+    gboolean is_up   = (etype == WPE_EVENT_KEYBOARD_KEY_UP);
+    if (!is_down && !is_up) return FALSE;
+
+    Tab *t = app_active_tab();
+    if (!t) return FALSE;
+
+    /* Suppress KEY_UP for any mode where we suppress KEY_DOWN — otherwise
+     * pages with onkeyup handlers (e.g. video players binding space)
+     * still react while the user is typing into our chrome. INSERT/NORMAL
+     * are the only modes that forward keys to the page. */
+    if (is_up) {
+        if (t->mode == MODE_INSERT || t->mode == MODE_NORMAL)
+            return FALSE;
+        return TRUE;
+    }
 
     guint         keyval = wpe_event_keyboard_get_keyval(event);
     WPEModifiers  mods   = wpe_event_get_modifiers(event);
@@ -214,9 +229,6 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
             WPE_MODIFIER_KEYBOARD_SHIFT   |
             WPE_MODIFIER_KEYBOARD_ALT     |
             WPE_MODIFIER_KEYBOARD_META;
-
-    Tab *t = app_active_tab();
-    if (!t) return FALSE;
 
     /* INSERT mode: only Escape exits; everything else goes to the page */
     if (t->mode == MODE_INSERT) {

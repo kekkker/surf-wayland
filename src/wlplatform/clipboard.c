@@ -58,19 +58,39 @@ surf_clipboard_changed(WPEClipboard        *clipboard,
                        gboolean             is_local,
                        WPEClipboardContent *content)
 {
-    (void)clipboard; (void)formats;
-    /* Only react to local changes — i.e. WebKit just copied something
-     * and we need to push it to the system clipboard. External changes
-     * (is_local=FALSE) shouldn't normally hit this path; if they do,
-     * ignore them to avoid loops. */
-    if (!is_local || !content)
-        return;
+    /* On local change (WebKit Copy/Cut), push text to wl_data_device.
+     * Remote changes route through here too via remote_changed(): we
+     * still must chain to parent so priv->formats gets populated —
+     * otherwise wpe_clipboard_read_bytes short-circuits to NULL. */
+    if (is_local && content) {
+        const char *text = wpe_clipboard_content_get_text(content);
+        if (text)
+            clipboard_set_text(text);
+    }
 
-    const char *text = wpe_clipboard_content_get_text(content);
-    if (!text)
-        return;
+    WPE_CLIPBOARD_CLASS(surf_clipboard_parent_class)->changed(
+        clipboard, formats, is_local, content);
+}
 
-    clipboard_set_text(text);
+void
+surf_clipboard_remote_changed(SurfClipboard *self,
+    const char * const *formats)
+{
+    if (!self) return;
+    GPtrArray *arr = NULL;
+    if (formats && formats[0]) {
+        arr = g_ptr_array_new();
+        for (int i = 0; formats[i]; i++) {
+            /* Intern so pointer equality works in g_ptr_array_find,
+             * matching wpe_clipboard_read_bytes' lookup path. */
+            g_ptr_array_add(arr,
+                (gpointer)g_intern_string(formats[i]));
+        }
+        g_ptr_array_add(arr, NULL);
+    }
+    WPE_CLIPBOARD_GET_CLASS(self)->changed(WPE_CLIPBOARD(self),
+        arr, FALSE, NULL);
+    if (arr) g_ptr_array_unref(arr);
 }
 
 /* ── GObject boilerplate ─────────────────────────────────────────────── */

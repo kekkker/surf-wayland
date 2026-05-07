@@ -1175,6 +1175,11 @@ int main(int argc, char *argv[])
     /* Set as primary so WebKit picks it up */
     wpe_display_set_primary(WPE_DISPLAY(g_app.sdisplay));
 
+    /* Bridge wl_data_device → WPEClipboard so WebKit's paste path sees
+     * external clipboard offers. wpe_display_get_clipboard creates the
+     * SurfClipboard lazily on first call. */
+    clipboard_bind_wpe(wpe_display_get_clipboard(WPE_DISPLAY(g_app.sdisplay)));
+
     /* 8. Create our toplevel (SurfToplevel) with unlimited views */
     g_app.toplevel = wpe_display_create_toplevel(WPE_DISPLAY(g_app.sdisplay), 0);
 

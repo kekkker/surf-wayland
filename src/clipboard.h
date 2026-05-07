@@ -12,6 +12,12 @@
 void clipboard_init(WaylandState *wl);
 void clipboard_finish(WaylandState *wl);
 
+/* Bridge to the WPE platform clipboard so WebKit's read-side sees remote
+ * offers. Must be called after wpe_display_connect() has created the
+ * SurfClipboard. Forward-declared as void* to avoid pulling WPE headers
+ * into every clipboard.h consumer. */
+void clipboard_bind_wpe(void *surf_clipboard);
+
 /* Track latest input event serial — needed by wl_data_device.set_selection. */
 void clipboard_set_serial(uint32_t serial);
 

@@ -12,6 +12,9 @@
 
 #include "clipboard.h"
 #include "wayland.h"
+#include "wlplatform/clipboard.h"
+
+#include <wpe/wpe-platform.h>
 
 #include <glib.h>
 #include <stdint.h>
@@ -36,16 +39,36 @@ static struct {
     /* Incoming: latest selection offer the compositor handed us. */
     struct wl_data_offer *current_offer;
     bool                  current_has_text;
+    /* All MIME types advertised by current_offer (NULL-terminated array
+     * of g_strdup'd strings, freed when current_offer is replaced). */
+    GPtrArray            *current_formats;
 
     /* While the compositor is announcing offers via data_offer events, we
      * track the *pending* offer (not yet bound to selection). */
     struct wl_data_offer *pending_offer;
     bool                  pending_has_text;
+    GPtrArray            *pending_formats;
 
     /* Outgoing: source we published, and the text it serves. */
     struct wl_data_source *our_source;
     char                  *our_text;
+
+    /* Bridge to WPEClipboard so WebKit's read path sees external offers. */
+    SurfClipboard        *wpe_clipboard;
 } g;
+
+static void
+push_formats_to_wpe(void)
+{
+    if (!g.wpe_clipboard) return;
+    if (!g.current_formats || g.current_formats->len <= 1) {
+        surf_clipboard_remote_changed(g.wpe_clipboard, NULL);
+        return;
+    }
+    /* current_formats is a NULL-terminated GPtrArray. Pass pdata. */
+    surf_clipboard_remote_changed(g.wpe_clipboard,
+        (const char * const *)g.current_formats->pdata);
+}
 
 /* ── wl_data_offer listener ─────────────────────────────────────────── */
 
@@ -54,11 +77,15 @@ offer_offer(void *data, struct wl_data_offer *offer, const char *mime)
 {
     (void)data; (void)offer;
     /* This fires for the *pending* offer — between data_device.data_offer
-     * and data_device.selection. */
-    if (mime && (strcmp(mime, MIME_TEXT_UTF8)   == 0 ||
-                 strcmp(mime, MIME_UTF8_STRING) == 0 ||
-                 strcmp(mime, MIME_TEXT_PLAIN)  == 0))
+     * and data_device.selection. Track every MIME type so WebKit can
+     * read non-text payloads (custom data, html, etc.) too. */
+    if (!mime) return;
+    if (strcmp(mime, MIME_TEXT_UTF8)   == 0 ||
+        strcmp(mime, MIME_UTF8_STRING) == 0 ||
+        strcmp(mime, MIME_TEXT_PLAIN)  == 0)
         g.pending_has_text = true;
+    if (g.pending_formats)
+        g_ptr_array_add(g.pending_formats, g_strdup(mime));
 }
 
 static void offer_source_actions(void *d, struct wl_data_offer *o, uint32_t a)
@@ -84,6 +111,8 @@ device_data_offer(void *data, struct wl_data_device *dev,
      * it to a role. We only care about selection. */
     g.pending_offer = offer;
     g.pending_has_text = false;
+    if (g.pending_formats) g_ptr_array_unref(g.pending_formats);
+    g.pending_formats = g_ptr_array_new_with_free_func(g_free);
     wl_data_offer_add_listener(offer, &offer_listener, NULL);
 }
 
@@ -96,13 +125,29 @@ device_selection(void *data, struct wl_data_device *dev,
      * data_offer (or NULL = cleared). */
     if (g.current_offer && g.current_offer != offer)
         wl_data_offer_destroy(g.current_offer);
+    if (g.current_formats) {
+        g_ptr_array_unref(g.current_formats);
+        g.current_formats = NULL;
+    }
 
     g.current_offer    = offer;
     g.current_has_text = (offer == g.pending_offer) ? g.pending_has_text : false;
 
+    if (offer && offer == g.pending_offer && g.pending_formats) {
+        /* NUL-terminate so we can pass pdata to WebKit. */
+        g_ptr_array_add(g.pending_formats, NULL);
+        g.current_formats = g.pending_formats;
+        g.pending_formats = NULL;
+    } else if (g.pending_formats) {
+        g_ptr_array_unref(g.pending_formats);
+        g.pending_formats = NULL;
+    }
+
     /* Pending state is consumed. */
     g.pending_offer    = NULL;
     g.pending_has_text = false;
+
+    push_formats_to_wpe();
 }
 
 /* DnD events — we don't drag, but listener struct requires them. */
@@ -232,6 +277,9 @@ clipboard_finish(WaylandState *wl)
         wl_data_offer_destroy(g.pending_offer);
         g.pending_offer = NULL;
     }
+    g_clear_pointer(&g.current_formats, g_ptr_array_unref);
+    g_clear_pointer(&g.pending_formats, g_ptr_array_unref);
+    g.wpe_clipboard = NULL;
     if (wl->data_device) {
         wl_data_device_destroy(wl->data_device);
         wl->data_device = NULL;
@@ -246,6 +294,14 @@ void
 clipboard_set_serial(uint32_t serial)
 {
     g.serial = serial;
+}
+
+void
+clipboard_bind_wpe(void *surf_clipboard)
+{
+    g.wpe_clipboard = (SurfClipboard *)surf_clipboard;
+    /* If a selection arrived before binding, push it now. */
+    push_formats_to_wpe();
 }
 
 bool
