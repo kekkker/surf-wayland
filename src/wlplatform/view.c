@@ -44,6 +44,7 @@ static void buffer_entry_free(BufferEntry *entry)
 
 typedef struct _SurfViewPrivate {
     struct wl_surface    *surface;
+    gboolean              is_active;
     struct wl_subsurface *subsurface;
     GHashTable           *buffer_map;   /* WPEBuffer* -> BufferEntry* */
     struct wl_callback   *frame_callback;
@@ -179,6 +180,16 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
         return FALSE;
     }
 
+    /* Background tabs share the wl_surface with the foreground tab —
+     * if e.g. YouTube finishes a frame just after we switched away, we
+     * must NOT commit it (would overwrite the new active tab and the
+     * user sees a frozen YouTube frame). Acknowledge the buffer so
+     * WebKit's swapchain doesn't stall and return TRUE. */
+    if (!priv->is_active) {
+        wpe_view_buffer_rendered(view, buffer);
+        return TRUE;
+    }
+
     /* Look up or create wl_buffer for this WPE buffer */
     BufferEntry *entry = g_hash_table_lookup(priv->buffer_map, buffer);
     if (!entry) {
@@ -267,16 +278,9 @@ static void surf_view_dispose(GObject *object)
         priv->frame_callback = NULL;
     }
 
+    /* Clean up all buffer entries. Do NOT destroy the wl_surface /
+     * wl_subsurface here — AppState owns those. */
     g_clear_pointer(&priv->buffer_map, g_hash_table_destroy);
-
-    if (priv->subsurface) {
-        wl_subsurface_destroy(priv->subsurface);
-        priv->subsurface = NULL;
-    }
-    if (priv->surface) {
-        wl_surface_destroy(priv->surface);
-        priv->surface = NULL;
-    }
 
     G_OBJECT_CLASS(surf_view_parent_class)->dispose(object);
 }
@@ -301,17 +305,13 @@ static void surf_view_init(SurfView *self)
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
-void surf_view_realize(SurfView *view,
-                       struct wl_compositor *compositor,
-                       struct wl_subcompositor *subcompositor,
-                       struct wl_surface *parent)
+void surf_view_set_wl_surface(SurfView *view,
+                              struct wl_surface *surface,
+                              struct wl_subsurface *subsurface)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    if (priv->surface) return;  /* idempotent */
-    priv->surface = wl_compositor_create_surface(compositor);
-    priv->subsurface = wl_subcompositor_get_subsurface(
-        subcompositor, priv->surface, parent);
-    wl_subsurface_set_desync(priv->subsurface);
+    priv->surface = surface;
+    priv->subsurface = subsurface;
 }
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view)
@@ -326,16 +326,8 @@ struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view)
     return priv->subsurface;
 }
 
-void surf_view_place_above(SurfView *view, struct wl_surface *ref)
+void surf_view_set_active(SurfView *view, gboolean active)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    if (priv->subsurface && ref)
-        wl_subsurface_place_above(priv->subsurface, ref);
-}
-
-void surf_view_set_position(SurfView *view, int x, int y)
-{
-    SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    if (priv->subsurface)
-        wl_subsurface_set_position(priv->subsurface, x, y);
+    priv->is_active = active;
 }

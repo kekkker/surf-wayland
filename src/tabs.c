@@ -391,14 +391,11 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     }
     t->view = webkit_web_view_get_wpe_view(t->wv);
 
-    /* Each tab gets its own wl_surface + wl_subsurface so that switching
-     * is just a z-order swap — no shared-surface stale-frame freeze.
+    /* Wire the SurfView's wl_surface to our view subsurface.
      * Must happen before wpe_view_map, which checks can_be_mapped(). */
-    if (SURF_IS_VIEW(t->view)) {
-        surf_view_realize(SURF_VIEW(t->view),
-            g_app.wl.compositor, g_app.wl.subcompositor, g_app.root_surface);
-        surf_view_set_position(SURF_VIEW(t->view),
-            g_app.view_x, g_app.view_y);
+    if (g_app.view_surface && g_app.view_subsurface && SURF_IS_VIEW(t->view)) {
+        surf_view_set_wl_surface(SURF_VIEW(t->view),
+            g_app.view_surface, g_app.view_subsurface);
     }
 
     /* Move view to our shared toplevel (max_views=0, unlimited). */
@@ -470,33 +467,27 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     webkit_user_content_manager_add_script(cm, focus_script);
     webkit_user_script_unref(focus_script);
 
-    /* Background previous active so WebKit suspends rAF/video. Its
-     * subsurface stays alive — its last frame is still on screen for
-     * when the user comes back to it. */
+    /* Unmap previous active */
     if (ta->active >= 0) {
+        if (SURF_IS_VIEW(ta->items[ta->active].view))
+            surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
+        wpe_view_unmap(ta->items[ta->active].view);
         wpe_view_set_visible(ta->items[ta->active].view, FALSE);
         wpe_view_focus_out(ta->items[ta->active].view);
     }
 
     ta->active = idx;
+    /* Tell the view its size before mapping — the toplevel already knows */
     {
         int vw = g_app.view_w > 0 ? g_app.view_w : 800;
         int vh = g_app.view_h > 0 ? g_app.view_h : 600;
         wpe_view_resized(t->view, vw, vh);
     }
+    if (SURF_IS_VIEW(t->view))
+        surf_view_set_active(SURF_VIEW(t->view), TRUE);
+    wpe_view_map(t->view);
     wpe_view_set_visible(t->view, TRUE);
     wpe_view_focus_in(t->view);
-    /* Raise above siblings, then chrome above us. */
-    if (SURF_IS_VIEW(t->view)) {
-        for (int i = 0; i < ta->count; i++) {
-            if (i == idx) continue;
-            struct wl_surface *ref = NULL;
-            if (SURF_IS_VIEW(ta->items[i].view))
-                ref = surf_view_get_wl_surface(SURF_VIEW(ta->items[i].view));
-            if (ref) surf_view_place_above(SURF_VIEW(t->view), ref);
-        }
-    }
-    app_raise_chrome();
 
     return t;
 }
@@ -530,20 +521,11 @@ void tabarray_close(TabArray *ta, int idx,
 
     int new_active = idx < ta->count ? idx : ta->count - 1;
     ta->active = new_active;
+    if (SURF_IS_VIEW(ta->items[new_active].view))
+        surf_view_set_active(SURF_VIEW(ta->items[new_active].view), TRUE);
     wpe_view_set_visible(ta->items[new_active].view, TRUE);
+    wpe_view_map(ta->items[new_active].view);
     wpe_view_focus_in(ta->items[new_active].view);
-    /* New active goes on top, chrome on top of that. */
-    if (SURF_IS_VIEW(ta->items[new_active].view)) {
-        for (int i = 0; i < ta->count; i++) {
-            if (i == new_active) continue;
-            struct wl_surface *ref = NULL;
-            if (SURF_IS_VIEW(ta->items[i].view))
-                ref = surf_view_get_wl_surface(SURF_VIEW(ta->items[i].view));
-            if (ref) surf_view_place_above(
-                SURF_VIEW(ta->items[new_active].view), ref);
-        }
-    }
-    app_raise_chrome();
     app_relayout_active();
     on_change(cb_data);
 }
@@ -552,29 +534,29 @@ void tabarray_switch(TabArray *ta, int idx)
 {
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
-    /* Background old: WebKit suspends rAF/video timers. The old tab's
-     * subsurface keeps its last frame so it'll be ready instantly if
-     * the user comes back. */
+    if (SURF_IS_VIEW(ta->items[ta->active].view))
+        surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
+    wpe_view_unmap(ta->items[ta->active].view);
     wpe_view_set_visible(ta->items[ta->active].view, FALSE);
     wpe_view_focus_out(ta->items[ta->active].view);
     ta->active = idx;
+    if (SURF_IS_VIEW(ta->items[idx].view))
+        surf_view_set_active(SURF_VIEW(ta->items[idx].view), TRUE);
+    wpe_view_map(ta->items[idx].view);
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);
-    /* Z-order: new active above every sibling, chrome above active. */
-    if (SURF_IS_VIEW(ta->items[idx].view)) {
-        for (int i = 0; i < ta->count; i++) {
-            if (i == idx) continue;
-            struct wl_surface *ref = NULL;
-            if (SURF_IS_VIEW(ta->items[i].view))
-                ref = surf_view_get_wl_surface(SURF_VIEW(ta->items[i].view));
-            if (ref) surf_view_place_above(SURF_VIEW(ta->items[idx].view), ref);
-        }
-    }
-    app_raise_chrome();
     app_relayout_active();
-    /* Damage the parent surface so the compositor recomputes z-order
-     * presentation immediately. */
-    wl_surface_commit(g_app.root_surface);
+    /* Force WebKit to produce a frame for the now-visible tab.
+     * wpe_view_resized + setSize are no-ops at unchanged dimensions,
+     * and visibility changes alone don't always trigger an immediate
+     * repaint — leaving the shared wl_surface stuck on the previous
+     * tab's last buffer (YouTube freeze). Nudge the size by 1px and
+     * restore it: this produces real resize signals into WebCore which
+     * scheduling a layout + paint that lands in render_buffer. */
+    int vw = g_app.view_w > 0 ? g_app.view_w : 800;
+    int vh = g_app.view_h > 0 ? g_app.view_h : 600;
+    wpe_view_resized(ta->items[idx].view, vw - 1, vh);
+    wpe_view_resized(ta->items[idx].view, vw, vh);
 }
 
 void tabarray_free(TabArray *ta)
