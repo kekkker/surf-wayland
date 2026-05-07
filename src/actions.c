@@ -295,6 +295,11 @@ act_normal_mode(const Arg *a)
 		return;
 	if (t->mode == MODE_INSERT || t->mode == MODE_SEARCH ||
 		t->mode == MODE_COMMAND) {
+		if (t->mode == MODE_INSERT)
+			webkit_web_view_evaluate_javascript(t->wv,
+				"if(document.activeElement&&document.activeElement.blur)"
+				"document.activeElement.blur();",
+				-1, NULL, NULL, NULL, NULL, NULL);
 		if (t->mode == MODE_SEARCH && t->finder)
 			webkit_find_controller_search_finish(t->finder);
 		if (t->mode == MODE_COMMAND || t->mode == MODE_SEARCH)

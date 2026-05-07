@@ -372,9 +372,32 @@ void app_layout_chrome(int win_w, int win_h)
 static void xdg_toplevel_configure(void *data, struct xdg_toplevel *toplevel,
     int32_t w, int32_t h, struct wl_array *states)
 {
-    (void)data; (void)toplevel; (void)states;
+    (void)data; (void)toplevel;
     g_app.pending_w = w > 0 ? w : winsize[0];
     g_app.pending_h = h > 0 ? h : winsize[1];
+
+    /* WebKit only blinks the input caret when the toplevel is in
+     * WPE_TOPLEVEL_STATE_ACTIVE — without this, focused inputs render
+     * with no visible cursor. Mirror xdg_toplevel ACTIVATED → WPE
+     * ACTIVE. */
+    if (g_app.toplevel) {
+        WPEToplevelState st = wpe_toplevel_get_state(g_app.toplevel);
+        gboolean activated = FALSE;
+        gboolean fullscreen = FALSE;
+        gboolean maximized = FALSE;
+        uint32_t *s;
+        wl_array_for_each(s, states) {
+            if (*s == XDG_TOPLEVEL_STATE_ACTIVATED) activated = TRUE;
+            else if (*s == XDG_TOPLEVEL_STATE_FULLSCREEN) fullscreen = TRUE;
+            else if (*s == XDG_TOPLEVEL_STATE_MAXIMIZED) maximized = TRUE;
+        }
+        WPEToplevelState newst = WPE_TOPLEVEL_STATE_NONE;
+        if (activated)  newst |= WPE_TOPLEVEL_STATE_ACTIVE;
+        if (fullscreen) newst |= WPE_TOPLEVEL_STATE_FULLSCREEN;
+        if (maximized)  newst |= WPE_TOPLEVEL_STATE_MAXIMIZED;
+        if (newst != st)
+            wpe_toplevel_state_changed(g_app.toplevel, newst);
+    }
 }
 
 static void xdg_toplevel_close(void *data, struct xdg_toplevel *toplevel)
@@ -795,6 +818,15 @@ static void kb_enter(void *data, struct wl_keyboard *kb,
         Tab *t = app_active_tab();
         if (t && t->view)
             wpe_view_focus_in(t->view);
+        /* Mark the toplevel ACTIVE so WebKit blinks the input caret —
+         * xdg_toplevel.configure fires before main.c creates g_app.toplevel,
+         * so we can't rely on the configure handler alone. */
+        if (g_app.toplevel) {
+            WPEToplevelState st = wpe_toplevel_get_state(g_app.toplevel);
+            if (!(st & WPE_TOPLEVEL_STATE_ACTIVE))
+                wpe_toplevel_state_changed(g_app.toplevel,
+                    st | WPE_TOPLEVEL_STATE_ACTIVE);
+        }
     }
 }
 
@@ -806,6 +838,12 @@ static void kb_leave(void *data, struct wl_keyboard *kb,
         Tab *t = app_active_tab();
         if (t && t->view)
             wpe_view_focus_out(t->view);
+        if (g_app.toplevel) {
+            WPEToplevelState st = wpe_toplevel_get_state(g_app.toplevel);
+            if (st & WPE_TOPLEVEL_STATE_ACTIVE)
+                wpe_toplevel_state_changed(g_app.toplevel,
+                    st & ~WPE_TOPLEVEL_STATE_ACTIVE);
+        }
     }
 }
 

@@ -76,6 +76,53 @@ static void on_mouse_target_changed(WebKitWebView *wv, WebKitHitTestResult *hit,
     d->on_change(d->cb_data);
 }
 
+/* Focus tracker: page-side script posts {focused:bool} via
+ * window.webkit.messageHandlers.surfFocus.postMessage when an editable
+ * element gains/loses focus. We flip into MODE_INSERT so vim-style keys
+ * stop intercepting typing, and back to MODE_NORMAL on blur. */
+static const char focus_tracker_js[] =
+    "(function(){"
+    "  function ed(el){"
+    "    if(!el)return false;"
+    "    var t=(el.tagName||'').toUpperCase();"
+    "    if(t==='INPUT'){"
+    "      var ty=(el.type||'text').toLowerCase();"
+    "      return ty!=='button'&&ty!=='submit'&&ty!=='reset'&&"
+    "             ty!=='checkbox'&&ty!=='radio'&&ty!=='file'&&"
+    "             ty!=='image'&&ty!=='hidden';"
+    "    }"
+    "    return t==='TEXTAREA'||t==='SELECT'||el.isContentEditable===true;"
+    "  }"
+    "  function post(b){"
+    "    try{window.webkit.messageHandlers.surfFocus.postMessage(!!b);}"
+    "    catch(e){}"
+    "  }"
+    "  document.addEventListener('focusin',function(e){if(ed(e.target))post(true);},true);"
+    "  document.addEventListener('focusout',function(e){if(ed(e.target))post(false);},true);"
+    "  if(ed(document.activeElement))post(true);"
+    "})()";
+
+static void on_surf_focus_msg(WebKitUserContentManager *cm,
+    JSCValue *value, gpointer ud)
+{
+    (void)cm;
+    TabCBData *d = ud;
+    Tab *t = find_tab(d);
+    if (!t || t != app_active_tab()) return;
+    gboolean focused = jsc_value_to_boolean(value);
+    if (focused) {
+        if (t->mode == MODE_NORMAL) {
+            t->mode = MODE_INSERT;
+            d->on_change(d->cb_data);
+        }
+    } else {
+        if (t->mode == MODE_INSERT) {
+            t->mode = MODE_NORMAL;
+            d->on_change(d->cb_data);
+        }
+    }
+}
+
 static void on_web_process_terminated(WebKitWebView *wv,
     WebKitWebProcessTerminationReason reason, gpointer ud)
 {
@@ -403,6 +450,22 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     settings_apply(t);
     userscripts_apply(t);
     input_connect_view(t->view);
+
+    /* Focus tracker — auto-enter MODE_INSERT when an editable element
+     * receives focus, exit on blur. Wire signal before registering the
+     * handler to avoid missing early posts. */
+    WebKitUserContentManager *cm =
+        webkit_web_view_get_user_content_manager(t->wv);
+    g_signal_connect(cm, "script-message-received::surfFocus",
+        G_CALLBACK(on_surf_focus_msg), cbd);
+    webkit_user_content_manager_register_script_message_handler(cm,
+        "surfFocus", NULL);
+    WebKitUserScript *focus_script = webkit_user_script_new(focus_tracker_js,
+        WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES,
+        WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END,
+        NULL, NULL);
+    webkit_user_content_manager_add_script(cm, focus_script);
+    webkit_user_script_unref(focus_script);
 
     /* Unmap previous active */
     if (ta->active >= 0) {
