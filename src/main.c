@@ -496,8 +496,19 @@ static void tab_close_cb(int idx, void *data)
 /* ── pointer state ───────────────────────────────────────────────────────── */
 
 static struct wl_surface *ptr_surface;
-static int ptr_x, ptr_y;
+static double ptr_x, ptr_y;
 static uint32_t ptr_serial;
+/* Tracks which mouse buttons are currently pressed; mirrored into
+ * WPEModifiers so WebKit sees button state on motion events (required
+ * for click-drag text selection). */
+static WPEModifiers ptr_btn_mods;
+/* Multi-click tracking for word/paragraph selection on double/triple
+ * click. WebKit selects word on press_count=2 and paragraph on
+ * press_count=3. Reset when button changes or on >500ms gap. */
+static guint     ptr_press_count;
+static uint32_t  ptr_last_press_time;
+static guint     ptr_last_press_btn;
+static double    ptr_last_press_x, ptr_last_press_y;
 
 void app_set_cursor(const char *name)
 {
@@ -519,7 +530,7 @@ static gboolean is_chrome_surface(struct wl_surface *surf)
 
 /* Forward a pointer event to the active WPE view */
 static void forward_pointer_event(WPEEventType type, uint32_t time,
-    guint button, WPEModifiers mods)
+    guint button, WPEModifiers mods, guint press_count)
 {
     Tab *t = app_active_tab();
     if (!t || !t->view) return;
@@ -539,11 +550,9 @@ static void forward_pointer_event(WPEEventType type, uint32_t time,
             WPE_INPUT_SOURCE_MOUSE, time, mods,
             vx, vy, 0, 0);
     } else {
-        /* POINTER_DOWN: press_count=1, POINTER_UP: press_count=0 */
-        guint pc = (type == WPE_EVENT_POINTER_DOWN) ? 1 : 0;
         ev = wpe_event_pointer_button_new(type, t->view,
             WPE_INPUT_SOURCE_MOUSE, time, mods,
-            button, vx, vy, pc);
+            button, vx, vy, press_count);
     }
     wpe_view_event(t->view, ev);
     wpe_event_unref(ev);
@@ -551,9 +560,9 @@ static void forward_pointer_event(WPEEventType type, uint32_t time,
 
 static WPEModifiers get_pointer_mods(void)
 {
-    /* We don't track button state ourselves; return 0 for now.
-     * WPE gets modifier info from its own keymap state. */
-    return (WPEModifiers)0;
+    /* Mirror tracked button state. Keyboard mods come from WPE's own
+     * keymap state on key events — irrelevant here. */
+    return ptr_btn_mods;
 }
 
 static void ptr_enter(void *d, struct wl_pointer *p, uint32_t ser,
@@ -561,8 +570,8 @@ static void ptr_enter(void *d, struct wl_pointer *p, uint32_t ser,
 {
     (void)d;
     ptr_surface = surf;
-    ptr_x = wl_fixed_to_int(x);
-    ptr_y = wl_fixed_to_int(y);
+    ptr_x = wl_fixed_to_double(x);
+    ptr_y = wl_fixed_to_double(y);
     ptr_serial = ser;
 
     if (is_chrome_surface(surf)) {
@@ -603,11 +612,12 @@ static void ptr_motion(void *d, struct wl_pointer *p, uint32_t t,
     wl_fixed_t x, wl_fixed_t y)
 {
     (void)d; (void)p;
-    ptr_x = wl_fixed_to_int(x);
-    ptr_y = wl_fixed_to_int(y);
+    ptr_x = wl_fixed_to_double(x);
+    ptr_y = wl_fixed_to_double(y);
 
     if (!is_chrome_surface(ptr_surface)) {
-        forward_pointer_event(WPE_EVENT_POINTER_MOVE, t, 0, get_pointer_mods());
+        forward_pointer_event(WPE_EVENT_POINTER_MOVE, t, 0,
+            get_pointer_mods(), 0);
     }
 }
 
@@ -616,14 +626,29 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t ser,
 {
     (void)d; (void)p; (void)ser;
 
+    /* Map Linux input button codes to WPE button numbers + modifier bit */
+    guint wpe_btn = 0;
+    WPEModifiers btn_bit = 0;
+    switch (btn) {
+    case BTN_LEFT:   wpe_btn = 1; btn_bit = WPE_MODIFIER_POINTER_BUTTON1; break;
+    case BTN_MIDDLE: wpe_btn = 2; btn_bit = WPE_MODIFIER_POINTER_BUTTON2; break;
+    case BTN_RIGHT:  wpe_btn = 3; btn_bit = WPE_MODIFIER_POINTER_BUTTON3; break;
+    default:         wpe_btn = btn; break;
+    }
+
+    gboolean pressed = (state == WL_POINTER_BUTTON_STATE_PRESSED);
+    if (pressed)
+        ptr_btn_mods |= btn_bit;
+    else
+        ptr_btn_mods &= ~btn_bit;
+
     /* Chrome clicks (tabbar) — only on press */
-    if (state == WL_POINTER_BUTTON_STATE_PRESSED &&
-        g_app.tabbar && ptr_surface == g_app.tabbar->surface) {
+    if (pressed && g_app.tabbar && ptr_surface == g_app.tabbar->surface) {
         int n = g_app.tabs.count;
         if (n > 0) {
             int tw = g_app.tabbar->width / n;
             if (tw > 200) tw = 200;
-            int idx = ptr_x / tw;
+            int idx = (int)ptr_x / tw;
             if (idx >= 0 && idx < n) {
                 if (btn == BTN_LEFT) {
                     tabarray_switch(&g_app.tabs, idx);
@@ -639,17 +664,29 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t ser,
 
     /* Forward to WPE */
     if (!is_chrome_surface(ptr_surface)) {
-        WPEEventType type = (state == WL_POINTER_BUTTON_STATE_PRESSED)
+        WPEEventType type = pressed
             ? WPE_EVENT_POINTER_DOWN : WPE_EVENT_POINTER_UP;
-        /* Map Linux input button codes to WPE button numbers */
-        guint wpe_btn = 0;
-        switch (btn) {
-        case BTN_LEFT:   wpe_btn = 1; break;  /* WPE_BUTTON_PRIMARY */
-        case BTN_MIDDLE: wpe_btn = 2; break;  /* WPE_BUTTON_MIDDLE */
-        case BTN_RIGHT:  wpe_btn = 3; break;  /* WPE_BUTTON_SECONDARY */
-        default:         wpe_btn = btn; break;
+        guint pc = 0;
+        if (pressed) {
+            /* Double/triple-click detection: same button, within 500ms,
+             * within ~5px. Caps at 3 (paragraph select). */
+            double dx = ptr_x - ptr_last_press_x;
+            double dy = ptr_y - ptr_last_press_y;
+            gboolean same_spot = dx*dx + dy*dy <= 25.0;
+            if (btn == ptr_last_press_btn && same_spot &&
+                t - ptr_last_press_time <= 500 &&
+                ptr_press_count > 0) {
+                ptr_press_count = ptr_press_count >= 3 ? 1 : ptr_press_count + 1;
+            } else {
+                ptr_press_count = 1;
+            }
+            ptr_last_press_btn  = btn;
+            ptr_last_press_time = t;
+            ptr_last_press_x    = ptr_x;
+            ptr_last_press_y    = ptr_y;
+            pc = ptr_press_count;
         }
-        forward_pointer_event(type, t, wpe_btn, get_pointer_mods());
+        forward_pointer_event(type, t, wpe_btn, get_pointer_mods(), pc);
     }
 }
 
