@@ -391,11 +391,18 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     }
     t->view = webkit_web_view_get_wpe_view(t->wv);
 
-    /* Wire the SurfView's wl_surface to our view subsurface.
-     * Must happen before wpe_view_map, which checks can_be_mapped(). */
-    if (g_app.view_surface && g_app.view_subsurface && SURF_IS_VIEW(t->view)) {
-        surf_view_set_wl_surface(SURF_VIEW(t->view),
-            g_app.view_surface, g_app.view_subsurface);
+    /* Each tab gets its own wl_surface + wl_subsurface (mirrors GTK's
+     * per-widget model). Switch is just a z-order swap; each tab's
+     * surface keeps its own last frame. Must happen before
+     * wpe_view_map, which checks can_be_mapped(). */
+    if (SURF_IS_VIEW(t->view)) {
+        int vw = g_app.view_w > 0 ? g_app.view_w : 800;
+        int vh = g_app.view_h > 0 ? g_app.view_h : 600;
+        surf_view_realize(SURF_VIEW(t->view),
+            g_app.wl.compositor, g_app.wl.subcompositor, g_app.wl.shm,
+            g_app.root_surface, vw, vh);
+        surf_view_set_position(SURF_VIEW(t->view),
+            g_app.view_x, g_app.view_y);
     }
 
     /* Move view to our shared toplevel (max_views=0, unlimited). */
@@ -467,27 +474,35 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     webkit_user_content_manager_add_script(cm, focus_script);
     webkit_user_script_unref(focus_script);
 
-    /* Unmap previous active */
+    /* Suspend previous active so WebKit pauses rAF/video. Its
+     * subsurface keeps its last frame onscreen until we raise the new
+     * tab above it. */
     if (ta->active >= 0) {
-        if (SURF_IS_VIEW(ta->items[ta->active].view))
-            surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
-        wpe_view_unmap(ta->items[ta->active].view);
         wpe_view_set_visible(ta->items[ta->active].view, FALSE);
         wpe_view_focus_out(ta->items[ta->active].view);
     }
 
     ta->active = idx;
-    /* Tell the view its size before mapping — the toplevel already knows */
     {
         int vw = g_app.view_w > 0 ? g_app.view_w : 800;
         int vh = g_app.view_h > 0 ? g_app.view_h : 600;
         wpe_view_resized(t->view, vw, vh);
     }
-    if (SURF_IS_VIEW(t->view))
-        surf_view_set_active(SURF_VIEW(t->view), TRUE);
     wpe_view_map(t->view);
     wpe_view_set_visible(t->view, TRUE);
     wpe_view_focus_in(t->view);
+    /* Z-order: raise new active above all siblings, chrome above active. */
+    if (SURF_IS_VIEW(t->view)) {
+        for (int i = 0; i < ta->count; i++) {
+            if (i == idx) continue;
+            struct wl_surface *ref = NULL;
+            if (SURF_IS_VIEW(ta->items[i].view))
+                ref = surf_view_get_wl_surface(SURF_VIEW(ta->items[i].view));
+            if (ref) surf_view_place_above(SURF_VIEW(t->view), ref);
+        }
+    }
+    app_raise_chrome();
+    wl_surface_commit(g_app.root_surface);
 
     return t;
 }
@@ -521,11 +536,20 @@ void tabarray_close(TabArray *ta, int idx,
 
     int new_active = idx < ta->count ? idx : ta->count - 1;
     ta->active = new_active;
-    if (SURF_IS_VIEW(ta->items[new_active].view))
-        surf_view_set_active(SURF_VIEW(ta->items[new_active].view), TRUE);
     wpe_view_set_visible(ta->items[new_active].view, TRUE);
-    wpe_view_map(ta->items[new_active].view);
     wpe_view_focus_in(ta->items[new_active].view);
+    if (SURF_IS_VIEW(ta->items[new_active].view)) {
+        for (int i = 0; i < ta->count; i++) {
+            if (i == new_active) continue;
+            struct wl_surface *ref = NULL;
+            if (SURF_IS_VIEW(ta->items[i].view))
+                ref = surf_view_get_wl_surface(SURF_VIEW(ta->items[i].view));
+            if (ref) surf_view_place_above(
+                SURF_VIEW(ta->items[new_active].view), ref);
+        }
+    }
+    app_raise_chrome();
+    wl_surface_commit(g_app.root_surface);
     app_relayout_active();
     on_change(cb_data);
 }
@@ -534,17 +558,25 @@ void tabarray_switch(TabArray *ta, int idx)
 {
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
-    if (SURF_IS_VIEW(ta->items[ta->active].view))
-        surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
-    wpe_view_unmap(ta->items[ta->active].view);
+    /* Old: WebKit suspends (rAF/video). Its surface keeps its last
+     * frame — we just push it down in z-order so the new active
+     * subsurface (with its own last frame) is what the user sees. */
     wpe_view_set_visible(ta->items[ta->active].view, FALSE);
     wpe_view_focus_out(ta->items[ta->active].view);
     ta->active = idx;
-    if (SURF_IS_VIEW(ta->items[idx].view))
-        surf_view_set_active(SURF_VIEW(ta->items[idx].view), TRUE);
-    wpe_view_map(ta->items[idx].view);
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);
+    if (SURF_IS_VIEW(ta->items[idx].view)) {
+        for (int i = 0; i < ta->count; i++) {
+            if (i == idx) continue;
+            struct wl_surface *ref = NULL;
+            if (SURF_IS_VIEW(ta->items[i].view))
+                ref = surf_view_get_wl_surface(SURF_VIEW(ta->items[i].view));
+            if (ref) surf_view_place_above(SURF_VIEW(ta->items[idx].view), ref);
+        }
+    }
+    app_raise_chrome();
+    wl_surface_commit(g_app.root_surface);
     app_relayout_active();
 }
 

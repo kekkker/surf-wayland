@@ -10,19 +10,19 @@ struct _SurfViewClass {
     WPEViewClass parent_class;
 };
 
-/* Called from app code to set up the Wayland surface/subsurface
- * for this view. The view will render WPE buffers into this subsurface. */
-void surf_view_set_wl_surface(SurfView *view,
-                              struct wl_surface *surface,
-                              struct wl_subsurface *subsurface);
+/* Each SurfView owns its own wl_surface + wl_subsurface (mirrors GTK's
+ * per-widget surface model). Tab switch is a z-order swap — each tab's
+ * wl_surface keeps its own last frame, so switching is instant and
+ * doesn't depend on WebKit producing a fresh frame. */
+void surf_view_realize(SurfView *view,
+                       struct wl_compositor *compositor,
+                       struct wl_subcompositor *subcompositor,
+                       struct wl_shm *shm,
+                       struct wl_surface *parent,
+                       int initial_w, int initial_h);
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view);
 struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view);
 
-/* Mark this view as the one whose buffers should land on the shared
- * wl_surface. Background tabs share the surface but must NOT commit, or
- * they'd overwrite the foreground tab (visible glitch when, e.g.,
- * YouTube keeps producing frames after we switched away). The view
- * still calls wpe_view_buffer_rendered() to keep WebKit's swapchain
- * unblocked. */
-void surf_view_set_active(SurfView *view, gboolean active);
+void surf_view_place_above(SurfView *view, struct wl_surface *ref);
+void surf_view_set_position(SurfView *view, int x, int y);

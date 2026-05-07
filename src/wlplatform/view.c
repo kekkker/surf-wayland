@@ -44,8 +44,12 @@ static void buffer_entry_free(BufferEntry *entry)
 
 typedef struct _SurfViewPrivate {
     struct wl_surface    *surface;
-    gboolean              is_active;
     struct wl_subsurface *subsurface;
+    /* Initial opaque buffer attached on realize so the subsurface isn't
+     * transparent before WebKit's first frame (otherwise compositor
+     * shows whatever's underneath — desktop or another tab). */
+    struct wl_buffer     *blank_buffer;
+    int                   blank_w, blank_h;
     GHashTable           *buffer_map;   /* WPEBuffer* -> BufferEntry* */
     struct wl_callback   *frame_callback;
 } SurfViewPrivate;
@@ -180,16 +184,6 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
         return FALSE;
     }
 
-    /* Background tabs share the wl_surface with the foreground tab —
-     * if e.g. YouTube finishes a frame just after we switched away, we
-     * must NOT commit it (would overwrite the new active tab and the
-     * user sees a frozen YouTube frame). Acknowledge the buffer so
-     * WebKit's swapchain doesn't stall and return TRUE. */
-    if (!priv->is_active) {
-        wpe_view_buffer_rendered(view, buffer);
-        return TRUE;
-    }
-
     /* Look up or create wl_buffer for this WPE buffer */
     BufferEntry *entry = g_hash_table_lookup(priv->buffer_map, buffer);
     if (!entry) {
@@ -278,9 +272,20 @@ static void surf_view_dispose(GObject *object)
         priv->frame_callback = NULL;
     }
 
-    /* Clean up all buffer entries. Do NOT destroy the wl_surface /
-     * wl_subsurface here — AppState owns those. */
     g_clear_pointer(&priv->buffer_map, g_hash_table_destroy);
+
+    if (priv->subsurface) {
+        wl_subsurface_destroy(priv->subsurface);
+        priv->subsurface = NULL;
+    }
+    if (priv->surface) {
+        wl_surface_destroy(priv->surface);
+        priv->surface = NULL;
+    }
+    if (priv->blank_buffer) {
+        wl_buffer_destroy(priv->blank_buffer);
+        priv->blank_buffer = NULL;
+    }
 
     G_OBJECT_CLASS(surf_view_parent_class)->dispose(object);
 }
@@ -305,13 +310,57 @@ static void surf_view_init(SurfView *self)
 
 /* ── Public API ───────────────────────────────────────────────────────── */
 
-void surf_view_set_wl_surface(SurfView *view,
-                              struct wl_surface *surface,
-                              struct wl_subsurface *subsurface)
+static struct wl_buffer *create_blank_buffer(struct wl_shm *shm, int w, int h)
+{
+    if (w < 1) w = 1;
+    if (h < 1) h = 1;
+    int stride = w * 4;
+    int sz = stride * h;
+    int fd = (int)syscall(SYS_memfd_create, "surf-view-blank", MFD_CLOEXEC);
+    if (fd < 0) return NULL;
+    if (ftruncate(fd, sz) < 0) { close(fd); return NULL; }
+    void *px = mmap(NULL, sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (px == MAP_FAILED) { close(fd); return NULL; }
+    /* Opaque white. ARGB8888: 0xFFRRGGBB. */
+    uint32_t *p = (uint32_t *)px;
+    for (int i = 0; i < w * h; i++) p[i] = 0xFFFFFFFFu;
+
+    struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, sz);
+    struct wl_buffer *buf = wl_shm_pool_create_buffer(pool, 0,
+        w, h, stride, WL_SHM_FORMAT_ARGB8888);
+    wl_shm_pool_destroy(pool);
+    munmap(px, sz);
+    close(fd);
+    return buf;
+}
+
+void surf_view_realize(SurfView *view,
+                       struct wl_compositor *compositor,
+                       struct wl_subcompositor *subcompositor,
+                       struct wl_shm *shm,
+                       struct wl_surface *parent,
+                       int initial_w, int initial_h)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    priv->surface = surface;
-    priv->subsurface = subsurface;
+    if (priv->surface) return;
+
+    priv->surface = wl_compositor_create_surface(compositor);
+    priv->subsurface = wl_subcompositor_get_subsurface(
+        subcompositor, priv->surface, parent);
+    wl_subsurface_set_desync(priv->subsurface);
+
+    /* Attach an opaque blank buffer so the subsurface contributes white
+     * pixels until WebKit's first frame lands — without this, an
+     * empty subsurface is transparent and the user sees the layer
+     * below (desktop or the previously-active tab). */
+    priv->blank_buffer = create_blank_buffer(shm, initial_w, initial_h);
+    priv->blank_w = initial_w;
+    priv->blank_h = initial_h;
+    if (priv->blank_buffer) {
+        wl_surface_attach(priv->surface, priv->blank_buffer, 0, 0);
+        wl_surface_damage_buffer(priv->surface, 0, 0, initial_w, initial_h);
+        wl_surface_commit(priv->surface);
+    }
 }
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view)
@@ -326,8 +375,16 @@ struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view)
     return priv->subsurface;
 }
 
-void surf_view_set_active(SurfView *view, gboolean active)
+void surf_view_place_above(SurfView *view, struct wl_surface *ref)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
-    priv->is_active = active;
+    if (priv->subsurface && ref)
+        wl_subsurface_place_above(priv->subsurface, ref);
+}
+
+void surf_view_set_position(SurfView *view, int x, int y)
+{
+    SurfViewPrivate *priv = surf_view_get_instance_private(view);
+    if (priv->subsurface)
+        wl_subsurface_set_position(priv->subsurface, x, y);
 }

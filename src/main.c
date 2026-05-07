@@ -201,9 +201,11 @@ void app_repaint_chrome(void)
 
 void app_raise_chrome(void)
 {
-    /* Re-stack all chrome panels above the WPE view subsurface.
-     * Without this the web content (created after chrome) overlaps chrome. */
-    struct wl_surface *ref = g_app.view_surface;
+    /* Stack chrome panels above the active tab's wl_surface. */
+    Tab *act = app_active_tab();
+    struct wl_surface *ref = NULL;
+    if (act && SURF_IS_VIEW(act->view))
+        ref = surf_view_get_wl_surface(SURF_VIEW(act->view));
     if (!ref) return;
     ChromePanel *panels[] = { g_app.tabbar, g_app.statusbar,
                               g_app.dlbar, g_app.historybar };
@@ -334,8 +336,13 @@ void app_layout(int W, int H)
     int view_w = W, view_h = H - top - bottom;
     if (view_h < 1) view_h = 1;
 
-    if (g_app.view_subsurface)
-        wl_subsurface_set_position(g_app.view_subsurface, view_x, view_y);
+    /* Per-tab subsurfaces — set position on every tab so their
+     * content lands in the same rect; only the topmost is visible. */
+    for (int i = 0; i < g_app.tabs.count; i++) {
+        Tab *t = &g_app.tabs.items[i];
+        if (SURF_IS_VIEW(t->view))
+            surf_view_set_position(SURF_VIEW(t->view), view_x, view_y);
+    }
 
     int size_changed = (view_w != g_app.view_w) || (view_h != g_app.view_h);
 
@@ -1145,11 +1152,8 @@ int main(int argc, char *argv[])
     while (!g_app.configured)
         wl_display_dispatch(g_app.wl.display);
 
-    /* 6. Create the WPE view subsurface (positioned by app_layout) */
-    g_app.view_surface = wl_compositor_create_surface(g_app.wl.compositor);
-    g_app.view_subsurface = wl_subcompositor_get_subsurface(
-        g_app.wl.subcompositor, g_app.view_surface, g_app.root_surface);
-    wl_subsurface_set_desync(g_app.view_subsurface);
+    /* 6. Each tab creates its own wl_surface + wl_subsurface in
+     *    surf_view_realize() (called from tabarray_new). */
 
     /* 7. Create our custom WPE platform (SurfDisplay) */
     g_app.sdisplay = surf_display_new(
@@ -1306,8 +1310,7 @@ int main(int argc, char *argv[])
     if (g_app.dlbar)     chrome_panel_destroy(g_app.dlbar);
 
     /* Destroy view subsurface */
-    if (g_app.view_subsurface) wl_subsurface_destroy(g_app.view_subsurface);
-    if (g_app.view_surface)    wl_surface_destroy(g_app.view_surface);
+    /* Tab subsurfaces freed via SurfView dispose. */
 
     /* Destroy xdg_toplevel */
     if (g_app.root_buffer)     wl_buffer_destroy(g_app.root_buffer);

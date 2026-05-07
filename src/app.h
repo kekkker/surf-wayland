@@ -31,9 +31,7 @@ typedef struct {
     SurfDisplay         *sdisplay;            /* our WPEDisplay subclass */
     WPEToplevel         *toplevel;            /* SurfToplevel */
 
-    /* WPE view subsurface — rendered by our custom platform */
-    struct wl_surface    *view_surface;
-    struct wl_subsurface *view_subsurface;
+    /* Per-tab wl_subsurface (in SurfView). Tab switch = z-order swap. */
     int                   view_x, view_y;
     int                   view_w, view_h;
 
