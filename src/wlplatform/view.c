@@ -48,6 +48,12 @@ typedef struct _SurfViewPrivate {
     struct wl_subsurface *subsurface;
     GHashTable           *buffer_map;   /* WPEBuffer* -> BufferEntry* */
     struct wl_callback   *frame_callback;
+    /* Last buffer + size committed while active. Re-attached on
+     * surf_view_recommit_last() so a tab that doesn't repaint
+     * immediately after activation (static page) still shows its
+     * own last frame instead of the previous tab's. */
+    BufferEntry          *last_entry;
+    int                   last_w, last_h;
 } SurfViewPrivate;
 
 G_DEFINE_TYPE_WITH_PRIVATE(SurfView, surf_view, WPE_TYPE_VIEW)
@@ -223,6 +229,12 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
     int w = wpe_buffer_get_width(buffer);
     int h = wpe_buffer_get_height(buffer);
 
+    /* Remember last buffer for recommit on tab activation (see
+     * surf_view_recommit_last). */
+    priv->last_entry = entry;
+    priv->last_w = w;
+    priv->last_h = h;
+
     /* Attach and damage */
     wl_surface_attach(priv->surface, entry->wl_buffer, 0, 0);
     if (n_damage > 0) {
@@ -330,4 +342,19 @@ void surf_view_set_active(SurfView *view, gboolean active)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
     priv->is_active = active;
+}
+
+void surf_view_recommit_last(SurfView *view)
+{
+    SurfViewPrivate *priv = surf_view_get_instance_private(view);
+    if (!priv->surface || !priv->last_entry || !priv->last_entry->wl_buffer)
+        return;
+    wl_surface_attach(priv->surface, priv->last_entry->wl_buffer, 0, 0);
+    wl_surface_damage_buffer(priv->surface, 0, 0,
+        priv->last_w, priv->last_h);
+    if (!priv->frame_callback) {
+        priv->frame_callback = wl_surface_frame(priv->surface);
+        wl_callback_add_listener(priv->frame_callback, &frame_listener, view);
+    }
+    wl_surface_commit(priv->surface);
 }

@@ -536,9 +536,9 @@ void tabarray_switch(TabArray *ta, int idx)
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
     /* Don't unmap or hide WebKit-side — keeping the old tab visible
-     * means it's still rendering, which means the new tab also stays
-     * "warm" and its first frame after switch is instant. We just stop
-     * committing the old tab's buffers via the is_active gate. */
+     * means it's still rendering, which means dynamic tabs (video,
+     * animations) land their next frame instantly. The is_active gate
+     * drops their commits while inactive. */
     if (SURF_IS_VIEW(ta->items[ta->active].view))
         surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
     wpe_view_focus_out(ta->items[ta->active].view);
@@ -548,6 +548,11 @@ void tabarray_switch(TabArray *ta, int idx)
     wpe_view_map(ta->items[idx].view);
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);
+    /* Static pages won't repaint just because they became active —
+     * re-commit the cached last frame so the surface shows the right
+     * content immediately, even before WebKit catches up. */
+    if (SURF_IS_VIEW(ta->items[idx].view))
+        surf_view_recommit_last(SURF_VIEW(ta->items[idx].view));
     app_relayout_active();
 }
 
