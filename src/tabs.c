@@ -546,17 +546,6 @@ void tabarray_switch(TabArray *ta, int idx)
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);
     app_relayout_active();
-    /* Force WebKit to produce a frame for the now-visible tab.
-     * wpe_view_resized + setSize are no-ops at unchanged dimensions,
-     * and visibility changes alone don't always trigger an immediate
-     * repaint — leaving the shared wl_surface stuck on the previous
-     * tab's last buffer (YouTube freeze). Nudge the size by 1px and
-     * restore it: this produces real resize signals into WebCore which
-     * scheduling a layout + paint that lands in render_buffer. */
-    int vw = g_app.view_w > 0 ? g_app.view_w : 800;
-    int vh = g_app.view_h > 0 ? g_app.view_h : 600;
-    wpe_view_resized(ta->items[idx].view, vw - 1, vh);
-    wpe_view_resized(ta->items[idx].view, vw, vh);
 }
 
 void tabarray_free(TabArray *ta)
