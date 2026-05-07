@@ -380,11 +380,12 @@ static gboolean on_event(WPEView *view, WPEEvent *event, gpointer data)
                 -1, NULL, NULL, NULL, NULL, NULL);
             return TRUE;
         case WPE_KEY_y: {
-            /* Copy selection to clipboard via DOM execCommand, then also
-             * grab it via wl-copy for Wayland clipboard */
-            webkit_web_view_evaluate_javascript(t->wv,
-                "document.execCommand('copy')", -1,
-                NULL, NULL, NULL, NULL, NULL);
+            /* WebKit's COPY editing command writes the selection into the
+             * UserContentManager clipboard, which propagates to wl_data_device
+             * (see clipboard.c). execCommand('copy') is gated on user
+             * activation in non-editable contexts and silently no-ops. */
+            webkit_web_view_execute_editing_command(t->wv,
+                WEBKIT_EDITING_COMMAND_COPY);
             act_find_select_exit(NULL);
             return TRUE;
         }

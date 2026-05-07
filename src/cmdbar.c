@@ -1,4 +1,5 @@
 #include "cmdbar.h"
+#include "clipboard.h"
 #include <string.h>
 #include <wpe/wpe-platform.h>
 
@@ -82,6 +83,26 @@ gboolean cmdbar_keypress(CmdBar *cb, guint keyval, WPEModifiers mods)
         case WPE_KEY_h:
             backspace_at(cb);
             return TRUE;
+        case WPE_KEY_v: {
+            size_t n = 0;
+            char *txt = clipboard_read_text(&n);
+            if (!txt) return TRUE;
+            /* Strip newlines/CR — URL bar is single-line. */
+            for (char *q = txt; *q; q++)
+                if (*q == '\n' || *q == '\r') *q = ' ';
+            int avail = CMDBAR_MAXLEN - 1 - cb->len;
+            if ((int)n > avail) n = avail;
+            if (n > 0) {
+                memmove(cb->buf + cb->cursor + n, cb->buf + cb->cursor,
+                    cb->len - cb->cursor + 1);
+                memcpy(cb->buf + cb->cursor, txt, n);
+                cb->len += n;
+                cb->cursor += n;
+                cb->buf[cb->len] = '\0';
+            }
+            g_free(txt);
+            return TRUE;
+        }
         default:
             return TRUE;
         }
