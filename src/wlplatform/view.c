@@ -44,6 +44,7 @@ static void buffer_entry_free(BufferEntry *entry)
 
 typedef struct _SurfViewPrivate {
     struct wl_surface    *surface;
+    gboolean              is_active;
     struct wl_subsurface *subsurface;
     GHashTable           *buffer_map;   /* WPEBuffer* -> BufferEntry* */
     struct wl_callback   *frame_callback;
@@ -177,6 +178,16 @@ static gboolean surf_view_render_buffer(WPEView *view, WPEBuffer *buffer,
         g_set_error_literal(error, WPE_VIEW_ERROR, WPE_VIEW_ERROR_RENDER_FAILED,
             "No wl_surface attached to view");
         return FALSE;
+    }
+
+    /* Background tabs share the wl_surface with the foreground tab —
+     * if e.g. YouTube finishes a frame just after we switched away, we
+     * must NOT commit it (would overwrite the new active tab and the
+     * user sees a frozen YouTube frame). Acknowledge the buffer so
+     * WebKit's swapchain doesn't stall and return TRUE. */
+    if (!priv->is_active) {
+        wpe_view_buffer_rendered(view, buffer);
+        return TRUE;
     }
 
     /* Look up or create wl_buffer for this WPE buffer */
@@ -313,4 +324,10 @@ struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view)
 {
     SurfViewPrivate *priv = surf_view_get_instance_private(view);
     return priv->subsurface;
+}
+
+void surf_view_set_active(SurfView *view, gboolean active)
+{
+    SurfViewPrivate *priv = surf_view_get_instance_private(view);
+    priv->is_active = active;
 }

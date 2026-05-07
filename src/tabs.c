@@ -469,6 +469,8 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
 
     /* Unmap previous active */
     if (ta->active >= 0) {
+        if (SURF_IS_VIEW(ta->items[ta->active].view))
+            surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
         wpe_view_unmap(ta->items[ta->active].view);
         wpe_view_set_visible(ta->items[ta->active].view, FALSE);
         wpe_view_focus_out(ta->items[ta->active].view);
@@ -481,6 +483,8 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         int vh = g_app.view_h > 0 ? g_app.view_h : 600;
         wpe_view_resized(t->view, vw, vh);
     }
+    if (SURF_IS_VIEW(t->view))
+        surf_view_set_active(SURF_VIEW(t->view), TRUE);
     wpe_view_map(t->view);
     wpe_view_set_visible(t->view, TRUE);
     wpe_view_focus_in(t->view);
@@ -517,6 +521,8 @@ void tabarray_close(TabArray *ta, int idx,
 
     int new_active = idx < ta->count ? idx : ta->count - 1;
     ta->active = new_active;
+    if (SURF_IS_VIEW(ta->items[new_active].view))
+        surf_view_set_active(SURF_VIEW(ta->items[new_active].view), TRUE);
     wpe_view_set_visible(ta->items[new_active].view, TRUE);
     wpe_view_map(ta->items[new_active].view);
     wpe_view_focus_in(ta->items[new_active].view);
@@ -528,10 +534,14 @@ void tabarray_switch(TabArray *ta, int idx)
 {
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
+    if (SURF_IS_VIEW(ta->items[ta->active].view))
+        surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
     wpe_view_unmap(ta->items[ta->active].view);
     wpe_view_set_visible(ta->items[ta->active].view, FALSE);
     wpe_view_focus_out(ta->items[ta->active].view);
     ta->active = idx;
+    if (SURF_IS_VIEW(ta->items[idx].view))
+        surf_view_set_active(SURF_VIEW(ta->items[idx].view), TRUE);
     wpe_view_map(ta->items[idx].view);
     wpe_view_set_visible(ta->items[idx].view, TRUE);
     wpe_view_focus_in(ta->items[idx].view);

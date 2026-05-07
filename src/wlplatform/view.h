@@ -18,3 +18,11 @@ void surf_view_set_wl_surface(SurfView *view,
 
 struct wl_surface *surf_view_get_wl_surface(SurfView *view);
 struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view);
+
+/* Mark this view as the one whose buffers should land on the shared
+ * wl_surface. Background tabs share the surface but must NOT commit, or
+ * they'd overwrite the foreground tab (visible glitch when, e.g.,
+ * YouTube keeps producing frames after we switched away). The view
+ * still calls wpe_view_buffer_rendered() to keep WebKit's swapchain
+ * unblocked. */
+void surf_view_set_active(SurfView *view, gboolean active);
