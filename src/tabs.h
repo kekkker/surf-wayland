@@ -42,6 +42,11 @@ struct Tab {
     char            hint_buf[8];
     int             hint_len;
     int             hint_mode;     /* 0=open, 1=new tab, 2=yank URL */
+
+    /* Monotonic z-stack age — bumped each time this tab is raised.
+     * When closing the active tab, the remaining tab with the
+     * highest z_age is currently topmost. */
+    unsigned int    z_age;
 };
 
 typedef struct {
