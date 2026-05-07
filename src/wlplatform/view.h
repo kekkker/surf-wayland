@@ -26,10 +26,3 @@ struct wl_subsurface *surf_view_get_wl_subsurface(SurfView *view);
  * still calls wpe_view_buffer_rendered() to keep WebKit's swapchain
  * unblocked. */
 void surf_view_set_active(SurfView *view, gboolean active);
-
-/* Re-commit the last buffer this view rendered while active. Used on
- * tab activation: a static page won't ask WebKit to repaint just
- * because it became visible, so the surface stays stuck on the
- * previous tab's content. Re-attaching the cached last frame restores
- * the right pixels until WebKit produces something fresher. */
-void surf_view_recommit_last(SurfView *view);
