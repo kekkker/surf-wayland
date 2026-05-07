@@ -467,26 +467,27 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     webkit_user_content_manager_add_script(cm, focus_script);
     webkit_user_script_unref(focus_script);
 
-    /* Unmap previous active */
+    /* Keep previous active mapped + visible — WebKit keeps producing
+     * frames continuously, the is_active gate in surf_view drops them.
+     * The trade-off: background tabs use CPU/GPU. The gain: switch is
+     * instant because the new active's next frame is already in flight
+     * (no async show-hide round trip). */
     if (ta->active >= 0) {
         if (SURF_IS_VIEW(ta->items[ta->active].view))
             surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
-        wpe_view_unmap(ta->items[ta->active].view);
-        wpe_view_set_visible(ta->items[ta->active].view, FALSE);
         wpe_view_focus_out(ta->items[ta->active].view);
     }
 
     ta->active = idx;
-    /* Tell the view its size before mapping — the toplevel already knows */
     {
         int vw = g_app.view_w > 0 ? g_app.view_w : 800;
         int vh = g_app.view_h > 0 ? g_app.view_h : 600;
         wpe_view_resized(t->view, vw, vh);
     }
-    if (SURF_IS_VIEW(t->view))
-        surf_view_set_active(SURF_VIEW(t->view), TRUE);
     wpe_view_map(t->view);
     wpe_view_set_visible(t->view, TRUE);
+    if (SURF_IS_VIEW(t->view))
+        surf_view_set_active(SURF_VIEW(t->view), TRUE);
     wpe_view_focus_in(t->view);
 
     return t;
@@ -534,10 +535,12 @@ void tabarray_switch(TabArray *ta, int idx)
 {
     if (idx < 0 || idx >= ta->count || idx == ta->active) return;
 
+    /* Don't unmap or hide WebKit-side — keeping the old tab visible
+     * means it's still rendering, which means the new tab also stays
+     * "warm" and its first frame after switch is instant. We just stop
+     * committing the old tab's buffers via the is_active gate. */
     if (SURF_IS_VIEW(ta->items[ta->active].view))
         surf_view_set_active(SURF_VIEW(ta->items[ta->active].view), FALSE);
-    wpe_view_unmap(ta->items[ta->active].view);
-    wpe_view_set_visible(ta->items[ta->active].view, FALSE);
     wpe_view_focus_out(ta->items[ta->active].view);
     ta->active = idx;
     if (SURF_IS_VIEW(ta->items[idx].view))
