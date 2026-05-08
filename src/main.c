@@ -1241,6 +1241,12 @@ int main(int argc, char *argv[])
      * (Wayland connect, WPE bringup, GLib asserts) are captured. */
     install_crashhandler();
 
+    /* WPE has no native inspector window — the local frontend exists
+     * only on WebKitGTK. Enable WebKit's bundled remote inspector HTTP
+     * server so `Ctrl+O` (act_inspector) can hand back a URL. setenv
+     * with overwrite=0 lets the user override port via the shell. */
+    setenv("WEBKIT_INSPECTOR_HTTP_SERVER", "127.0.0.1:9222", 0);
+
     /* 1. Open our own Wayland connection and bind globals */
     wayland_connect(&g_app.wl);
     clipboard_init(&g_app.wl);

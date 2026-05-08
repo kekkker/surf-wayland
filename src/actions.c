@@ -450,6 +450,8 @@ settings_apply(struct Tab *t)
 	webkit_settings_set_auto_load_images(ws, g_settings[SET_IMAGES]);
 	webkit_settings_set_enable_caret_browsing(ws, g_settings[SET_CARET]);
 	webkit_settings_set_enable_webgl(ws, g_settings[SET_WEBGL]);
+	/* Required for webkit_web_view_toggle_inspector() to do anything. */
+	webkit_settings_set_enable_developer_extras(ws, TRUE);
 
 	/* TLS strictness on this view's network session */
 	WebKitNetworkSession *ns = webkit_web_view_get_network_session(t->wv);
@@ -658,9 +660,19 @@ void
 act_inspector(const Arg *a)
 {
 	(void)a;
-	Tab *t = app_active_tab();
-	if (!t) return;
-	webkit_web_view_toggle_inspector(t->wv);
+	/* WPE has no native inspector frontend. Hand the user the URL of
+	 * the bundled remote inspector HTTP server, and yank it to the
+	 * clipboard so they can paste it into another browser. */
+	const char *addr = g_getenv("WEBKIT_INSPECTOR_HTTP_SERVER");
+	if (!addr || !*addr) {
+		fprintf(stderr,
+		    "surf: inspector unavailable (WEBKIT_INSPECTOR_HTTP_SERVER unset)\n");
+		return;
+	}
+	char url[128];
+	snprintf(url, sizeof url, "http://%s/", addr);
+	fprintf(stderr, "surf: inspector → %s\n", url);
+	clipboard_set(url);
 }
 
 void
