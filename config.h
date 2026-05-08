@@ -141,6 +141,7 @@ static Key keys[] = {
 	{MODKEY | SHIFT, WPE_KEY_B, act_toggle_setting, {.i = SET_SCROLLBARS}},
 	{MODKEY | SHIFT, WPE_KEY_T, act_toggle_setting, {.i = SET_STRICT_TLS}},
 	{MODKEY | SHIFT, WPE_KEY_G, act_toggle_setting, {.i = SET_GEOLOCATION}},
+	{MODKEY | SHIFT, WPE_KEY_W, act_toggle_setting, {.i = SET_WEBGL}},
 	{MODKEY | SHIFT, WPE_KEY_A, act_toggle_cookies, {0}},
 	{MODKEY | SHIFT, WPE_KEY_U, act_reload_userscripts, {0}},
 

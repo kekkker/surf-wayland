@@ -362,9 +362,14 @@ void app_layout(int W, int H)
     if (size_changed) {
         if (g_app.toplevel)
             wpe_toplevel_resized(g_app.toplevel, view_w, view_h);
-        Tab *at = app_active_tab();
-        if (at && at->view)
-            wpe_view_resized(at->view, view_w, view_h);
+        /* Resize EVERY tab's view, not just the active one. Background
+         * tabs would otherwise keep their old WebKit render size and
+         * show stale content when re-activated after a window resize. */
+        for (int i = 0; i < g_app.tabs.count; i++) {
+            Tab *t = &g_app.tabs.items[i];
+            if (t->view)
+                wpe_view_resized(t->view, view_w, view_h);
+        }
     }
 }
 
@@ -501,6 +506,10 @@ static void tab_close_cb(int idx, void *data)
 }
 
 /* ── pointer state ───────────────────────────────────────────────────────── */
+
+/* Forward — defined further down with the keyboard handlers. ptr_button
+ * needs to read Ctrl state to route Ctrl+click on links to a new tab. */
+static struct xkb_state *xkb_st;
 
 static struct wl_surface *ptr_surface;
 static double ptr_x, ptr_y;
@@ -669,6 +678,44 @@ static void ptr_button(void *d, struct wl_pointer *p, uint32_t ser,
         }
     }
 
+    /* Click routing on press over the page (mirrors main's buttons[] table):
+     *   side-buttons  → back/forward
+     *   middle/Ctrl+left on link  → open URL in new background tab
+     *   Ctrl+left on media        → spawn external player (mpv)
+     * On match we swallow the event so WebKit doesn't see it. */
+    if (pressed && !is_chrome_surface(ptr_surface)) {
+        Tab *at = app_active_tab();
+
+        /* Mouse buttons 8/9 (BTN_SIDE/BTN_EXTRA) — navigate history */
+        if (btn == BTN_SIDE) {
+            if (at) webkit_web_view_go_back(at->wv);
+            return;
+        }
+        if (btn == BTN_EXTRA) {
+            if (at) webkit_web_view_go_forward(at->wv);
+            return;
+        }
+
+        gboolean ctrl = xkb_st && xkb_state_mod_name_is_active(
+            xkb_st, XKB_MOD_NAME_CTRL, XKB_STATE_MODS_EFFECTIVE);
+
+        if (at) {
+            /* Middle on link, or Ctrl+left on link → background new-tab.
+             * hover_uri is updated by mouse-target-changed; relies on the
+             * hit test having reached us before the click — fine in practice. */
+            if (at->hover_uri &&
+                (btn == BTN_MIDDLE || (btn == BTN_LEFT && ctrl))) {
+                surf_open_in_new_tab(at->hover_uri);
+                return;
+            }
+            /* Ctrl+left on a media element → mpv */
+            if (btn == BTN_LEFT && ctrl && at->hover_media_uri) {
+                surf_play_extern(at->hover_media_uri);
+                return;
+            }
+        }
+    }
+
     /* Forward to WPE */
     if (!is_chrome_surface(ptr_surface)) {
         WPEEventType type = pressed
@@ -756,7 +803,7 @@ static const struct wl_pointer_listener pointer_listener = {
 
 static struct xkb_context  *xkb_ctx;
 static struct xkb_keymap   *xkb_kmap;
-static struct xkb_state    *xkb_st;
+/* xkb_st is forward-declared near pointer state for Ctrl+click routing. */
 static WPEKeymapXKB        *wpe_kmap;
 
 static WPEModifiers xkb_mods_to_wpe(struct xkb_state *state)

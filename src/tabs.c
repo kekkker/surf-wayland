@@ -94,9 +94,28 @@ static void on_mouse_target_changed(WebKitWebView *wv, WebKitHitTestResult *hit,
     Tab *t = find_tab(d);
     if (!t) return;
     g_free(t->hover_uri);
+    g_free(t->hover_media_uri);
     t->hover_uri = webkit_hit_test_result_context_is_link(hit)
         ? g_strdup(webkit_hit_test_result_get_link_uri(hit)) : NULL;
+    t->hover_media_uri = webkit_hit_test_result_context_is_media(hit)
+        ? g_strdup(webkit_hit_test_result_get_media_uri(hit)) : NULL;
     d->on_change(d->cb_data);
+}
+
+/* Right-click handler — WPE has no native menu compositor, so the default
+ * menu would do nothing visible anyway. We hijack the gesture: link → yank
+ * URL, media → mpv, else just suppress. Returning TRUE kills the default. */
+static gboolean on_context_menu(WebKitWebView *wv, WebKitContextMenu *menu,
+    WebKitHitTestResult *hit, gpointer ud)
+{
+    (void)wv; (void)menu; (void)ud;
+    if (webkit_hit_test_result_context_is_link(hit)) {
+        const char *uri = webkit_hit_test_result_get_link_uri(hit);
+        if (uri) clipboard_set(uri);
+    } else if (webkit_hit_test_result_context_is_media(hit)) {
+        surf_play_extern(webkit_hit_test_result_get_media_uri(hit));
+    }
+    return TRUE;
 }
 
 /* Focus tracker: page-side script posts {focused:bool} via
@@ -475,6 +494,8 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
         G_CALLBACK(on_permission_request), cbd);
     g_signal_connect(t->wv, "load-failed-with-tls-errors",
         G_CALLBACK(on_tls_error), cbd);
+    g_signal_connect(t->wv, "context-menu",
+        G_CALLBACK(on_context_menu), cbd);
 
     filepicker_install(t->wv);
     settings_apply(t);
@@ -533,6 +554,7 @@ void tabarray_close(TabArray *ta, int idx,
     g_free(t->title);
     g_free(t->uri);
     g_free(t->hover_uri);
+    g_free(t->hover_media_uri);
     for (int j = 0; j < t->hint_count; j++) g_free(t->hints[j].url);
     g_free(t->hints);
 
@@ -580,6 +602,7 @@ void tabarray_free(TabArray *ta)
         g_free(ta->items[i].title);
         g_free(ta->items[i].uri);
         g_free(ta->items[i].hover_uri);
+        g_free(ta->items[i].hover_media_uri);
         for (int j = 0; j < ta->items[i].hint_count; j++) g_free(ta->items[i].hints[j].url);
         g_free(ta->items[i].hints);
     }

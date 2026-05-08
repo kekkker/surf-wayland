@@ -35,6 +35,7 @@ struct Tab {
 
     /* hover */
     char           *hover_uri;
+    char           *hover_media_uri;
 
     /* hints */
     HintItem       *hints;

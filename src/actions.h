@@ -69,6 +69,7 @@ typedef enum {
     SET_SCROLLBARS,
     SET_STRICT_TLS,
     SET_GEOLOCATION,
+    SET_WEBGL,
     SET_LAST,
 } SettingId;
 
@@ -96,3 +97,10 @@ void userscripts_inject(struct Tab *t);
 void act_show_cert(const Arg *a);
 void act_spawn_userscript(const Arg *a); /* a.v: shell command path */
 void act_tab_move(const Arg *a);         /* a.i: +1 right / -1 left */
+
+/* External player launch (used by middle/ctrl-click on media + context menu).
+ * No-op if uri is NULL/empty. */
+void surf_play_extern(const char *uri);
+
+/* Open URI in a new background tab without focusing it. */
+void surf_open_in_new_tab(const char *uri);

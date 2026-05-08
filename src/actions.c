@@ -416,6 +416,7 @@ settings_init(void)
 	g_settings[SET_SCROLLBARS] = 1;
 	g_settings[SET_STRICT_TLS] = 1;
 	g_settings[SET_GEOLOCATION] = 0;
+	g_settings[SET_WEBGL] = 1;
 	g_app.cookie_policy = WEBKIT_COOKIE_POLICY_ACCEPT_NO_THIRD_PARTY;
 }
 
@@ -447,6 +448,7 @@ settings_apply(struct Tab *t)
 	webkit_settings_set_enable_javascript(ws, g_settings[SET_JAVASCRIPT]);
 	webkit_settings_set_auto_load_images(ws, g_settings[SET_IMAGES]);
 	webkit_settings_set_enable_caret_browsing(ws, g_settings[SET_CARET]);
+	webkit_settings_set_enable_webgl(ws, g_settings[SET_WEBGL]);
 
 	/* TLS strictness on this view's network session */
 	WebKitNetworkSession *ns = webkit_web_view_get_network_session(t->wv);
@@ -881,6 +883,41 @@ act_spawn_userscript(const Arg *a)
 		execl("/bin/sh", "sh", "-c", cmd, NULL);
 		_exit(127);
 	}
+}
+
+/* ── external player / new-tab helpers (for click routing + ctx menu) ────── */
+
+void
+surf_play_extern(const char *uri)
+{
+	if (!uri || !*uri)
+		return;
+	pid_t pid = fork();
+	if (pid < 0)
+		return;
+	if (pid == 0) {
+		long maxfd = sysconf(_SC_OPEN_MAX);
+		for (long fd = 3; fd < maxfd; fd++)
+			close(fd);
+		execlp("mpv", "mpv", "--really-quiet", uri, (char *)NULL);
+		_exit(127);
+	}
+}
+
+void
+surf_open_in_new_tab(const char *uri)
+{
+	if (!uri || !*uri)
+		return;
+	int prev = g_app.tabs.active;
+	Tab *nt = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay),
+						   g_app.toplevel, tab_changed_cb,
+						   g_app.tab_close_fn, NULL);
+	if (nt)
+		webkit_web_view_load_uri(nt->wv, uri);
+	if (prev >= 0 && prev < g_app.tabs.count)
+		tabarray_switch(&g_app.tabs, prev);
+	app_repaint_chrome();
 }
 
 /* ── tab reorder ──────────────────────────────────────────────────────────── */
