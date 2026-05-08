@@ -225,7 +225,7 @@ act_new_tab(const Arg *a)
 {
 	(void)a;
 	tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay), g_app.toplevel,
-				 tab_changed_cb, g_app.tab_close_fn, NULL);
+				 tab_changed_cb, g_app.tab_close_fn, NULL, NULL);
 	app_repaint_chrome();
 }
 
@@ -259,7 +259,8 @@ act_tab_reopen(const Arg *a)
 		return;
 	char *uri = g_app.closed_tabs[--g_app.closed_tab_top];
 	Tab *t = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay),
-						  g_app.toplevel, tab_changed_cb, g_app.tab_close_fn, NULL);
+						  g_app.toplevel, tab_changed_cb, g_app.tab_close_fn,
+						  NULL, NULL);
 	if (t && uri)
 		webkit_web_view_load_uri(t->wv, uri);
 	g_free(uri);
@@ -912,7 +913,7 @@ surf_open_in_new_tab(const char *uri)
 	int prev = g_app.tabs.active;
 	Tab *nt = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay),
 						   g_app.toplevel, tab_changed_cb,
-						   g_app.tab_close_fn, NULL);
+						   g_app.tab_close_fn, NULL, NULL);
 	if (nt)
 		webkit_web_view_load_uri(nt->wv, uri);
 	if (prev >= 0 && prev < g_app.tabs.count)

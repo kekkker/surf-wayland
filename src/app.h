@@ -80,3 +80,8 @@ void app_cmdbar_clear_history(void);
 gboolean app_cmdbar_select_history(int direction);
 void app_raise_chrome(void);
 void app_layout_chrome(int win_w, int win_h);
+
+/* Append a non-fatal crash record (label + UI-process backtrace) to
+ * ~/.surf/crash.log. Use for events the signal handler can't catch:
+ * web-process kills, glib G_LOG_LEVEL_CRITICAL, manual diagnostics. */
+void surf_log_crash(const char *what);

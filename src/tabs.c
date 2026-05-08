@@ -69,10 +69,13 @@ static void on_notify_uri(GObject *obj, GParamSpec *p, gpointer ud)
 static WebKitWebView *on_create(WebKitWebView *wv, WebKitNavigationAction *action,
     gpointer ud)
 {
-    (void)wv; (void)action;
+    (void)action;
     TabCBData *d = ud;
+    /* `wv` is the opener — pass it as related-view so the popup shares
+     * its WebProcess. Without this WebKit aborts in
+     * UIClient::createNewPage with a glibcxx_assert_fail. */
     Tab *t = tabarray_new(d->ta, d->display, d->toplevel,
-        d->on_change, d->on_close, d->cb_data);
+        d->on_change, d->on_close, d->cb_data, wv);
     d->on_change(d->cb_data);
     return t->wv;
 }
@@ -169,6 +172,13 @@ static void on_web_process_terminated(WebKitWebView *wv,
     WebKitWebProcessTerminationReason reason, gpointer ud)
 {
     (void)ud;
+    const char *why =
+        reason == WEBKIT_WEB_PROCESS_CRASHED          ? "web process: CRASHED" :
+        reason == WEBKIT_WEB_PROCESS_EXCEEDED_MEMORY_LIMIT ? "web process: OOM" :
+        reason == WEBKIT_WEB_PROCESS_TERMINATED_BY_API    ? "web process: terminated by API" :
+        "web process: terminated";
+    surf_log_crash(why);
+    fprintf(stderr, "surf: %s — reloading\n", why);
     webkit_web_view_reload(wv);
 }
 
@@ -413,7 +423,8 @@ void tabarray_init(TabArray *ta)
 }
 
 Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
-    TabChangedFn on_change, TabCloseFn on_close, void *cb_data)
+    TabChangedFn on_change, TabCloseFn on_close, void *cb_data,
+    WebKitWebView *related_view)
 {
     ta->count++;
     ta->items = realloc(ta->items, ta->count * sizeof(Tab));
@@ -423,7 +434,21 @@ Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
     t->progress = 100;
     t->mode     = MODE_NORMAL;
 
-    if (g_app.network_session) {
+    /* When fulfilling a popup/window.open() request, "related-view" must
+     * be set so the new view shares the WebProcess of its opener — the
+     * web process expects this and WebKit asserts otherwise. */
+    if (related_view) {
+        if (g_app.network_session) {
+            t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+                "related-view", related_view,
+                "network-session", g_app.network_session,
+                NULL);
+        } else {
+            t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
+                "related-view", related_view,
+                NULL);
+        }
+    } else if (g_app.network_session) {
         t->wv = g_object_new(WEBKIT_TYPE_WEB_VIEW,
             "display", display,
             "network-session", g_app.network_session,

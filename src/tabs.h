@@ -60,8 +60,14 @@ typedef void (*TabChangedFn)(void *data);
 typedef void (*TabCloseFn)(int idx, void *data);
 
 void tabarray_init(TabArray *ta);
+/* Create a new tab. If `related_view` is non-NULL, the new WebKitWebView
+ * is constructed with the "related-view" property set — required when
+ * fulfilling a web-process-initiated request (window.open, target=_blank
+ * with an opener, etc), otherwise WebKit aborts with a glibcxx assert in
+ * UIClient::createNewPage. */
 Tab *tabarray_new(TabArray *ta, WPEDisplay *display, WPEToplevel *toplevel,
-    TabChangedFn on_change, TabCloseFn on_close, void *cb_data);
+    TabChangedFn on_change, TabCloseFn on_close, void *cb_data,
+    WebKitWebView *related_view);
 void tabarray_close(TabArray *ta, int index,
     TabChangedFn on_change, void *cb_data);
 void tabarray_switch(TabArray *ta, int index);

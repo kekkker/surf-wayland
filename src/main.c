@@ -1028,42 +1028,94 @@ static const struct wl_keyboard_listener keyboard_listener = {
 
 /* ── crash handler ───────────────────────────────────────────────────────── */
 
+/* Returns a fresh fd open for append on ~/.surf/crash.log, or STDERR_FILENO
+ * if open fails. Caller closes (unless STDERR). Async-signal-safe paths use
+ * fixed-size buffers and only call signal-safe libc. */
+static int crashlog_open_append(void)
+{
+    const char *home = getenv("HOME");
+    if (!home) home = "/tmp";
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/.surf/crash.log", home);
+    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+    if (fd < 0) fd = STDERR_FILENO;
+    return fd;
+}
+
+/* Public — non-fatal crash logger for web-process termination, glib
+ * G_LOG_LEVEL_CRITICAL aborts, etc. Not signal-safe; caller must be in a
+ * normal control-flow context. */
+void surf_log_crash(const char *what)
+{
+    int fd = crashlog_open_append();
+    char hdr[256];
+    time_t t = time(NULL);
+    int n = snprintf(hdr, sizeof(hdr),
+        "\n=== %s ===\nsurf event: %s\n",
+        ctime(&t), what ? what : "unknown");
+    if (n > 0) {
+        ssize_t wr __attribute__((unused));
+        wr = write(fd, hdr, (size_t)n);
+        void *frames[64];
+        int nframes = backtrace(frames, 64);
+        wr = write(fd, "backtrace:\n", 11);
+        backtrace_symbols_fd(frames, nframes, fd);
+    }
+    if (fd != STDERR_FILENO) close(fd);
+}
+
 static void crashhandler(int sig, siginfo_t *info, void *ctx)
 {
-    void *frames[64];
-    int nframes, fd;
-    char path[PATH_MAX];
-    char buf[128];
-    const char *home;
-    time_t t;
+    (void)ctx;
+    int fd = crashlog_open_append();
+
+    char buf[160];
+    time_t t = time(NULL);
     ssize_t wr __attribute__((unused));
 
-    (void)ctx;
+    /* Separator + header so multiple crashes are distinguishable */
+    wr = write(fd, "\n=== ", 5);
+    const char *ts = ctime(&t);
+    if (ts) wr = write(fd, ts, strlen(ts));
+    wr = write(fd, "===\n", 4);
 
-    home = getenv("HOME");
-    if (!home) home = "/tmp";
-    snprintf(path, sizeof(path), "%s/.surf/crash.log", home);
+    int n = snprintf(buf, sizeof(buf), "surf crash: signal %d (%s)\n",
+        sig,
+        sig == SIGSEGV ? "SIGSEGV" :
+        sig == SIGBUS  ? "SIGBUS"  :
+        sig == SIGABRT ? "SIGABRT" :
+        sig == SIGFPE  ? "SIGFPE"  :
+        sig == SIGILL  ? "SIGILL"  : "?");
+    if (n > 0) wr = write(fd, buf, (size_t)n);
 
-    fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
-    if (fd < 0) fd = STDERR_FILENO;
-
-    t = time(NULL);
-    snprintf(buf, sizeof(buf), "surf crash: signal %d at %s", sig, ctime(&t));
-    wr = write(fd, buf, strlen(buf));
-
-    if (info && (sig == SIGSEGV || sig == SIGBUS)) {
-        snprintf(buf, sizeof(buf), "fault addr: %p\n", info->si_addr);
-        wr = write(fd, buf, strlen(buf));
+    if (info && (sig == SIGSEGV || sig == SIGBUS ||
+                 sig == SIGFPE  || sig == SIGILL)) {
+        n = snprintf(buf, sizeof(buf), "fault addr: %p\n", info->si_addr);
+        if (n > 0) wr = write(fd, buf, (size_t)n);
     }
 
     wr = write(fd, "backtrace:\n", 11);
-    nframes = backtrace(frames, 64);
+    void *frames[64];
+    int nframes = backtrace(frames, 64);
     backtrace_symbols_fd(frames, nframes, fd);
 
     if (fd != STDERR_FILENO) close(fd);
 
     signal(sig, SIG_DFL);
     raise(sig);
+}
+
+static void install_crashhandler(void)
+{
+    struct sigaction sa = {0};
+    sa.sa_sigaction = crashhandler;
+    sa.sa_flags     = SA_SIGINFO | SA_RESETHAND;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS,  &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGFPE,  &sa, NULL);
+    sigaction(SIGILL,  &sa, NULL);
 }
 
 /* ── FIFO ────────────────────────────────────────────────────────────────── */
@@ -1185,6 +1237,10 @@ int main(int argc, char *argv[])
 {
     const char *url = argc > 1 ? argv[1] : "about:blank";
 
+    /* Install crash handler before anything else so init-time faults
+     * (Wayland connect, WPE bringup, GLib asserts) are captured. */
+    install_crashhandler();
+
     /* 1. Open our own Wayland connection and bind globals */
     wayland_connect(&g_app.wl);
     clipboard_init(&g_app.wl);
@@ -1282,7 +1338,7 @@ int main(int argc, char *argv[])
     /* 12. Create first tab — WebKit will call our SurfDisplay::create_view
      * which returns a SurfView. We then wire its wl_surface to our subsurface. */
     Tab *first = tabarray_new(&g_app.tabs, WPE_DISPLAY(g_app.sdisplay),
-        g_app.toplevel, tab_changed_cb, tab_close_cb, NULL);
+        g_app.toplevel, tab_changed_cb, tab_close_cb, NULL, NULL);
 
     /* Surface wiring already done inside tabarray_new via surf_view_set_wl_surface */
 
@@ -1347,12 +1403,6 @@ int main(int argc, char *argv[])
         G_CALLBACK(debug_web_process_terminated_cb), NULL);
 
     webkit_web_view_load_uri(first->wv, url);
-
-    struct sigaction sa = {0};
-    sa.sa_sigaction = crashhandler;
-    sa.sa_flags     = SA_SIGINFO;
-    sigaction(SIGSEGV, &sa, NULL);
-    sigaction(SIGBUS,  &sa, NULL);
 
     /* 17. Enter main loop */
     g_app.loop = g_main_loop_new(NULL, FALSE);

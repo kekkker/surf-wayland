@@ -25,7 +25,7 @@ WLIB = $(WSRC:.c=.so)
 all: surf $(WLIB)
 
 surf: $(OBJ) $(WPOBJ) $(PROTO_OBJ)
-	$(CC) -o $@ $(OBJ) $(WPOBJ) $(PROTO_OBJ) $(SURFLIBS)
+	$(CC) -rdynamic -o $@ $(OBJ) $(WPOBJ) $(PROTO_OBJ) $(SURFLIBS)
 
 # ── protocol generation ──────────────────────────────────────────────────
 
